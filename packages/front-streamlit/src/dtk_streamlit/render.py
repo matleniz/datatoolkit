@@ -6,22 +6,7 @@ import pandas as pd
 import plotly.io
 import streamlit as st
 
-
-def _resolve(prop: dict, schema: dict) -> dict:
-    """Resolve a local $ref and unwrap Optional (anyOf with null)."""
-    if "$ref" in prop:
-        target = schema
-        for part in prop["$ref"].removeprefix("#/").split("/"):
-            target = target[part]
-        prop = {**target, **{k: v for k, v in prop.items() if k != "$ref"}}
-    if "anyOf" in prop:
-        options = [o for o in prop["anyOf"] if o.get("type") != "null"]
-        if len(options) == 1:
-            prop = {
-                **{k: v for k, v in prop.items() if k != "anyOf"},
-                **_resolve(options[0], schema),
-            }
-    return prop
+from dtk_streamlit.schema import build_params
 
 
 def _widget(name: str, prop: dict, wkey: str):
@@ -66,14 +51,20 @@ def _widget(name: str, prop: dict, wkey: str):
         return None
 
 
+class _StreamlitWidgets:
+    def field(self, name: str, prop: dict, wkey: str):
+        return _widget(name, prop, wkey)
+
+    def choose(self, label: str, options: list[str], index: int, wkey: str) -> str:
+        return st.selectbox(label, options, index=index, key=wkey)
+
+    def section(self, label: str) -> None:
+        st.markdown(f"**{label}**")
+
+
 def form_from_schema(schema: dict, key_prefix: str = "") -> dict:
-    """Render one widget per property; return the params dict."""
-    params = {}
-    for name, prop in schema.get("properties", {}).items():
-        value = _widget(name, _resolve(prop, schema), f"{key_prefix}:{name}")
-        if value is not None:
-            params[name] = value
-    return params
+    """Render widgets for every property (recursively); return the params dict."""
+    return build_params(schema, _StreamlitWidgets(), prefix=key_prefix)
 
 
 def result(res: dict) -> None:
