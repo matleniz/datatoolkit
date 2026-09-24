@@ -32,3 +32,9 @@ def test_unknown_key_raises():
         run_key("does-not-exist", {})
     with pytest.raises(UnknownKeyError):
         key_schema("does-not-exist")
+
+
+@pytest.mark.parametrize("key_id", KEY_IDS)
+def test_unknown_param_rejected(key_id):
+    with pytest.raises(KeyParamsError):
+        run_key(key_id, {"not_a_param": 1})

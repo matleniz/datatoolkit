@@ -2,13 +2,14 @@
 
 import pandas as pd
 import plotly.express as px
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from dtk_engine.params import KeyParams
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 
 
-class Params(BaseModel):
+class Params(KeyParams):
     n: int = Field(default=10, ge=1, le=1000, description="Number of points")
 
 

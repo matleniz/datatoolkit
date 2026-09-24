@@ -1,0 +1,42 @@
+PassengerId,Survived,Pclass,Name,Sex,Age,SibSp,Parch,Ticket,Fare,Cabin,Embarked
+1,0,2,"Smith, Mr. George",male,14,0,0,38657,31.92,,S
+2,0,3,"Smith, Mr. Thomas",male,36,0,2,PC 54597,12.68,,S
+3,0,1,"Wright, Mrs. Henry",female,,2,1,A/5 26361,55.74,,S
+4,0,2,"Hall, Mrs. Emma",female,6,0,0,PC 46434,31.53,,S
+5,1,3,"Walker, Miss. Emma",female,35,0,2,A/5 42087,11.72,,S
+6,1,3,"Martin, Mr. Charles",male,29,0,1,PC 45093,11.56,,S
+7,1,2,"Wright, Mr. Henry",male,51,0,0,A/5 83579,37.12,,C
+8,0,2,"Lewis, Miss. Emma",female,18,0,0,A/5 30969,27.74,,S
+9,1,3,"Lewis, Mrs. Charles",female,2,2,1,A/5 54587,11.52,,S
+10,0,2,"Hall, Mr. Clara",male,34,0,2,PC 93748,39.3,,S
+11,0,2,"Johnson, Mr. Emma",male,68,0,1,PC 41385,37.96,,S
+12,0,1,"Hughes, Mr. William",male,9,0,1,A/5 89507,126.24,B17,C
+13,1,3,"Wright, Mrs. Alice",female,48,0,0,PC 12757,9.34,,C
+14,1,1,"Hughes, Mr. John",male,8,0,1,A/5 73624,66.32,,S
+15,0,2,"Johnson, Mr. Rose",male,53,1,1,PC 71213,19.76,,S
+16,0,3,"Wilson, Mr. Mary",male,14,0,1,46509,7.64,,S
+17,0,1,"Taylor, Mrs. Edward",female,,0,0,PC 73653,127.94,,S
+18,1,2,"Lewis, Mrs. Mary",female,50,2,2,A/5 96752,21.63,,C
+19,1,2,"Wright, Mrs. Alice",female,70,2,1,A/5 79615,16.52,,S
+20,0,2,"Brown, Mr. William",male,,2,0,A/5 87924,16.7,,S
+21,1,3,"Taylor, Mr. Clara",male,27,1,0,A/5 94607,11.43,,S
+22,0,1,"Wood, Miss. William",female,13,0,1,PC 30676,53.86,C17,S
+23,1,1,"Smith, Miss. Alice",female,18,2,0,A/5 54942,69.16,,S
+24,0,3,"Green, Mr. Rose",male,7,0,0,PC 27146,6.23,,C
+25,0,1,"Martin, Mrs. Clara",female,,2,2,66333,123.6,B70,S
+26,0,3,"Brown, Mr. Alice",male,6,2,0,PC 83385,13.49,,S
+27,0,2,"Hughes, Mrs. Elizabeth",female,4,1,2,A/5 42527,19.48,,S
+28,1,1,"Wilson, Mrs. Charles",female,29,0,0,96511,63.97,,S
+29,0,3,"Lewis, Mr. Henry",male,36,2,1,25118,8.56,,C
+30,1,1,"Green, Mrs. Mary",female,45,2,0,PC 15817,106.28,E66,S
+31,1,3,"Wright, Mrs. Emma",female,,2,0,A/5 49363,11.38,,S
+32,1,3,"Wood, Miss. Charles",female,25,0,2,A/5 49446,9.18,,C
+33,1,2,"Hall, Mrs. Alice",female,42,2,1,A/5 32241,26.62,,C
+34,1,1,"Hall, Mr. Henry",male,31,1,2,69692,101.82,B19,S
+35,0,3,"Lewis, Mrs. Rose",female,1,0,0,A/5 77889,13.43,,S
+36,0,3,"Hughes, Mrs. Anna",female,,1,2,A/5 76162,9.58,,S
+37,0,3,"Walker, Miss. Rose",female,32,2,1,A/5 41358,12.96,,S
+38,1,2,"Taylor, Miss. Alice",female,41,0,1,A/5 30028,37.33,,S
+39,0,3,"Taylor, Mr. Clara",male,60,1,2,A/5 12560,9.14,,S
+40,1,3,"Smith, Miss. Emma",female,54,1,1,PC 13804,10.24,,S
+8,0,2,"Lewis, Miss. Emma",female,18,0,0,A/5 30969,27.74,,S

@@ -1,0 +1,21 @@
+PassengerId,Pclass,Name,Sex,Age,SibSp,Parch,Ticket,Fare,Cabin,Embarked
+41,3,"Lewis, Miss. Elizabeth",female,69,2,2,A/5 13552,5.64,,C
+42,3,"Harris, Mr. James",male,unknown,0,1,PC 54236,7.74,,C
+43,1,"Harris, Miss. George",female,70,2,0,A/5 15276,52.17,,S
+44,1,"Hughes, Mr. Thomas",male,31,2,1,PC 31992,58.1,E28,C
+45,1,"Walker, Mr. Alice",male,40,1,2,19961,94.06,,C
+46,1,"Wilson, Mr. Alice",male,6,2,1,65057,75.78,C9,Q
+47,3,"Harris, Mrs. Emma",female,56,2,1,A/5 80539,6.99,,Q
+48,3,"Harris, Miss. George",female,12,0,1,A/5 89997,7.91,,C
+49,3,"Smith, Miss. Rose",female,unknown,1,1,A/5 46211,7.31,,C
+50,2,"Wright, Mr. William",male,63,2,1,A/5 74332,28.88,,S
+51,2,"Taylor, Mrs. Alice",female,32,1,1,A/5 79588,22.66,,Q
+52,3,"Wood, Miss. Emma",female,33,0,1,80236,7.47,,Q
+53,3,"Wright, Mr. Thomas",male,68,0,1,57301,10.77,,S
+54,2,"Hall, Mr. John",male,7,0,2,PC 23446,28.83,,Q
+55,3,"Hall, Mr. Rose",male,24,1,0,62521,14.09,,C
+56,2,"Brown, Mrs. James",female,39,0,2,PC 89471,17.13,,S
+57,3,"Lewis, Mr. Edward",male,55,0,2,A/5 23006,8.15,,Q
+58,1,"Wright, Mr. George",male,unknown,2,2,PC 48175,61.91,A53,C
+59,3,"Hughes, Mr. Alice",male,59,1,2,A/5 96662,6.04,,S
+60,2,"Harris, Mr. Anna",male,35,0,0,PC 87993,35.67,,S
