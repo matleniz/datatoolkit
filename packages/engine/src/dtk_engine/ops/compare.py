@@ -147,11 +147,24 @@ def overlap(
     """Test rows found verbatim in train (common columns) and test ids found in train.
 
     One `rows` record, then one `id` record per id column present on both sides.
+    The row hash leaves out id columns (given, or typed as ids on either side) and
+    row counters, which differ between two tables even for an identical row.
     """
     common = schema_diff(train, test)["common"]
+    sem_train = column_profile(train).set_index("column")["semantic_type"]
+    sem_test = column_profile(test).set_index("column")["semantic_type"]
+    skip = {str(c) for c in id_columns}
+    keep = [
+        c
+        for c in common
+        if str(c) not in skip
+        and sem_train.get(str(c)) not in ID_TYPES
+        and sem_test.get(str(c)) not in ID_TYPES
+        and not is_row_counter(train[c], test[c])
+    ]
     records = []
-    if common:
-        in_train = _row_hashes(test[common]).isin(set(_row_hashes(train[common])))
+    if keep:
+        in_train = _row_hashes(test[keep]).isin(set(_row_hashes(train[keep])))
         n_in = int(in_train.sum())
         records.append(
             {
@@ -230,8 +243,9 @@ def find_issues(
 ) -> pd.DataFrame:
     """Turn the comparison into findings, sorted error -> warning -> info.
 
-    Severity choice: a dtype mismatch or test ids found in train (entity leak)
-    is an error; a column only in test, a semantic-type mismatch, unseen test
+    Severity choice: a dtype mismatch between non-numeric kinds (numeric vs
+    string, datetime or bool vs other) or test ids found in train (entity leak)
+    is an error, while int vs float (typically a NaN on one side) is info; a column only in test, a semantic-type mismatch, unseen test
     categories, a large missing-rate or range shift, or rows shared by both
     tables is a warning; a column only in train (probable target), a column
     order change, train-only categories, small shifts and row-counter id
@@ -262,12 +276,21 @@ def find_issues(
     both = columns[columns["in_train"] & columns["in_test"]]
     for r in both.itertuples(index=False):
         if r.dtype_train != r.dtype_test:
-            add(
-                "error",
-                "schema",
-                r.column,
-                f"dtype {r.dtype_train} in train vs {r.dtype_test} in test",
-            )
+            if _is_number(train[r.column]) and _is_number(test[r.column]):
+                add(
+                    "info",
+                    "schema",
+                    r.column,
+                    f"dtype {r.dtype_train} in train vs {r.dtype_test} in test "
+                    "(numeric on both sides)",
+                )
+            else:
+                add(
+                    "error",
+                    "schema",
+                    r.column,
+                    f"dtype {r.dtype_train} in train vs {r.dtype_test} in test",
+                )
         if r.semantic_train != r.semantic_test:
             add(
                 "warning",

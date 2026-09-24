@@ -78,6 +78,18 @@ def test_overlap_rows_and_ids():
     assert not ids["row_counter"]
 
 
+def test_overlap_rows_ignore_id_and_counter_columns():
+    train = pd.DataFrame({"Index": range(5), "pid": range(10, 15), "x": list("abcde")})
+    test = pd.DataFrame({"Index": range(3), "pid": [90, 91, 92], "x": list("zzc")})
+    rows = overlap(train, test, ["pid"]).set_index("kind").loc["rows"]
+    assert rows["n_test_in_train"] == 1
+
+
+def test_overlap_skips_rows_when_only_ids_are_common():
+    df = pd.DataFrame({"pid": [1, 2, 3]})
+    assert list(overlap(df, df, ["pid"])["kind"]) == ["id"]
+
+
 def test_compare_columns_union_and_auto_ids():
     train = pd.DataFrame(
         {
@@ -137,6 +149,16 @@ def test_find_issues_severities_and_order():
     assert any(r.check == "schema" and pd.isna(r.column) for r in issues.itertuples())
     ranks = issues["severity"].map({"error": 0, "warning": 1, "info": 2})
     assert ranks.is_monotonic_increasing
+
+
+def test_numeric_dtype_mismatch_is_info():
+    train = pd.DataFrame({"a": [1, 2, 3], "b": [1, 2, 3]})
+    test = pd.DataFrame({"a": [1.0, None, 3.0], "b": ["1", "2", "3"]})
+    issues = _issues(train, test, [])
+    dtype = issues[issues["message"].str.startswith("dtype")].set_index("column")
+    assert dtype.at["a", "severity"] == "info"
+    assert "numeric on both sides" in dtype.at["a", "message"]
+    assert dtype.at["b", "severity"] == "error"
 
 
 def test_row_counter_overlap_is_info_not_leak():
