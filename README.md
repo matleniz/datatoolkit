@@ -14,5 +14,5 @@ Notebook:
 ```python
 from dtk_engine import run_key, Result
 
-Result(**run_key("hello", {"n": 10})).show()
+Result(**run_key("train_test_check", {})).show()
 ```

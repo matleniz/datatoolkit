@@ -24,7 +24,7 @@ def test_run_defaults_is_json(key_id):
 @pytest.mark.parametrize("key_id", KEY_IDS)
 def test_bad_params_raise(key_id):
     with pytest.raises(KeyParamsError):
-        run_key(key_id, {"__not_a_param__": object(), "n": "not-a-number"})
+        run_key(key_id, {"__not_a_param__": object()})
 
 
 def test_unknown_key_raises():
