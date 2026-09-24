@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 from dtk_engine.errors import SourceError
 from dtk_engine.sources import CsvSource, load
+from dtk_engine.sources.csv_pandas import SNIFF_CHARS, resolve_path, sniff_sep
 
 
 @pytest.mark.parametrize("sep", [",", ";"])
@@ -53,3 +54,61 @@ def test_demo_data_loads():
     assert "Survived" in train and "Survived" not in test
     assert set(test["Embarked"]) - set(train["Embarked"])
     assert train["Age"].dtype != test["Age"].dtype
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (r"C:\Users\x\f.csv", "/mnt/c/Users/x/f.csv"),
+        ("C:/Users/x/f.csv", "/mnt/c/Users/x/f.csv"),
+        (r"d:\data\f.csv", "/mnt/d/data/f.csv"),
+        ("/home/x/f.csv", "/home/x/f.csv"),
+        ("data/f.csv", "data/f.csv"),
+    ],
+)
+def test_resolve_windows_path_on_linux(path, expected):
+    assert resolve_path(path, platform="linux", exists=lambda _: False) == expected
+
+
+def test_resolve_path_keeps_existing_or_non_linux():
+    win = r"C:\Users\x\f.csv"
+    assert resolve_path(win, platform="win32", exists=lambda _: False) == win
+    assert resolve_path(win, platform="linux", exists=lambda _: True) == win
+
+
+def test_windows_path_missing_everywhere_is_source_error():
+    with pytest.raises(SourceError, match="not found"):
+        load(CsvSource(path=r"Q:\nope\f.csv"))
+
+
+@pytest.mark.parametrize("sep", [",", ";", "\t", "|"])
+def test_sniff_sep(sep):
+    assert sniff_sep(f"a{sep}b{sep}c\n1{sep}x{sep}2\n3{sep}y{sep}4\n") == sep
+
+
+def test_sniff_sep_ignores_truncated_last_line():
+    line = "1;22;333\n"
+    sample = ("a;b;c\n" + line * SNIFF_CHARS)[:SNIFF_CHARS]
+    assert sniff_sep(sample) == ";"
+
+
+def test_sniff_sep_fails_gracefully():
+    assert sniff_sep("") is None
+
+
+def test_auto_sep_on_big_file(tmp_path):
+    path = tmp_path / "big.csv"
+    rows = "".join(f"{i};name {i};{i / 2}\n" for i in range(20_000))
+    path.write_text("id;name;v\n" + rows)
+    df = load(CsvSource(path=str(path)))
+    assert df.shape == (20_000, 3)
+    assert df["v"].iloc[-1] == 9_999.5
+
+
+def test_auto_sep_falls_back_to_python_engine(tmp_path, monkeypatch):
+    import dtk_engine.sources.csv_pandas as mod
+
+    monkeypatch.setattr(mod, "sniff_sep", lambda _: None)
+    path = tmp_path / "d.csv"
+    path.write_text("a;b\n1;2\n3;4\n")
+    assert list(load(CsvSource(path=str(path))).columns) == ["a", "b"]
