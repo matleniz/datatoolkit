@@ -17,9 +17,9 @@ Notebook (`dtk_engine.api`: DataFrame in, `Result` or DataFrame out; a
 from dtk_engine import api
 
 train, test = api.load("train.csv"), api.load("test.csv")  # or a source spec dict
-api.overview(train)  # dataset_overview on a DataFrame
-api.check(train, test)  # train_test_check
-api.list_transforms()  # registered transform ops
+api.overview(train)                  # dataset_overview on a DataFrame
+api.check(train, test)               # train_test_check
+api.list_transforms()                # registered transform ops
 api.transform(train, "drop_columns", columns=["Name"])  # DataFrame out
 ```
 
@@ -32,11 +32,9 @@ from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
 from dtk_engine import DtkTransformer, workspace_pipeline
 
-pipe = make_pipeline(
-    DtkTransformer("drop_columns", columns=["Name"]), LogisticRegression()
-)
+pipe = make_pipeline(DtkTransformer("drop_columns", columns=["Name"]), LogisticRegression())
 cross_val_score(pipe, X, y)
-workspace_pipeline("my_workspace")  # unfitted Pipeline from the workspace steps
+workspace_pipeline("my_workspace")   # unfitted Pipeline from the workspace steps
 ```
 
 JSON contract (what fronts call): `run_key`, `list_keys`, `key_schema`,
