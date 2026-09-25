@@ -207,3 +207,171 @@ def test_align_to_train():
     )
     # identity on train itself
     assert t.transform(train)["a"].to_numpy() == pytest.approx(train["a"].to_numpy())
+
+
+# --- align_to_train: complete version -----------------------------------------
+
+
+def _align_frames(seed=1, n=400):
+    rng = np.random.default_rng(seed)
+    train = pd.DataFrame({"a": rng.normal(10, 2, n)})
+    test = pd.DataFrame({"a": rng.normal(15, 4, n)})
+    return train, test
+
+
+def _run(mode, train, test, **extra):
+    p = {"columns": ["a"], "mode": mode, **extra}
+    return _both("align_to_train", p, train, test)["a"]
+
+
+def _iqr(s):
+    return s.quantile(0.75) - s.quantile(0.25)
+
+
+def test_align_shift_median():
+    train, test = _align_frames()
+    out = _run("shift_median", train, test)
+    assert out.median() == pytest.approx(train["a"].median())
+    assert out.std() == pytest.approx(test["a"].std())
+
+
+def test_align_standardize_and_alias():
+    train, test = _align_frames()
+    out = _run("standardize", train, test)
+    assert out.mean() == pytest.approx(train["a"].mean())
+    assert out.std() == pytest.approx(train["a"].std())
+    alias = _run("standardize_to_train", train, test)
+    assert alias.to_numpy() == pytest.approx(out.to_numpy())
+
+
+def test_align_robust():
+    train, test = _align_frames()
+    out = _run("robust", train, test)
+    assert out.median() == pytest.approx(train["a"].median())
+    assert _iqr(out) == pytest.approx(_iqr(train["a"]))
+
+
+def test_align_quantile_recovers_monotone_distortion():
+    train, _ = _align_frames()
+    rng = np.random.default_rng(5)
+    base = rng.normal(10, 2, 400)
+    test = pd.DataFrame({"a": np.exp(base / 4) + 3})  # monotone distortion
+    test.loc[[3, 7], "a"] = np.nan
+    t = DtkTransformer("align_to_train", columns=["a"], mode="quantile").fit(train)
+    assert len(t.state_["global"]["a"]["quantiles"]) == 101
+    out = t.transform(test)["a"]
+    assert out.isna().sum() == 2
+    for q in (0.1, 0.5, 0.9):
+        assert out.quantile(q) == pytest.approx(train["a"].quantile(q), abs=0.3)
+    assert out.mean() == pytest.approx(train["a"].mean(), abs=0.2)
+    # monotone: order preserved
+    assert out.dropna().rank().equals(test["a"].dropna().rank())
+    # identity (within interpolation error) on train
+    same = t.transform(train)["a"]
+    assert same.to_numpy() == pytest.approx(train["a"].to_numpy(), abs=0.6)
+
+
+def test_align_quantile_ties_use_average_ranks():
+    train = pd.DataFrame({"a": np.arange(101, dtype=float)})
+    test = pd.DataFrame({"a": [1.0] * 30 + [2.0] * 30})
+    out = (
+        DtkTransformer("align_to_train", columns=["a"], mode="quantile")
+        .fit(train)
+        .transform(test)["a"]
+    )
+    assert out.iloc[:30].nunique() == 1
+    assert out.iloc[0] < out.iloc[-1]
+
+
+@pytest.mark.parametrize(
+    "mode", ["shift_mean", "shift_median", "standardize", "robust"]
+)
+def test_align_identity_on_train(mode):
+    train, _ = _align_frames()
+    t = DtkTransformer("align_to_train", columns=["a"], mode=mode).fit(train)
+    assert t.transform(train)["a"].to_numpy() == pytest.approx(train["a"].to_numpy())
+
+
+def test_align_per_group_with_unseen_group():
+    rng = np.random.default_rng(2)
+    train = pd.DataFrame(
+        {
+            "g": ["x"] * 200 + ["y"] * 200,
+            "a": np.r_[rng.normal(0, 1, 200), rng.normal(100, 1, 200)],
+        }
+    )
+    test = pd.DataFrame(
+        {
+            "g": ["x"] * 100 + ["y"] * 100 + ["z"] * 100,
+            "a": np.r_[
+                rng.normal(5, 1, 100), rng.normal(50, 1, 100), rng.normal(7, 1, 100)
+            ],
+        }
+    )
+    p = {"columns": ["a"], "group": "g", "mode": "shift_mean"}
+    t = DtkTransformer("align_to_train", **p).fit(train)
+    assert set(t.state_["groups"]["a"]) == {"x", "y"}
+    out = t.transform(test)
+    assert out[out.g == "x"]["a"].mean() == pytest.approx(
+        train[train.g == "x"]["a"].mean()
+    )
+    assert out[out.g == "y"]["a"].mean() == pytest.approx(
+        train[train.g == "y"]["a"].mean()
+    )
+    # unseen group: global shift, mean of the whole test column lands on train's
+    z_shift = out[out.g == "z"]["a"].mean() - test[test.g == "z"]["a"].mean()
+    glob = train["a"].mean() - test["a"].mean()
+    assert z_shift == pytest.approx(glob)
+    assert _both("align_to_train", p, train, test)["a"].to_numpy() == pytest.approx(
+        out["a"].to_numpy()
+    )
+
+
+def test_align_small_group_falls_back_to_global():
+    rng = np.random.default_rng(3)
+    train = pd.DataFrame({"g": ["x"] * 100 + ["y"] * 100, "a": rng.normal(0, 1, 200)})
+    test = pd.DataFrame({"g": ["x"] * 100 + ["y"] * 5, "a": rng.normal(3, 1, 105)})
+    p = {"columns": ["a"], "group": "g"}
+    out = DtkTransformer("align_to_train", **p).fit(train).transform(test)
+    glob = train["a"].mean() - test["a"].mean()
+    small = out[out.g == "y"]["a"] - test[test.g == "y"]["a"]
+    assert small.to_numpy() == pytest.approx(glob)
+
+
+def test_align_small_frame_skip_and_raise():
+    train, _ = _align_frames()
+    test = pd.DataFrame({"a": [100.0, 101.0, 102.0]})
+    out = DtkTransformer("align_to_train", columns=["a"]).fit(train).transform(test)
+    assert out["a"].tolist() == [100.0, 101.0, 102.0]
+    t = DtkTransformer("align_to_train", columns=["a"], on_small="raise").fit(train)
+    with pytest.raises(ValueError, match="min_rows"):
+        t.transform(test)
+    lowered = DtkTransformer("align_to_train", columns=["a"], min_rows=2).fit(train)
+    assert lowered.transform(test)["a"].mean() == pytest.approx(train["a"].mean())
+
+
+@pytest.mark.parametrize("mode", ["standardize", "robust"])
+def test_align_degenerate_scale_shifts_only(mode):
+    train = pd.DataFrame({"a": [5.0] * 50})
+    test = pd.DataFrame({"a": np.arange(50, dtype=float)})
+    out = _run(mode, train, test)
+    assert out.to_numpy() == pytest.approx(test["a"].to_numpy() - 24.5 + 5.0)
+    # constant frame against a spread train: shift only, no division by zero
+    spread, const = test, pd.DataFrame({"a": [7.0] * 50})
+    res = _run(mode, spread, const)
+    assert np.isfinite(res).all()
+    assert res.nunique() == 1
+
+
+def test_align_params_validation():
+    t = get_transform("align_to_train")
+    assert (
+        t.parse({"columns": ["a"], "mode": "standardize_to_train"}).mode
+        == "standardize"
+    )
+    with pytest.raises(KeyParamsError):
+        t.parse({"columns": ["a"], "mode": "nope"})
+    with pytest.raises(KeyParamsError):
+        t.parse({"columns": ["a"], "group": "a"})
+    with pytest.raises(KeyParamsError):
+        t.parse({"columns": ["a"], "min_rows": 0})
