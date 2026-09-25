@@ -13,14 +13,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from dtk_engine.ops._util import require_numeric as _numeric
 from dtk_engine.transform_registry import TransformParams, transform
-
-
-def _numeric(df: pd.DataFrame, columns: list[str], op: str) -> None:
-    bad = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
-    if bad:
-        raise ValueError(f"{op} needs numeric columns, got non-numeric {bad}")
-
 
 # --- scale --------------------------------------------------------------------
 

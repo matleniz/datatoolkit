@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
+from dtk_engine.ops._util import pct as _pct
+
 SEMANTIC_TYPES = (
     "numeric",
     "categorical",
@@ -264,10 +266,6 @@ def columns_of_type(
     """
     semantic = semantic if semantic is not None else semantic_types(df)
     return [str(c) for c in df.columns if semantic[str(c)] in types]
-
-
-def _pct(count: float, total: float) -> float:
-    return round(100 * count / total, 2) if total else 0.0
 
 
 def _numeric_row(name: str, col: pd.Series) -> dict:

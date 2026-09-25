@@ -20,21 +20,12 @@ from pydantic import Field, model_validator
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer, KNNImputer
 
+from dtk_engine.ops._util import py as _py
+from dtk_engine.ops._util import require_numeric as _numeric
 from dtk_engine.transform_registry import TransformParams, transform
 
 INDICATOR_SUFFIX = "_was_missing"
 CATEGORICAL_FILL = "MISSING"
-
-
-def _py(value):
-    """numpy scalar -> plain Python value (JSON-safe)."""
-    return value.item() if isinstance(value, np.generic) else value
-
-
-def _numeric(df: pd.DataFrame, columns: list[str], op: str) -> None:
-    bad = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
-    if bad:
-        raise ValueError(f"{op} needs numeric columns, got non-numeric {bad}")
 
 
 def _matrix_state(df: pd.DataFrame, columns: list[str], op: str) -> dict:

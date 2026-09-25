@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
+from dtk_engine.ops._util import pct as _pct
 from dtk_engine.ops.profile import object_kind
 
 # Missing rate (%) above which dropping the column is the default advice.
@@ -54,10 +55,6 @@ SPIKE_TEST_RATIO = 10.0
 RATE_FIELDS = ["column", "n_missing", "pct_missing", "recommendation"]
 SENTINEL_FIELDS = ["column", "sentinel", "count", "pct"]
 SPIKE_FIELDS = ["column", "value", "n_test", "pct_test", "pct_train"]
-
-
-def _pct(count: float, total: float) -> float:
-    return round(100 * count / total, 2) if total else 0.0
 
 
 def missing_rates(df: pd.DataFrame) -> pd.DataFrame:
