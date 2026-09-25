@@ -274,7 +274,7 @@ def test_find_issues_drift_severities():
 def test_find_issues_drift_info_band():
     rng = np.random.default_rng(0)
     train = pd.DataFrame({"x": rng.normal(0, 1, 5000)})
-    test = pd.DataFrame({"x": rng.normal(0.2, 1, 5000)})
+    test = pd.DataFrame({"x": rng.normal(0, 1.1, 5000)})
     num = numeric_drift(train, test, ["x"]).iloc[0]
     assert num["smd"] < SMD_WARNING and num["ks"] < KS_WARNING
     assert num["psi"] < PSI_INFO
@@ -287,7 +287,7 @@ def test_find_issues_drift_info_band():
         numeric_drift(train, test, ["x"]),
     )
     drift = out[out["check"] == "drift"]
-    assert drift["severity"].tolist() == ["info"]  # 1-5% outside train p1-p99
+    assert drift["severity"].tolist() == ["info"]  # 3-5% outside train p1-p99
 
 
 def test_find_issues_without_drift_tables_unchanged():

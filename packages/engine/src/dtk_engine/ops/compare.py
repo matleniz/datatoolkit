@@ -32,8 +32,10 @@ SMD_WARNING = 0.5
 # Two-sample Kolmogorov-Smirnov statistic: >= WARNING -> warning.
 KS_WARNING = 0.2
 # % of test values outside the train [p1, p99]: >= WARNING -> warning, >= INFO -> info.
+# Without drift ~2 % of values fall outside p1-p99 by construction, so INFO sits above
+# that baseline.
 OUTSIDE_P1_P99_WARNING = 5.0
-OUTSIDE_P1_P99_INFO = 1.0
+OUTSIDE_P1_P99_INFO = 3.0
 # Total variation distance between train and test category shares: >= WARNING -> warning.
 TVD_WARNING = 0.2
 PSI_BINS = 10
