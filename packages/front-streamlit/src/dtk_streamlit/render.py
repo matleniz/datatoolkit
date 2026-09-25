@@ -62,9 +62,16 @@ class _StreamlitWidgets:
         st.markdown(f"**{label}**")
 
 
-def form_from_schema(schema: dict, key_prefix: str = "") -> dict:
-    """Render widgets for every property (recursively); return the params dict."""
-    return build_params(schema, _StreamlitWidgets(), prefix=key_prefix)
+def form_from_schema(
+    schema: dict, key_prefix: str = "", defaults: dict | None = None
+) -> dict:
+    """Render widgets for every property (recursively); return the params dict.
+
+    ``defaults`` override the schema's top-level defaults (e.g. workspace sources).
+    """
+    return build_params(
+        schema, _StreamlitWidgets(), prefix=key_prefix, defaults=defaults
+    )
 
 
 def result(res: dict) -> None:

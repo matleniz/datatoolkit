@@ -47,7 +47,13 @@ def sniff_sep(sample: str) -> str | None:
     try:
         return csv.Sniffer().sniff(sample, delimiters=SNIFF_DELIMITERS).delimiter
     except csv.Error:
-        return None
+        pass
+    # No candidate on the header line: a single-column file. Say so explicitly,
+    # else pandas' python-engine sniffing may pick a letter as the separator.
+    header = sample.split("\n", 1)[0]
+    if sample and not any(d in header for d in SNIFF_DELIMITERS):
+        return ","
+    return None
 
 
 @reader("csv")

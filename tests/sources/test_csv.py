@@ -112,3 +112,10 @@ def test_auto_sep_falls_back_to_python_engine(tmp_path, monkeypatch):
     path = tmp_path / "d.csv"
     path.write_text("a;b\n1;2\n3;4\n")
     assert list(load(CsvSource(path=str(path))).columns) == ["a", "b"]
+
+
+def test_single_column_file(tmp_path):
+    path = tmp_path / "y.csv"
+    path.write_text("target\n0.5\n1.5\n")
+    df = load(CsvSource(path=str(path)))
+    assert list(df.columns) == ["target"] and df["target"].tolist() == [0.5, 1.5]
