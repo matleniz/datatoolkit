@@ -7,12 +7,14 @@ from dtk_engine import (
     get_workspace,
     key_schema,
     list_keys,
+    list_transforms,
     list_workspaces,
     run_key,
     save_workspace,
+    transform_schema,
 )
 from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
-from dtk_engine.errors import KeyParamsError, UnknownKeyError
+from dtk_engine.errors import KeyParamsError, UnknownKeyError, UnknownTransformError
 from dtk_engine.workspace import WorkspaceNotFoundError
 
 KEY_IDS = [k["id"] for k in list_keys()]
@@ -87,3 +89,19 @@ def test_save_invalid_workspace_raises(tmp_path, monkeypatch):
         save_workspace({"name": "w"})
     with pytest.raises(KeyParamsError):
         save_workspace(_workspace("../escape"))
+
+
+def test_list_transforms_is_json():
+    transforms = list_transforms()
+    assert json.dumps(transforms)
+    assert {"op", "title", "description"} == set(transforms[0])
+    assert "drop_columns" in [t["op"] for t in transforms]
+
+
+def test_transform_schema():
+    schema = transform_schema("drop_columns")
+    assert json.dumps(schema)
+    assert schema["additionalProperties"] is False
+    assert "columns" in schema["required"]
+    with pytest.raises(UnknownTransformError):
+        transform_schema("does-not-exist")

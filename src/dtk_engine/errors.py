@@ -11,3 +11,7 @@ class KeyParamsError(ValueError):
 
 class SourceError(ValueError):
     """A source could not be loaded (missing file, unreadable content, unknown kind)."""
+
+
+class UnknownTransformError(KeyError):
+    """The requested transform op is not registered."""
