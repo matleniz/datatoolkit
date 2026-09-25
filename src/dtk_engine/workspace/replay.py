@@ -85,3 +85,31 @@ def replay(
             elif i < last_both:
                 train = t.fit_apply(train, params)
     return frame
+
+
+def replay_fitted(
+    steps: list[Step], train: pd.DataFrame, test: pd.DataFrame | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict]]:
+    """Replay every step on train and test in one pass, keeping the fitted states.
+
+    Returns (train, test, fitted): same frames as ``replay`` for each role, and
+    per step ``{"fitted_on": "train" | "test" | None, "state": dict}`` (the state
+    learned by a "both" / "train" step on train, or by a "test" step on test;
+    ``None`` / ``{}`` for a "test" step without a test frame).
+    """
+    fitted = []
+    for i, (step, t, params) in enumerate(_resolve(steps)):
+        with _step_context(i, step):
+            if step.target == "test" and test is None:
+                fitted.append({"fitted_on": None, "state": {}})
+                continue
+            fit_frame = test if step.target == "test" else train
+            state = t.fit(fit_frame, params)
+            if step.target in ("train", "both"):
+                train = t.apply(train, params, state)
+            if step.target in ("test", "both") and test is not None:
+                test = t.apply(test, params, state)
+        fitted.append(
+            {"fitted_on": "test" if step.target == "test" else "train", "state": state}
+        )
+    return train, test, fitted

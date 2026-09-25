@@ -10,6 +10,7 @@ from .ops import transforms  # noqa: F401  (registers every transform op)
 from .registry import all_keys, get_key
 from .transform_registry import all_transforms, get_transform
 from .workspace import JsonWorkspaceStore, Workspace
+from .workspace.export import export_workspace as _export
 
 
 def list_keys() -> list[dict]:
@@ -74,3 +75,14 @@ def save_workspace(workspace: dict) -> dict:
 
 def delete_workspace(name: str) -> None:
     JsonWorkspaceStore().delete(name)
+
+
+def export_workspace(name: str, out_dir: str, overwrite: bool = False) -> dict:
+    """Write ``out_dir/processed/{train,test}.parquet`` + ``out_dir/manifest.json``
+    (sources hashed, steps with fitted states, versions); returns the manifest.
+
+    Unknown workspace -> WorkspaceNotFoundError; an existing export without
+    ``overwrite`` or an output path that is a raw input -> KeyParamsError; a
+    source or step failing -> SourceError.
+    """
+    return _export(name, out_dir, overwrite=overwrite)

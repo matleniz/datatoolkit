@@ -101,3 +101,36 @@ def test_workspace_pipeline(tmp_path, monkeypatch):
     save_workspace(ws)
     with pytest.raises(KeyParamsError):
         workspace_pipeline("w")
+
+
+def test_advised_workspace_pipeline_in_cross_val_score(tmp_path, monkeypatch):
+    """End to end on the demo data: advisor plan -> workspace -> sklearn CV."""
+    from dtk_engine import api
+    from dtk_engine.ops.advisor import advise, as_steps
+
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    train = api.load(TRAIN_CSV)
+    recs, _ = advise(train, model_family="linear", target="Survived")
+    steps = as_steps(recs)
+    assert {s["target"] for s in steps} == {"train", "both"}  # drop_duplicates: train
+    save_workspace(
+        {
+            "name": "advised",
+            "datasets": {
+                "train": {
+                    "x": {"kind": "csv", "path": TRAIN_CSV},
+                    "target_column": "Survived",
+                }
+            },
+            "steps": steps,
+        }
+    )
+    pipe = Pipeline(
+        [
+            ("prep", workspace_pipeline("advised")),
+            ("model", LogisticRegression(max_iter=1000)),
+        ]
+    )
+    X, y = train.drop(columns="Survived"), train["Survived"]
+    scores = cross_val_score(pipe, X, y, cv=3)
+    assert len(scores) == 3 and np.isfinite(scores).all()
