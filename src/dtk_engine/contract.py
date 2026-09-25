@@ -14,6 +14,7 @@ from .sources.dataset import workspace_frame
 from .transform_registry import all_transforms, get_transform
 from .workspace import JsonWorkspaceStore, Workspace
 from .workspace.export import export_workspace as _export
+from .workspace.replay import validate_steps
 
 
 def list_keys() -> list[dict]:
@@ -66,12 +67,24 @@ def get_workspace(name: str) -> dict:
     return JsonWorkspaceStore().get(name).model_dump(mode="json")
 
 
-def save_workspace(workspace: dict) -> dict:
-    """Validate and store (create or overwrite); returns the normalized dict."""
+def _parse_workspace(ws: dict) -> Workspace:
+    """Workspace model + every step's op and params (nothing is read).
+
+    Invalid shape or step params -> KeyParamsError; unknown op ->
+    UnknownTransformError.
+    """
     try:
-        parsed = Workspace.model_validate(workspace)
+        parsed = Workspace.model_validate(ws)
     except ValidationError as exc:
         raise KeyParamsError(str(exc)) from exc
+    validate_steps(parsed.steps)
+    return parsed
+
+
+def save_workspace(workspace: dict) -> dict:
+    """Validate (shape, step ops and params) and store (create or overwrite);
+    returns the normalized dict."""
+    parsed = _parse_workspace(workspace)
     JsonWorkspaceStore().save(parsed)
     return parsed.model_dump(mode="json")
 
@@ -82,10 +95,7 @@ def preview_workspace(ws: dict, role: str, head_rows: int = 5) -> dict:
     Validates like ``save_workspace``; returns ``{shape: [rows, cols], columns,
     head: records}`` for ``role`` ("train" | "test") with its steps applied.
     """
-    try:
-        parsed = Workspace.model_validate(ws)
-    except ValidationError as exc:
-        raise KeyParamsError(str(exc)) from exc
+    parsed = _parse_workspace(ws)
     if role not in ("train", "test"):
         raise KeyParamsError(f"role must be 'train' or 'test', got {role!r}")
     df = workspace_frame(parsed, role)
@@ -106,6 +116,7 @@ def export_workspace(name: str, out_dir: str, overwrite: bool = False) -> dict:
 
     Unknown workspace -> WorkspaceNotFoundError; an existing export without
     ``overwrite`` or an output path that is a raw input -> KeyParamsError; a
-    source or step failing -> SourceError.
+    source or a step failing on the data -> SourceError; an unknown step op ->
+    UnknownTransformError, invalid step params -> KeyParamsError.
     """
     return _export(name, out_dir, overwrite=overwrite)

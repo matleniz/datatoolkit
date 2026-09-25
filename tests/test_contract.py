@@ -160,3 +160,24 @@ def test_preview_workspace_errors():
         preview_workspace({"name": "w"}, "train")
     with pytest.raises(KeyParamsError):
         preview_workspace(_workspace(), "val")
+
+
+@pytest.mark.parametrize(
+    ("step", "error"),
+    [
+        ({"op": "nope", "target": "both"}, UnknownTransformError),
+        ({"op": "drop_columns", "target": "both", "params": {}}, KeyParamsError),
+        (
+            {"op": "drop_columns", "target": "train", "params": {"colums": ["a"]}},
+            KeyParamsError,
+        ),
+    ],
+)
+def test_save_and_preview_reject_invalid_steps(tmp_path, monkeypatch, step, error):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    ws = _workspace("w") | {"steps": [step]}
+    with pytest.raises(error):
+        save_workspace(ws)
+    assert list_workspaces() == []
+    with pytest.raises(error):
+        preview_workspace(ws, "train")
