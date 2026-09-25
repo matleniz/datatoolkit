@@ -12,6 +12,7 @@ from .contract import (
     preview_workspace,
     run_key,
     save_workspace,
+    source_columns,
     transform_schema,
 )
 from .params import KeyParams
@@ -37,6 +38,7 @@ __all__ = [
     "preview_workspace",
     "run_key",
     "save_workspace",
+    "source_columns",
     "transform",
     "transform_schema",
     "workspace_pipeline",
