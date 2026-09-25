@@ -3,6 +3,7 @@
 from . import (  # noqa: F401
     dataset_overview,
     duplicates,
+    feature_selection,
     file_inspect,
     inconsistencies,
     missing_values,

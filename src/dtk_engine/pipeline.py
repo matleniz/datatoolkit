@@ -2,7 +2,9 @@
 
 ``DtkTransformer(op, **params)`` wraps one op (pandas in, pandas out) so it runs
 inside ``Pipeline`` / ``cross_val_score``: ``fit`` learns the op's state on the
-training fold, ``transform`` applies it. ``workspace_pipeline(name)`` chains the
+training fold, ``transform`` applies it. A supervised op (``needs_target``, e.g.
+``select_k_best``) gets ``y`` joined to X under its ``target`` param name for
+fit only; unsupervised ops ignore ``y``. ``workspace_pipeline(name)`` chains the
 workspace's steps into a ``Pipeline``.
 """
 
@@ -49,11 +51,15 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
         self.params = {**self.params, **params}
         return self
 
-    def _fit(self, X) -> pd.DataFrame:
+    def _fit(self, X, y=None) -> pd.DataFrame:
         X = _as_frame(X)
         t = get_transform(self.op)
         params = t.parse(self.params)
-        self.state_ = t.fit(X, params)
+        fit_frame = X
+        target = params.target if t.needs_target else None
+        if target is not None and y is not None and target not in X.columns:
+            fit_frame = X.assign(**{target: np.asarray(y)})
+        self.state_ = t.fit(fit_frame, params)
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         self.n_features_in_ = X.shape[1]
         out = t.apply(X, params, self.state_)
@@ -61,11 +67,11 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
         return out
 
     def fit(self, X, y=None) -> DtkTransformer:
-        self._fit(X)
+        self._fit(X, y)
         return self
 
     def fit_transform(self, X, y=None, **fit_params) -> pd.DataFrame:
-        return self._fit(X)
+        return self._fit(X, y)
 
     def transform(self, X) -> pd.DataFrame:
         check_is_fitted(self, "state_")

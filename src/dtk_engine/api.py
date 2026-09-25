@@ -7,6 +7,7 @@
     api.check(train, api.load("test.csv"))
     api.transform(train, "drop_columns", columns=["Name"])
     api.advise(train, test, model_family="linear", target="Survived")
+    api.select_features(train, target="Survived")
     api.export_workspace("titanic", "out/")  # parquet + manifest.json
 
 Same code as the keys (``keys/*`` build their Result from the same functions);
@@ -24,6 +25,7 @@ from dtk_engine.contract import list_transforms, preview_workspace
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.keys.dataset_overview import overview_result
 from dtk_engine.keys.duplicates import duplicates_result
+from dtk_engine.keys.feature_selection import selection_result
 from dtk_engine.keys.inconsistencies import inconsistencies_result
 from dtk_engine.keys.missing_values import missing_result
 from dtk_engine.keys.outliers import outliers_result
@@ -47,6 +49,7 @@ __all__ = [
     "outliers",
     "overview",
     "preview_workspace",
+    "select_features",
     "transform",
 ]
 
@@ -144,6 +147,22 @@ def advise(
     ``params``); ``dtk_engine.ops.advisor.as_steps`` lists them for a workspace.
     """
     return advisor_result(df, test, model_family, target)
+
+
+def select_features(
+    df: pd.DataFrame,
+    target: str,
+    task: str = "auto",
+    columns: list[str] | None = None,
+    wrapper: bool = False,
+    random_state: int = 0,
+) -> Result:
+    """``feature_selection`` on a DataFrame.
+
+    The ``suggested_steps`` table lists selection ops (``select_k_best``,
+    ``select_from_model``, ``drop_correlated``, ``pca``...) as "both" steps.
+    """
+    return selection_result(df, target, task, columns, wrapper, random_state)
 
 
 def export_workspace(
