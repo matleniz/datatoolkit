@@ -21,7 +21,7 @@ from dtk_engine.ops.selection import (
     resolve_task,
     suggested_steps,
 )
-from dtk_engine.params import KeyParams
+from dtk_engine.params import KeyParams, column_field, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -29,17 +29,17 @@ from dtk_engine.sources import CsvSource, SourceSpec, load
 
 class Params(KeyParams):
     source: SourceSpec = CsvSource(path=TRAIN_CSV)
-    target: str = Field(default="Survived", description="Target column of `source`")
+    target: str = column_field("Survived", "Target column of `source`")
     task: Literal["auto", "classification", "regression"] = Field(
         default="auto",
         description="auto: classification for a non-numeric target or a few "
         "integer values, regression otherwise",
     )
-    columns: list[str] | None = Field(
-        default=None,
+    columns: list[str] | None = columns_field(
+        "Numeric features to score (default: every numeric column but the target)",
+        dtype="numeric",
+        nullable=True,
         min_length=1,
-        description="Numeric features to score (default: every numeric column "
-        "but the target)",
     )
     wrapper: bool = Field(
         default=False,

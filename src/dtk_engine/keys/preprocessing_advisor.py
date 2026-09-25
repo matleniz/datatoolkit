@@ -7,7 +7,7 @@ from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.advisor import advise
-from dtk_engine.params import KeyParams
+from dtk_engine.params import KeyParams, column_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -27,9 +27,9 @@ class Params(KeyParams):
         description="tree | linear | distance | neural: decides scaling, skew and "
         "high-cardinality encoding (empty = advice for every family)",
     )
-    target: str | None = Field(
-        default=None,
-        description="Target column of `source`: excluded from the features, checked "
+    target: str | None = column_field(
+        None,
+        "Target column of `source`: excluded from the features, checked "
         "for missing values, used to detect target-derived columns",
     )
 

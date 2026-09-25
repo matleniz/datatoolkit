@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from pydantic import Field
 
 from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
 from dtk_engine.ops.compare import (
@@ -18,7 +17,7 @@ from dtk_engine.ops.compare import (
     overlap,
     schema_diff,
 )
-from dtk_engine.params import KeyParams
+from dtk_engine.params import KeyParams, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -30,10 +29,11 @@ HISTOGRAM_TOP = 6
 class Params(KeyParams):
     train: SourceSpec = CsvSource(path=TRAIN_CSV)
     test: SourceSpec = CsvSource(path=TEST_CSV)
-    id_columns: list[str] | None = Field(
-        default=None,
-        description="Entity id columns checked for train/test overlap; "
+    id_columns: list[str] | None = columns_field(
+        "Entity id columns checked for train/test overlap; "
         "null = auto (id_like / group_id columns)",
+        source="train",
+        nullable=True,
     )
 
 

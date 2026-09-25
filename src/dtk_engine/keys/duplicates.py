@@ -1,7 +1,6 @@
 """Duplicate rows: exact, partial on identity columns, and conflicting values."""
 
 import pandas as pd
-from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.duplicates import (
@@ -11,7 +10,7 @@ from dtk_engine.ops.duplicates import (
     duplicate_groups,
     exact_duplicates,
 )
-from dtk_engine.params import KeyParams
+from dtk_engine.params import KeyParams, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -28,10 +27,10 @@ ADVICE = (
 
 class Params(KeyParams):
     source: SourceSpec = CsvSource(path=TRAIN_CSV)
-    subset: list[str] | None = Field(
-        default=None,
-        description="Identity columns for partial duplicates; "
+    subset: list[str] | None = columns_field(
+        "Identity columns for partial duplicates; "
         "null = auto (id_like / group_id columns)",
+        nullable=True,
     )
 
 

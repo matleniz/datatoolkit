@@ -1,7 +1,6 @@
 """Inconsistencies: spelling variants, mixed types, ambiguous / mixed date formats."""
 
 import pandas as pd
-from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.consistency import (
@@ -11,7 +10,7 @@ from dtk_engine.ops.consistency import (
     text_columns,
     variants,
 )
-from dtk_engine.params import KeyParams
+from dtk_engine.params import KeyParams, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -19,8 +18,8 @@ from dtk_engine.sources import CsvSource, SourceSpec, load
 
 class Params(KeyParams):
     source: SourceSpec = CsvSource(path=TRAIN_CSV)
-    columns: list[str] | None = Field(
-        default=None, description="Columns to check; null = all text columns"
+    columns: list[str] | None = columns_field(
+        "Columns to check; null = all text columns", nullable=True
     )
 
 

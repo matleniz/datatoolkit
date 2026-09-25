@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from . import keys  # noqa: F401  (registers every key)
 from .errors import KeyParamsError
 from .ops import transforms  # noqa: F401  (registers every transform op)
+from .ops.columns import is_numeric
 from .registry import all_keys, get_key
+from .sources import SourceSpec, load
 from .sources.dataset import workspace_frame
 from .transform_registry import all_transforms, get_transform
 from .workspace import JsonWorkspaceStore, Workspace
@@ -40,6 +42,23 @@ def run_key(key_id: str, params: dict) -> dict:
     except ValidationError as exc:
         raise KeyParamsError(str(exc)) from exc
     return k.run(parsed).model_dump(mode="json")
+
+
+def source_columns(spec: dict) -> list[dict]:
+    """Columns of a source (``{name, dtype, numeric}`` each, file order): the
+    options of a column-selector param (``x-dtk-widget``, see ``params.py``).
+
+    Invalid spec -> KeyParamsError; unreadable source -> SourceError.
+    """
+    try:
+        parsed = TypeAdapter(SourceSpec).validate_python(spec)
+    except ValidationError as exc:
+        raise KeyParamsError(str(exc)) from exc
+    df = load(parsed)
+    return [
+        {"name": str(c), "dtype": str(df[c].dtype), "numeric": is_numeric(df[c])}
+        for c in df.columns
+    ]
 
 
 def list_transforms() -> list[dict]:

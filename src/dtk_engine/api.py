@@ -8,6 +8,9 @@
     api.transform(train, "drop_columns", columns=["Name"])
     api.advise(train, test, model_family="linear", target="Survived")
     api.select_features(train, target="Survived")
+    api.distribution(train, test, columns=["Age", "Sex"])
+    api.target_analysis(train, target="Survived")
+    api.correlations(train, method="spearman")
     api.export_workspace("titanic", "out/")  # parquet + manifest.json
 
 Same code as the keys (``keys/*`` build their Result from the same functions);
@@ -23,6 +26,8 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from dtk_engine.contract import list_transforms, preview_workspace
 from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.keys.column_distribution import distribution_result
+from dtk_engine.keys.correlations import correlations_result
 from dtk_engine.keys.dataset_overview import overview_result
 from dtk_engine.keys.duplicates import duplicates_result
 from dtk_engine.keys.feature_selection import selection_result
@@ -30,6 +35,7 @@ from dtk_engine.keys.inconsistencies import inconsistencies_result
 from dtk_engine.keys.missing_values import missing_result
 from dtk_engine.keys.outliers import outliers_result
 from dtk_engine.keys.preprocessing_advisor import advisor_result
+from dtk_engine.keys.target_analysis import target_result
 from dtk_engine.keys.train_test_check import check_result
 from dtk_engine.result import Result
 from dtk_engine.sources import SourceSpec
@@ -40,6 +46,8 @@ from dtk_engine.workspace.export import export_workspace as _export_workspace
 __all__ = [
     "advise",
     "check",
+    "correlations",
+    "distribution",
     "duplicates",
     "export_workspace",
     "inconsistencies",
@@ -50,6 +58,7 @@ __all__ = [
     "overview",
     "preview_workspace",
     "select_features",
+    "target_analysis",
     "transform",
 ]
 
@@ -166,6 +175,43 @@ def select_features(
     ``select_from_model``, ``drop_correlated``, ``pca``...) as "both" steps.
     """
     return selection_result(df, target, task, columns, wrapper, random_state)
+
+
+def distribution(
+    df: pd.DataFrame,
+    test: pd.DataFrame | None = None,
+    columns: list[str] | None = None,
+    target: str | None = None,
+    by_label: bool = False,
+    bins: int = 30,
+    top_k: int = 10,
+) -> Result:
+    """``column_distribution`` on a DataFrame (``test`` given: train vs test
+    overlay; ``by_label``: split by the classes of ``target``)."""
+    return distribution_result(df, test, columns, target, by_label, bins, top_k)
+
+
+def target_analysis(
+    df: pd.DataFrame,
+    target: str,
+    columns: list[str] | None = None,
+    task: str = "auto",
+    top_k: int = 10,
+    random_state: int = 0,
+) -> Result:
+    """``target_analysis`` on a DataFrame: each feature vs ``target``."""
+    return target_result(df, target, columns, task, top_k, random_state=random_state)
+
+
+def correlations(
+    df: pd.DataFrame,
+    columns: list[str] | None = None,
+    method: str = "pearson",
+    threshold: float = 0.9,
+    target: str | None = None,
+) -> Result:
+    """``correlations`` on a DataFrame: heatmap + pairs with |corr| >= threshold."""
+    return correlations_result(df, columns, method, threshold, target)
 
 
 def export_workspace(

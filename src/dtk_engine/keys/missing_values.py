@@ -13,7 +13,7 @@ from dtk_engine.ops.missing import (
     sentinel_counts,
     value_spikes_vs_train,
 )
-from dtk_engine.params import KeyParams
+from dtk_engine.params import KeyParams, column_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -25,10 +25,9 @@ class Params(KeyParams):
         default=None,
         description="Optional test source: enables the imputation-spike check",
     )
-    target: str | None = Field(
-        default=None,
-        description="Target column of `source`: counts rows missing it "
-        "(drop them first)",
+    target: str | None = column_field(
+        None,
+        "Target column of `source`: counts rows missing it (drop them first)",
     )
 
 
