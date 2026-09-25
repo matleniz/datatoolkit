@@ -6,6 +6,8 @@
     api.overview(train)                      # Result, rendered by _repr_html_
     api.check(train, api.load("test.csv"))
     api.transform(train, "drop_columns", columns=["Name"])
+    api.advise(train, test, model_family="linear", target="Survived")
+    api.export_workspace("titanic", "out/")  # parquet + manifest.json
 
 Same code as the keys (``keys/*`` build their Result from the same functions);
 nothing here is reachable from the JSON contract.
@@ -25,15 +27,19 @@ from dtk_engine.keys.duplicates import duplicates_result
 from dtk_engine.keys.inconsistencies import inconsistencies_result
 from dtk_engine.keys.missing_values import missing_result
 from dtk_engine.keys.outliers import outliers_result
+from dtk_engine.keys.preprocessing_advisor import advisor_result
 from dtk_engine.keys.train_test_check import check_result
 from dtk_engine.result import Result
 from dtk_engine.sources import SourceSpec
 from dtk_engine.sources import load as load_spec
 from dtk_engine.transform_registry import get_transform
+from dtk_engine.workspace.export import export_workspace as _export_workspace
 
 __all__ = [
+    "advise",
     "check",
     "duplicates",
+    "export_workspace",
     "inconsistencies",
     "list_transforms",
     "load",
@@ -123,3 +129,25 @@ def outliers(
 ) -> Result:
     """``outliers`` on a DataFrame."""
     return outliers_result(df, iqr_k, z_threshold, contamination, random_state)
+
+
+def advise(
+    df: pd.DataFrame,
+    test: pd.DataFrame | None = None,
+    model_family: str | None = None,
+    target: str | None = None,
+) -> Result:
+    """``preprocessing_advisor`` on a DataFrame (and an optional test frame).
+
+    Each row of the ``recommendations`` table is a step (``op``, ``target``,
+    ``params``); ``dtk_engine.ops.advisor.as_steps`` lists them for a workspace.
+    """
+    return advisor_result(df, test, model_family, target)
+
+
+def export_workspace(
+    name: str, out_dir: str | Path, overwrite: bool = False, store=None
+) -> dict:
+    """Write the workspace's processed parquet + ``manifest.json`` under ``out_dir``;
+    returns the manifest (see ``dtk_engine.workspace.export``)."""
+    return _export_workspace(name, out_dir, overwrite=overwrite, store=store)

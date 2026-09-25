@@ -3,6 +3,7 @@
 from . import api
 from .contract import (
     delete_workspace,
+    export_workspace,
     get_workspace,
     key_schema,
     list_keys,
@@ -25,6 +26,7 @@ __all__ = [
     "TransformParams",
     "api",
     "delete_workspace",
+    "export_workspace",
     "get_workspace",
     "key",
     "key_schema",

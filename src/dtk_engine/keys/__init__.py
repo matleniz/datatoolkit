@@ -7,5 +7,6 @@ from . import (  # noqa: F401
     inconsistencies,
     missing_values,
     outliers,
+    preprocessing_advisor,
     train_test_check,
 )

@@ -14,7 +14,7 @@ from dtk_engine.sources.registry import load, reader
 from dtk_engine.sources.spec import DatasetSource
 
 
-def _labeled_frame(dataset, label, labeled: bool) -> pd.DataFrame:
+def labeled_frame(dataset, label, labeled: bool) -> pd.DataFrame:
     x = load(dataset.x)
     if dataset.target_column is not None:
         if dataset.target_column not in x.columns:
@@ -45,8 +45,8 @@ def read_dataset(spec: DatasetSource, store=None) -> pd.DataFrame:
     dataset = getattr(ws.datasets, spec.role)
     if dataset is None:
         raise SourceError(f"workspace {ws.name!r} has no {spec.role} dataset")
-    frame = _labeled_frame(dataset, ws.label, spec.labeled)
+    frame = labeled_frame(dataset, ws.label, spec.labeled)
     train = None
     if spec.role == "test" and needs_train(ws.steps):
-        train = _labeled_frame(ws.datasets.train, ws.label, spec.labeled)
+        train = labeled_frame(ws.datasets.train, ws.label, spec.labeled)
     return replay(ws.steps, spec.role, frame, train)
