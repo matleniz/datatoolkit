@@ -21,13 +21,23 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from dtk_engine.contract import list_transforms
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.keys.dataset_overview import overview_result
+from dtk_engine.keys.duplicates import duplicates_result
+from dtk_engine.keys.inconsistencies import inconsistencies_result
 from dtk_engine.keys.train_test_check import check_result
 from dtk_engine.result import Result
 from dtk_engine.sources import SourceSpec
 from dtk_engine.sources import load as load_spec
 from dtk_engine.transform_registry import get_transform
 
-__all__ = ["check", "list_transforms", "load", "overview", "transform"]
+__all__ = [
+    "check",
+    "duplicates",
+    "inconsistencies",
+    "list_transforms",
+    "load",
+    "overview",
+    "transform",
+]
 
 # File suffix -> source kind for `load(path)`; other options need a full spec.
 SUFFIX_KINDS = {".csv": "csv", ".tsv": "csv"}
@@ -72,3 +82,13 @@ def transform(df: pd.DataFrame, op: str, **params) -> pd.DataFrame:
     use ``DtkTransformer``)."""
     t = get_transform(op)
     return t.fit_apply(df, t.parse(params))
+
+
+def duplicates(df: pd.DataFrame, subset: list[str] | None = None) -> Result:
+    """``duplicates`` on a DataFrame (``subset`` null = detected id columns)."""
+    return duplicates_result(df, subset)
+
+
+def inconsistencies(df: pd.DataFrame, columns: list[str] | None = None) -> Result:
+    """``inconsistencies`` on a DataFrame."""
+    return inconsistencies_result(df, columns)
