@@ -62,7 +62,9 @@ class ExcelSource(BaseModel):
     path: str = Field(description="Local path to the .xlsx file")
     sheet: str | int = Field(default=0, description="Sheet name or 0-based index")
     header: int | None = Field(
-        default=0, description="Row number of the header; null = no header"
+        default=0,
+        description="0-based row of the header; null = no header. Sheets with a "
+        "title block above the header need it (file_inspect suggests one)",
     )
     usecols: list[str] | None = Field(default=None, description="Columns to keep")
 
@@ -75,6 +77,10 @@ class JsonSource(BaseModel):
     kind: Literal["json"] = "json"
     path: str = Field(description="Local path to the JSON / JSONL file")
     lines: bool = Field(default=False, description="One JSON record per line (jsonl)")
+    encoding: str = Field(
+        default="utf-8-sig",
+        description="Text encoding; utf-8-sig also reads plain utf-8",
+    )
     record_path: str | None = Field(
         default=None, description="Dotted path to the list of records, e.g. data.items"
     )
