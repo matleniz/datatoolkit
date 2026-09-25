@@ -1,6 +1,7 @@
 """Train vs test consistency: schema, missing rates, ranges, categories, leaks."""
 
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from pydantic import Field
@@ -44,14 +45,19 @@ class Params(KeyParams):
     "a train and a test table, plus row / id overlap (leaks).",
 )
 def run(params: Params) -> Result:
-    train, test = load(params.train), load(params.test)
+    return check_result(load(params.train), load(params.test), params.id_columns)
+
+
+def check_result(
+    train: pd.DataFrame, test: pd.DataFrame, id_columns: list[str] | None = None
+) -> Result:
+    """The key's Result on two DataFrames (shared with ``dtk_engine.api.check``)."""
     schema = schema_diff(train, test)
     columns = compare_columns(train, test)
     both = columns[columns["in_train"] & columns["in_test"]]
-    if params.id_columns is None:
+    if id_columns is None:
         id_columns, missing_ids = auto_id_columns(columns), []
     else:
-        id_columns = params.id_columns
         missing_ids = [c for c in id_columns if c not in set(both["column"])]
     overlap_table = overlap(train, test, id_columns)
     numeric_cols, categorical_cols = drift_columns(train, test, columns)

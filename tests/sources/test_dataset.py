@@ -2,10 +2,10 @@ import pandas as pd
 import pytest
 
 from dtk_engine import run_key, save_workspace
+from dtk_engine import transform_registry as registry
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.sources import DatasetSource, load
-from dtk_engine.workspace import replay as replay_mod
-from dtk_engine.workspace.replay import transform
+from dtk_engine.transform_registry import TransformParams, transform
 
 
 @pytest.fixture
@@ -87,12 +87,14 @@ def test_missing_workspace_or_role(files):
 
 
 def test_steps_replayed_per_role(files, monkeypatch):
-    monkeypatch.setattr(replay_mod, "_TRANSFORMS", {})
+    monkeypatch.setattr(registry, "_TRANSFORMS", {})
 
-    @transform("center_f")
-    def center_f(df, params, fit):
-        ref = df if fit is None else fit
-        return df.assign(f=df["f"] - ref["f"].mean())
+    def fit(df, params):
+        return {"mean": float(df["f"].mean())}
+
+    @transform("center_f", params_model=TransformParams, fit=fit)
+    def center_f(df, params, state):
+        return df.assign(f=df["f"] - state["mean"])
 
     _save(files, steps=[{"op": "center_f", "target": "both"}])
     assert load(DatasetSource(workspace="w"))["f"].tolist() == [-1.0, 0.0, 1.0]

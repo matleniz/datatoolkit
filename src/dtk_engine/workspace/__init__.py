@@ -1,6 +1,7 @@
 """Workspace: engine-side state of a project (datasets, label join, step log).
 
-Transforms and replay live in `dtk_engine.workspace.replay`.
+Replay lives in `dtk_engine.workspace.replay`, the transform registry in
+`dtk_engine.transform_registry`, the ops in `dtk_engine.ops.transforms`.
 """
 
 from dtk_engine.workspace.models import (

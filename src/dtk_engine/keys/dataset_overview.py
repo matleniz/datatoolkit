@@ -37,7 +37,11 @@ class Params(KeyParams):
     ),
 )
 def run(params: Params) -> Result:
-    df = load(params.source)
+    return overview_result(load(params.source), params.head_rows)
+
+
+def overview_result(df: pd.DataFrame, head_rows: int = 5) -> Result:
+    """The key's Result on a DataFrame (shared with ``dtk_engine.api.overview``)."""
     profile = column_profile(df)
     n_cells = df.size
     result = Result(
@@ -52,7 +56,7 @@ def run(params: Params) -> Result:
         }
     )
     result.add_table("columns", profile, group="Overview")
-    result.add_table("head", df.head(params.head_rows), group="Overview")
+    result.add_table("head", df.head(head_rows), group="Overview")
     result.add_figure(
         "% missing per column",
         px.bar(

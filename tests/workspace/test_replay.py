@@ -1,43 +1,52 @@
 import pandas as pd
 import pytest
 
-from dtk_engine.errors import SourceError
+from dtk_engine import transform_registry as registry
+from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.transform_registry import TransformParams, transform
 from dtk_engine.workspace import Step
-from dtk_engine.workspace import replay as replay_mod  # the module
-from dtk_engine.workspace.replay import replay, transform
+from dtk_engine.workspace.replay import replay
+
+
+class AddParams(TransformParams):
+    n: float
 
 
 @pytest.fixture
 def ops(monkeypatch):
-    """Temporary transforms: `add` adds params["n"]; `center` subtracts fit's mean."""
-    registry = {}
-    monkeypatch.setattr(replay_mod, "_TRANSFORMS", registry)
+    """Temporary transforms: `add` adds params.n; `center` subtracts the fitted mean."""
+    fits = []
+    monkeypatch.setattr(registry, "_TRANSFORMS", {})
 
-    @transform("add")
-    def add(df, params, fit):
-        return df + params["n"]
+    @transform("add", params_model=AddParams)
+    def add(df, params, state):
+        return df + params.n
 
-    @transform("center")
-    def center(df, params, fit):
-        ref = df if fit is None else fit
-        return df - ref["v"].mean()
+    def fit_center(df, params):
+        fits.append(df["v"].tolist())
+        return {"mean": float(df["v"].mean())}
 
-    return registry
+    @transform("center", params_model=TransformParams, fit=fit_center)
+    def center(df, params, state):
+        return df - state["mean"]
 
-
-def test_no_op_registered_yet():
-    assert replay_mod.all_transforms() == []
-
-
-def test_duplicate_transform(ops):
-    with pytest.raises(ValueError, match="duplicate"):
-        transform("add")(lambda df, p, f: df)
+    return fits
 
 
 def test_unknown_op_is_clear_error():
-    steps = [Step(op="drop_columns", target="train")]
-    with pytest.raises(SourceError, match="unknown transform op 'drop_columns'"):
+    steps = [Step(op="not_an_op", target="train")]
+    with pytest.raises(SourceError, match="unknown transform op 'not_an_op'"):
         replay(steps, "train", pd.DataFrame({"v": [1]}))
+
+
+def test_invalid_params_fail_before_any_work(ops):
+    steps = [
+        Step(op="center", target="train"),
+        Step(op="add", target="train", params={"m": 1}),
+    ]
+    with pytest.raises(KeyParamsError, match="transform 'add'"):
+        replay(steps, "train", pd.DataFrame({"v": [1.0]}))
+    assert ops == []  # center never fitted
 
 
 def test_empty_steps_is_identity():
@@ -55,6 +64,14 @@ def test_targets(ops):
     assert replay(steps, "test", df)["v"].tolist() == [10]
 
 
+def test_test_only_step_fits_on_test(ops):
+    steps = [Step(op="center", target="test")]
+    assert replay(steps, "test", pd.DataFrame({"v": [4.0, 6.0]}))["v"].tolist() == [
+        -1.0,
+        1.0,
+    ]
+
+
 def test_both_fits_on_train_as_of_the_step(ops):
     train = pd.DataFrame({"v": [0.0, 2.0]})  # mean 1, then 11 after the train step
     test = pd.DataFrame({"v": [20.0]})
@@ -63,6 +80,25 @@ def test_both_fits_on_train_as_of_the_step(ops):
         Step(op="center", target="both"),
     ]
     assert replay(steps, "train", train)["v"].tolist() == [-1.0, 1.0]
+    # test uses the train statistic (11), never its own mean (20)
     assert replay(steps, "test", test, train)["v"].tolist() == [9.0]
+    assert ops[-1] == [10.0, 12.0]
     with pytest.raises(SourceError, match="needs the train frame"):
         replay(steps, "test", test)
+
+
+def test_chained_both_steps_refit_on_transformed_train(ops):
+    train = pd.DataFrame({"v": [0.0, 4.0]})
+    test = pd.DataFrame({"v": [10.0]})
+    steps = [
+        Step(op="add", target="both", params={"n": 1}),
+        Step(op="center", target="both"),
+    ]
+    # second step fits on train after +1: mean 3
+    assert replay(steps, "test", test, train)["v"].tolist() == [8.0]
+
+
+def test_op_failure_names_the_step():
+    steps = [Step(op="drop_columns", target="train", params={"columns": ["nope"]})]
+    with pytest.raises(SourceError, match=r"step 0 \('drop_columns' on train\)"):
+        replay(steps, "train", pd.DataFrame({"v": [1]}))

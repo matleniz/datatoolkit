@@ -6,7 +6,9 @@ from pydantic import ValidationError
 
 from . import keys  # noqa: F401  (registers every key)
 from .errors import KeyParamsError
+from .ops import transforms  # noqa: F401  (registers every transform op)
 from .registry import all_keys, get_key
+from .transform_registry import all_transforms, get_transform
 from .workspace import JsonWorkspaceStore, Workspace
 
 
@@ -33,6 +35,18 @@ def run_key(key_id: str, params: dict) -> dict:
     except ValidationError as exc:
         raise KeyParamsError(str(exc)) from exc
     return k.run(parsed).model_dump(mode="json")
+
+
+def list_transforms() -> list[dict]:
+    return [
+        {"op": t.op, "title": t.title, "description": t.description}
+        for t in all_transforms()
+    ]
+
+
+def transform_schema(op: str) -> dict:
+    """JSON Schema of the op's params; unknown op -> raises UnknownTransformError."""
+    return get_transform(op).params_model.model_json_schema()
 
 
 # Workspaces: stored under $DTK_HOME/workspaces (default ~/.datatoolkit).

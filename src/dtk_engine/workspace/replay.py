@@ -1,62 +1,53 @@
-"""Transform registry and step replay: current state = sources + steps in order.
+"""Step replay: current state = sources + steps in order.
 
-A transform is registered with ``@transform(op)`` and has the signature::
+Each step names a registered transform (``dtk_engine.transform_registry``,
+``fit(df, params) -> state`` then ``apply(df, params, state) -> df``):
 
-    fn(df: pd.DataFrame, params: dict, fit: pd.DataFrame | None) -> pd.DataFrame
+- target "train": fit and apply on train;
+- target "test": fit and apply on test;
+- target "both": fit on train as it was right before this step (earlier train /
+  both steps already replayed), apply that state to train and to test.
 
-``fit`` is the frame the op may learn statistics from (fit-on-train):
-
-- applied to train (target "train" or "both"): ``fit is None`` -> fit on ``df``;
-- applied to test by a "both" step: ``fit`` is the train frame as it was right
-  before this step (earlier train / both steps already replayed), so the op can
-  apply train statistics to test;
-- applied to test by a "test"-only step: ``fit is None``.
-
-No op is registered yet; replaying an unknown op raises a SourceError.
+An unknown op raises a SourceError and invalid params a KeyParamsError, both
+before any work. An op failing on the data (e.g. dropping a missing column)
+raises a SourceError naming the step.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 
 import pandas as pd
 
-from dtk_engine.errors import SourceError
+from dtk_engine.errors import KeyParamsError, SourceError, UnknownTransformError
+from dtk_engine.transform_registry import get_transform
 from dtk_engine.workspace.models import Step
-
-Transform = Callable[[pd.DataFrame, dict, "pd.DataFrame | None"], pd.DataFrame]
-
-_TRANSFORMS: dict[str, Transform] = {}
-
-
-def transform(op: str):
-    """Register ``fn(df, params, fit) -> df`` as the transform ``op``."""
-
-    def decorator(fn: Transform) -> Transform:
-        if op in _TRANSFORMS:
-            raise ValueError(f"duplicate transform op {op!r}")
-        _TRANSFORMS[op] = fn
-        return fn
-
-    return decorator
-
-
-def get_transform(op: str) -> Transform:
-    try:
-        return _TRANSFORMS[op]
-    except KeyError:
-        raise SourceError(
-            f"unknown transform op {op!r}; registered: {sorted(_TRANSFORMS)}"
-        ) from None
-
-
-def all_transforms() -> list[str]:
-    return sorted(_TRANSFORMS)
 
 
 def needs_train(steps: Iterable[Step]) -> bool:
     """True when replaying for test needs the train frame (a "both" step fits on it)."""
     return any(s.target == "both" for s in steps)
+
+
+def _resolve(steps: list[Step]):
+    try:
+        transforms = [get_transform(s.op) for s in steps]
+    except UnknownTransformError as exc:
+        raise SourceError(exc.args[0]) from None
+    return [(s, t, t.parse(s.params)) for s, t in zip(steps, transforms, strict=True)]
+
+
+@contextmanager
+def _step_context(i: int, step: Step) -> Iterator[None]:
+    try:
+        yield
+    except (SourceError, KeyParamsError):
+        raise
+    except (KeyError, ValueError, TypeError) as exc:
+        raise SourceError(
+            f"step {i} ({step.op!r} on {step.target}) failed: {exc}"
+        ) from exc
 
 
 def replay(
@@ -70,17 +61,27 @@ def replay(
     For ``role="test"`` with "both" steps, pass the untransformed ``train`` frame:
     it is replayed alongside so each "both" step fits on train as of that step.
     """
-    fns = [get_transform(s.op) for s in steps]  # fail before doing any work
-    if role == "test" and train is None and needs_train(steps):
-        raise SourceError("replaying a 'both' step on test needs the train frame")
-    for step, fn in zip(steps, fns, strict=True):
-        if role == "train":
+    resolved = _resolve(steps)  # fail before doing any work
+    if role == "train":
+        for i, (step, t, params) in enumerate(resolved):
             if step.target in ("train", "both"):
-                frame = fn(frame, step.params, None)
-            continue
-        fit = train if step.target == "both" else None
-        if step.target in ("test", "both"):
-            frame = fn(frame, step.params, fit)
-        if train is not None and step.target in ("train", "both"):
-            train = fn(train, step.params, None)
+                with _step_context(i, step):
+                    frame = t.fit_apply(frame, params)
+        return frame
+
+    if train is None and needs_train(steps):
+        raise SourceError("replaying a 'both' step on test needs the train frame")
+    # Train only matters up to the last "both" step.
+    last_both = max((i for i, s in enumerate(steps) if s.target == "both"), default=-1)
+    for i, (step, t, params) in enumerate(resolved):
+        with _step_context(i, step):
+            if step.target == "both":
+                state = t.fit(train, params)
+                frame = t.apply(frame, params, state)
+                if i < last_both:
+                    train = t.apply(train, params, state)
+            elif step.target == "test":
+                frame = t.fit_apply(frame, params)
+            elif i < last_both:
+                train = t.fit_apply(train, params)
     return frame
