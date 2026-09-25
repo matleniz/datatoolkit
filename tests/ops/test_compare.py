@@ -1,14 +1,27 @@
+import numpy as np
 import pandas as pd
 import pytest
 from dtk_engine.ops.compare import (
+    CATEGORICAL_DRIFT_FIELDS,
     ISSUE_FIELDS,
+    KS_WARNING,
+    PSI_INFO,
+    PSI_WARNING,
+    SEVERITIES,
+    SMD_WARNING,
     auto_id_columns,
+    categorical_drift,
     category_shift,
     compare_columns,
+    drift_columns,
     find_issues,
+    histogram_pair,
     is_row_counter,
+    ks_statistic,
+    numeric_drift,
     numeric_shift,
     overlap,
+    psi,
     schema_diff,
 )
 
@@ -174,3 +187,111 @@ def test_no_issue_on_identical_tables():
     issues = _issues(df, df.copy(), [])
     # identical tables only share their rows
     assert list(issues["check"]) == ["overlap"]
+
+
+def test_ks_and_psi_identical_and_disjoint():
+    a = np.arange(100, dtype=float)
+    assert ks_statistic(a, a) == 0.0
+    assert psi(a, a) == pytest.approx(0.0)
+    assert ks_statistic(a, a + 1000) == 1.0
+    assert psi(a, a + 1000) > 1.0  # everything lands in the last train bin
+    # constant train column: a shifted test is still detected
+    assert psi(np.ones(20), np.full(20, 5.0)) > 1.0
+
+
+def test_numeric_drift_stats_and_skips():
+    train = pd.DataFrame({"x": np.arange(1000.0), "few": [1.0] + [None] * 999})
+    test = pd.DataFrame({"x": np.arange(1000.0) + 500, "few": np.arange(1000.0)})
+    out = numeric_drift(train, test, ["x", "few"]).set_index("column")
+    x = out.loc["x"]
+    assert x["smd"] == pytest.approx(500 / np.std(np.arange(1000.0), ddof=1))
+    assert x["ks"] == pytest.approx(0.5)
+    assert x["psi"] > PSI_WARNING
+    assert x["pct_test_above_train_p99"] == 51.0  # test values 990..1499
+    assert x["pct_test_below_train_p1"] == 0.0
+    assert x["pct_test_outside_train_range"] == 50.0
+    assert (x["p1_train"], x["median_test"]) == (pytest.approx(9.99), 999.5)
+    assert out.loc["few", "skipped"] == "< 2 non-null values in train"
+    assert pd.isna(out.loc["few", "psi"])
+    assert pd.isna(x["skipped"])
+
+
+def test_numeric_drift_ignores_nan():
+    train = pd.DataFrame({"x": [1.0, 2.0, 3.0, None, None]})
+    same = numeric_drift(train, train, ["x"]).iloc[0]
+    assert same["ks"] == 0.0 and same["smd"] == 0.0 and same["mean_train"] == 2.0
+
+
+def test_categorical_drift_long_table():
+    train = pd.DataFrame({"c": ["a"] * 6 + ["b"] * 4 + [None]})
+    test = pd.DataFrame({"c": ["a"] * 2 + ["b"] * 2 + ["z"] * 6})
+    out = categorical_drift(train, test, ["c"], top=2)
+    assert list(out.columns) == CATEGORICAL_DRIFT_FIELDS
+    assert out["tvd"].iloc[0] == pytest.approx(0.6)  # full distribution, not top 2
+    assert set(out["value"]) == {"z", "a"}  # top 2 by max share
+    row = out.set_index("value").loc["a"]
+    assert (row["pct_train"], row["pct_test"], row["diff"]) == (60.0, 20.0, -40.0)
+    assert categorical_drift(train, test, []).empty
+
+
+def test_drift_columns_exclude_ids_and_counters():
+    train = pd.DataFrame(
+        {
+            "Index": range(30),
+            "pid": [f"P{i}" for i in range(30)],
+            "x": np.linspace(0, 1, 30),
+            "cat": ["a", "b"] * 15,
+        }
+    )
+    columns = compare_columns(train, train)
+    numeric, categorical = drift_columns(train, train, columns)
+    assert numeric == ["x"] and categorical == ["cat"]
+
+
+def test_histogram_pair_shares_bins_and_normalizes():
+    edges, d_train, d_test = histogram_pair(
+        pd.Series([0.0, 1.0, 2.0]), pd.Series([1.0, 9.0, None]), bins=5
+    )
+    assert len(edges) == 6 and edges[0] == 0.0 and edges[-1] == 9.0
+    assert d_train.sum() == pytest.approx(1.0) and d_test.sum() == pytest.approx(1.0)
+
+
+def test_find_issues_drift_severities():
+    train = pd.DataFrame({"x": np.arange(1000.0), "c": ["a"] * 500 + ["b"] * 500})
+    test = pd.DataFrame({"x": np.arange(1000.0) + 500, "c": ["a"] * 900 + ["b"] * 100})
+    columns = compare_columns(train, test)
+    num = numeric_drift(train, test, ["x"])
+    cat = categorical_drift(train, test, ["c"])
+    issues = find_issues(train, test, columns, overlap(train, test, []), (), num, cat)
+    drift = issues[issues["check"] == "drift"].set_index("column")
+    assert drift.loc["x", "severity"] == "warning"
+    assert "PSI" in drift.loc["x", "message"] and "KS" in drift.loc["x", "message"]
+    assert drift.loc["c", "severity"] == "warning"
+    assert len(drift) == 2  # one finding per column
+    assert list(issues["severity"]) == sorted(issues["severity"], key=SEVERITIES.index)
+
+
+def test_find_issues_drift_info_band():
+    rng = np.random.default_rng(0)
+    train = pd.DataFrame({"x": rng.normal(0, 1, 5000)})
+    test = pd.DataFrame({"x": rng.normal(0.2, 1, 5000)})
+    num = numeric_drift(train, test, ["x"]).iloc[0]
+    assert num["smd"] < SMD_WARNING and num["ks"] < KS_WARNING
+    assert num["psi"] < PSI_INFO
+    out = find_issues(
+        train,
+        test,
+        compare_columns(train, test),
+        overlap(train, test, []),
+        (),
+        numeric_drift(train, test, ["x"]),
+    )
+    drift = out[out["check"] == "drift"]
+    assert drift["severity"].tolist() == ["info"]  # 1-5% outside train p1-p99
+
+
+def test_find_issues_without_drift_tables_unchanged():
+    train = pd.DataFrame({"x": [1.0, 2.0]})
+    columns = compare_columns(train, train)
+    out = find_issues(train, train, columns, overlap(train, train, []))
+    assert "drift" not in set(out["check"])

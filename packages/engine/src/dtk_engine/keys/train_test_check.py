@@ -1,13 +1,19 @@
 """Train vs test consistency: schema, missing rates, ranges, categories, leaks."""
 
+import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 from pydantic import Field
 
 from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
 from dtk_engine.ops.compare import (
     auto_id_columns,
+    categorical_drift,
     compare_columns,
+    drift_columns,
     find_issues,
+    histogram_pair,
+    numeric_drift,
     overlap,
     schema_diff,
 )
@@ -15,6 +21,9 @@ from dtk_engine.params import KeyParams
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
+
+# Overlaid train/test histograms for the most drifted numeric columns.
+HISTOGRAM_TOP = 6
 
 
 class Params(KeyParams):
@@ -45,7 +54,12 @@ def run(params: Params) -> Result:
         id_columns = params.id_columns
         missing_ids = [c for c in id_columns if c not in set(both["column"])]
     overlap_table = overlap(train, test, id_columns)
-    issues = find_issues(train, test, columns, overlap_table, missing_ids)
+    numeric_cols, categorical_cols = drift_columns(train, test, columns)
+    num_drift = numeric_drift(train, test, numeric_cols)
+    cat_drift = categorical_drift(train, test, categorical_cols)
+    issues = find_issues(
+        train, test, columns, overlap_table, missing_ids, num_drift, cat_drift
+    )
 
     result = Result(
         metrics={
@@ -56,11 +70,19 @@ def run(params: Params) -> Result:
             "n_issues": len(issues),
             "n_errors": int((issues["severity"] == "error").sum()),
             "n_warnings": int((issues["severity"] == "warning").sum()),
+            "n_drifted": int(
+                issues.loc[
+                    (issues["check"] == "drift") & (issues["severity"] == "warning"),
+                    "column",
+                ].nunique()
+            ),
         }
     )
     result.add_table("issues", issues)
     result.add_table("columns", columns)
     result.add_table("overlap", overlap_table)
+    result.add_table("numeric_drift", num_drift)
+    result.add_table("categorical_drift", cat_drift)
     missing = both.melt(
         id_vars="column",
         value_vars=["pct_missing_train", "pct_missing_test"],
@@ -79,4 +101,26 @@ def run(params: Params) -> Result:
             labels={"pct_missing": "% missing"},
         ),
     )
+    ranked = num_drift.dropna(subset=["psi"]).sort_values("psi", ascending=False)
+    for col in ranked["column"].head(HISTOGRAM_TOP):
+        edges, dens_train, dens_test = histogram_pair(train[col], test[col])
+        fig = go.Figure(
+            [
+                go.Bar(
+                    x=edges[:-1],
+                    y=dens,
+                    width=np.diff(edges),
+                    name=side,
+                    offset=0,
+                    opacity=0.55,
+                )
+                for side, dens in (("train", dens_train), ("test", dens_test))
+            ]
+        )
+        fig.update_layout(
+            barmode="overlay",
+            xaxis_title=col,
+            yaxis_title="share of rows",
+        )
+        result.add_figure(f"{col}: train vs test", fig)
     return result
