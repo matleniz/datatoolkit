@@ -12,11 +12,13 @@ from pydantic import BaseModel, Field
 class Table(BaseModel):
     title: str
     records: list[dict[str, Any]]
+    group: str | None = None
 
 
 class Figure(BaseModel):
     title: str
     plotly: dict[str, Any]
+    group: str | None = None
 
 
 class Result(BaseModel):
@@ -25,14 +27,16 @@ class Result(BaseModel):
     figures: list[Figure] = Field(default_factory=list)
     text: str = ""
 
-    def add_figure(self, title: str, fig: Any) -> None:
-        """Attach a Plotly figure as JSON."""
-        self.figures.append(Figure(title=title, plotly=json.loads(fig.to_json())))
+    def add_figure(self, title: str, fig: Any, group: str | None = None) -> None:
+        """Attach a Plotly figure as JSON; `group` lets a front bucket it in a tab."""
+        self.figures.append(
+            Figure(title=title, plotly=json.loads(fig.to_json()), group=group)
+        )
 
-    def add_table(self, title: str, df: pd.DataFrame) -> None:
-        """Attach a DataFrame as JSON-safe records."""
+    def add_table(self, title: str, df: pd.DataFrame, group: str | None = None) -> None:
+        """Attach a DataFrame as JSON-safe records; `group` buckets it in a tab."""
         records = json.loads(df.to_json(orient="records"))
-        self.tables.append(Table(title=title, records=records))
+        self.tables.append(Table(title=title, records=records, group=group))
 
     def show(self) -> None:
         """Render in a notebook: print metrics, show each figure."""

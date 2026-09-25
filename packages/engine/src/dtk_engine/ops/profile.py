@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
@@ -142,3 +143,279 @@ def column_profile(df: pd.DataFrame) -> pd.DataFrame:
         "sample_values",
     ]
     return pd.DataFrame(rows, columns=columns)
+
+
+# --- Per-semantic-type statistics -------------------------------------------------
+
+MISSING_LABEL = "(missing)"
+# A categorical value below this share of the rows counts as "rare".
+RARE_PCT = 1.0
+OUTLIER_IQR_K = 1.5
+OUTLIER_Z = 3.0
+HIST_BINS = 30
+
+_QUANTILES = {
+    "p1": 0.01,
+    "p5": 0.05,
+    "q1": 0.25,
+    "median": 0.5,
+    "q3": 0.75,
+    "p95": 0.95,
+    "p99": 0.99,
+}
+
+NUMERIC_STATS_COLUMNS = [
+    "column",
+    "count",
+    "mean",
+    "std",
+    "min",
+    *_QUANTILES,
+    "max",
+    "skew",
+    "kurtosis",
+    "n_zeros",
+    "n_negative",
+    "n_outliers_iqr",
+    "pct_outliers_iqr",
+    "n_outliers_z",
+    "pct_outliers_z",
+]
+
+
+def semantic_types(df: pd.DataFrame) -> dict[str, str]:
+    """Semantic type of every column (compute once, reuse across the stats below)."""
+    return {str(name): semantic_type(df[name]) for name in df.columns}
+
+
+def columns_of_type(
+    df: pd.DataFrame, *types: str, semantic: dict[str, str] | None = None
+) -> list[str]:
+    """Names of the columns whose semantic type is in `types` (df order).
+
+    Pass `semantic` (from `semantic_types`) to avoid re-classifying the columns.
+    """
+    semantic = semantic if semantic is not None else semantic_types(df)
+    return [str(c) for c in df.columns if semantic[str(c)] in types]
+
+
+def _pct(count: float, total: float) -> float:
+    return round(100 * count / total, 2) if total else 0.0
+
+
+def _numeric_row(name: str, col: pd.Series) -> dict:
+    values = col.dropna().astype(float)
+    n = len(values)
+    nan = float("nan")
+    row: dict = {"column": name, "count": n}
+    if n:
+        q = dict(
+            zip(_QUANTILES, values.quantile(list(_QUANTILES.values())), strict=True)
+        )
+    else:
+        q = dict.fromkeys(_QUANTILES, nan)
+    mean = values.mean() if n else nan
+    std = values.std() if n > 1 else nan
+    row.update(
+        mean=mean,
+        std=std,
+        min=values.min() if n else nan,
+        **q,
+        max=values.max() if n else nan,
+        skew=values.skew() if n > 2 else nan,
+        kurtosis=values.kurt() if n > 3 else nan,
+        n_zeros=int((values == 0).sum()),
+        n_negative=int((values < 0).sum()),
+    )
+    n_iqr = n_z = 0
+    if n:
+        iqr = q["q3"] - q["q1"]
+        lo, hi = q["q1"] - OUTLIER_IQR_K * iqr, q["q3"] + OUTLIER_IQR_K * iqr
+        n_iqr = int(((values < lo) | (values > hi)).sum())
+        if std and not np.isnan(std):
+            n_z = int((((values - mean) / std).abs() > OUTLIER_Z).sum())
+    row.update(
+        n_outliers_iqr=n_iqr,
+        pct_outliers_iqr=_pct(n_iqr, n),
+        n_outliers_z=n_z,
+        pct_outliers_z=_pct(n_z, n),
+    )
+    return row
+
+
+def numeric_stats(
+    df: pd.DataFrame, semantic: dict[str, str] | None = None
+) -> pd.DataFrame:
+    """One row per numeric column: moments, quantiles, shape, zeros, outliers.
+
+    Outliers: outside [q1 - 1.5 IQR, q3 + 1.5 IQR] (`*_iqr`) or |z| > 3 (`*_z`);
+    the pct is over the non-null count. Missing values are ignored.
+    """
+    names = columns_of_type(df, "numeric", semantic=semantic)
+    rows = [_numeric_row(name, df[name]) for name in names]
+    return pd.DataFrame(rows, columns=NUMERIC_STATS_COLUMNS)
+
+
+def numeric_histograms(
+    df: pd.DataFrame, bins: int = HIST_BINS, semantic: dict[str, str] | None = None
+) -> pd.DataFrame:
+    """Long-format histogram of the numeric columns: column, bin_left, bin_right, count."""
+    frames = []
+    for name in columns_of_type(df, "numeric", semantic=semantic):
+        values = df[name].dropna().astype(float).to_numpy()
+        if not len(values):
+            continue
+        counts, edges = np.histogram(values, bins=bins)
+        frames.append(
+            pd.DataFrame(
+                {
+                    "column": name,
+                    "bin_left": edges[:-1],
+                    "bin_right": edges[1:],
+                    "count": counts,
+                }
+            )
+        )
+    if not frames:
+        return pd.DataFrame(columns=["column", "bin_left", "bin_right", "count"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def category_values(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Long format `column, value, count, pct`: every value of each column.
+
+    Missing values appear as their own value (`MISSING_LABEL`); pct is over all
+    rows. Sorted by column name, then count descending (ties by value).
+    """
+    n_rows = len(df)
+    frames = []
+    for name in columns:
+        counts = df[name].value_counts(dropna=False)
+        frames.append(
+            pd.DataFrame(
+                {
+                    "column": str(name),
+                    "value": [
+                        MISSING_LABEL if pd.isna(v) else str(v) for v in counts.index
+                    ],
+                    "count": counts.to_numpy(),
+                }
+            )
+        )
+    if frames:
+        out = pd.concat(frames, ignore_index=True)
+    else:
+        out = pd.DataFrame(columns=["column", "value", "count"])
+    out["pct"] = [_pct(c, n_rows) for c in out["count"]]
+    out = out.sort_values(
+        ["column", "count", "value"], ascending=[True, False, True], kind="stable"
+    )
+    return out.reset_index(drop=True)
+
+
+def category_summary(
+    df: pd.DataFrame, semantic: dict[str, str] | None = None
+) -> pd.DataFrame:
+    """Per categorical / boolean column: cardinality, top value, rare-value mass.
+
+    `top_pct` and `pct_rare` are over all rows; `pct_rare` = % of rows holding a
+    value that itself covers < RARE_PCT % of the rows.
+    """
+    n_rows = len(df)
+    rows = []
+    for name in columns_of_type(df, "categorical", "boolean", semantic=semantic):
+        counts = df[name].value_counts()
+        rare = counts[counts * 100 < RARE_PCT * n_rows].sum()
+        rows.append(
+            {
+                "column": name,
+                "n_unique": len(counts),
+                "top_value": str(counts.index[0]) if len(counts) else None,
+                "top_pct": _pct(counts.iloc[0], n_rows) if len(counts) else 0.0,
+                "pct_rare": _pct(rare, n_rows),
+            }
+        )
+    return pd.DataFrame(
+        rows, columns=["column", "n_unique", "top_value", "top_pct", "pct_rare"]
+    )
+
+
+def datetime_stats(
+    df: pd.DataFrame, semantic: dict[str, str] | None = None
+) -> pd.DataFrame:
+    """Per datetime column: count, min, max (ISO strings) and span in days."""
+    rows = []
+    for name in columns_of_type(df, "datetime", semantic=semantic):
+        col = df[name]
+        if not pdt.is_datetime64_any_dtype(col):
+            col = pd.to_datetime(col, errors="coerce", format="ISO8601")
+        values = col.dropna()
+        row = {"column": name, "count": len(values), "min": None, "max": None}
+        row["span_days"] = None
+        if len(values):
+            lo, hi = values.min(), values.max()
+            row.update(
+                min=lo.isoformat(),
+                max=hi.isoformat(),
+                span_days=round((hi - lo).total_seconds() / 86400, 2),
+            )
+        rows.append(row)
+    return pd.DataFrame(rows, columns=["column", "count", "min", "max", "span_days"])
+
+
+def text_stats(
+    df: pd.DataFrame, semantic: dict[str, str] | None = None
+) -> pd.DataFrame:
+    """Per text column: count, distinct values, mean / min / max string length."""
+    rows = []
+    for name in columns_of_type(df, "text", semantic=semantic):
+        values = df[name].dropna().astype(str)
+        lengths = values.str.len()
+        rows.append(
+            {
+                "column": name,
+                "count": len(values),
+                "n_unique": int(values.nunique()),
+                "mean_len": round(float(lengths.mean()), 2) if len(values) else None,
+                "min_len": int(lengths.min()) if len(values) else None,
+                "max_len": int(lengths.max()) if len(values) else None,
+            }
+        )
+    return pd.DataFrame(
+        rows, columns=["column", "count", "n_unique", "mean_len", "min_len", "max_len"]
+    )
+
+
+def id_stats(df: pd.DataFrame, semantic: dict[str, str] | None = None) -> pd.DataFrame:
+    """Per id_like / group_id column: distinct values and repeated identifiers.
+
+    `n_duplicates` = non-null values minus distinct values (rows repeating an
+    already-seen id): ~0 expected for id_like, large for a group_id.
+    """
+    semantic = semantic if semantic is not None else semantic_types(df)
+    rows = []
+    for name in columns_of_type(df, "id_like", "group_id", semantic=semantic):
+        values = df[name].dropna()
+        n_unique = int(values.nunique())
+        n_dup = len(values) - n_unique
+        rows.append(
+            {
+                "column": name,
+                "semantic_type": semantic[name],
+                "count": len(values),
+                "n_unique": n_unique,
+                "n_duplicates": n_dup,
+                "pct_duplicates": _pct(n_dup, len(values)),
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "column",
+            "semantic_type",
+            "count",
+            "n_unique",
+            "n_duplicates",
+            "pct_duplicates",
+        ],
+    )

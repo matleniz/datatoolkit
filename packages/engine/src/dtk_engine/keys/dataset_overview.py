@@ -1,10 +1,21 @@
 """First look at one table: shape, memory, per-column profile, head."""
 
+import pandas as pd
 import plotly.express as px
 from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
-from dtk_engine.ops.profile import column_profile
+from dtk_engine.ops.profile import (
+    category_summary,
+    category_values,
+    column_profile,
+    columns_of_type,
+    datetime_stats,
+    id_stats,
+    numeric_histograms,
+    numeric_stats,
+    text_stats,
+)
 from dtk_engine.params import KeyParams
 from dtk_engine.registry import key
 from dtk_engine.result import Result
@@ -20,7 +31,10 @@ class Params(KeyParams):
     id="dataset_overview",
     title="Dataset overview",
     category="analysis",
-    description="Shape, memory, per-column dtype / semantic type / missing / uniques, head.",
+    description=(
+        "Shape, memory, per-column profile, head, then per-semantic-type tabs: "
+        "numeric stats, category values, datetime, text, ids."
+    ),
 )
 def run(params: Params) -> Result:
     df = load(params.source)
@@ -37,12 +51,69 @@ def run(params: Params) -> Result:
             "n_duplicate_rows": int(df.duplicated().sum()),
         }
     )
-    result.add_table("columns", profile)
-    result.add_table("head", df.head(params.head_rows))
+    result.add_table("columns", profile, group="Overview")
+    result.add_table("head", df.head(params.head_rows), group="Overview")
     result.add_figure(
         "% missing per column",
         px.bar(
             profile, x="column", y="pct_missing", labels={"pct_missing": "% missing"}
         ),
+        group="Overview",
+    )
+    _add_type_groups(
+        result, df, dict(zip(profile["column"], profile["semantic_type"], strict=True))
     )
     return result
+
+
+def _histogram_grid(hist: pd.DataFrame):
+    hist = hist.assign(bin_mid=(hist["bin_left"] + hist["bin_right"]) / 2)
+    fig = px.bar(
+        hist,
+        x="bin_mid",
+        y="count",
+        facet_col="column",
+        facet_col_wrap=3,
+        facet_row_spacing=0.08,
+        height=260 * -(-hist["column"].nunique() // 3) + 60,
+    )
+    fig.update_xaxes(matches=None, showticklabels=True, title=None)
+    fig.update_yaxes(matches=None, title=None)
+    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+    return fig
+
+
+def _add_type_groups(
+    result: Result, df: pd.DataFrame, semantic: dict[str, str]
+) -> None:
+    """One tab per semantic type that has columns (numeric, categorical, ...)."""
+
+    numeric = numeric_stats(df, semantic)
+    if not numeric.empty:
+        result.add_table("numeric stats", numeric, group="Numeric")
+        result.add_figure(
+            "distributions",
+            _histogram_grid(numeric_histograms(df, semantic=semantic)),
+            group="Numeric",
+        )
+
+    cat_columns = columns_of_type(df, "categorical", "boolean", semantic=semantic)
+    if cat_columns:
+        result.add_table(
+            "category summary", category_summary(df, semantic), group="Categorical"
+        )
+        result.add_table(
+            "category values", category_values(df, cat_columns), group="Categorical"
+        )
+
+    datetimes = datetime_stats(df, semantic)
+    if not datetimes.empty:
+        result.add_table("datetime stats", datetimes, group="Datetime")
+
+    texts = text_stats(df, semantic)
+    if not texts.empty:
+        result.add_table("text stats", texts, group="Text")
+
+    ids = id_stats(df, semantic)
+    if not ids.empty:
+        result.add_table("id stats", ids, group="IDs")
