@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+
 from dtk_engine.ops.compare import (
     CATEGORICAL_DRIFT_FIELDS,
     ISSUE_FIELDS,

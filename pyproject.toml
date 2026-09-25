@@ -1,33 +1,22 @@
 [project]
-name = "datatoolkit"
+name = "dtk-engine"
 version = "0.1.0"
-description = "datatoolkit workspace root"
+description = "datatoolkit engine: keys, registry, JSON contract"
 requires-python = ">=3.11"
-dependencies = ["dtk-engine", "dtk-streamlit"]
+dependencies = ["pydantic>=2", "pandas", "plotly"]
 
 [dependency-groups]
 dev = ["ruff", "pytest"]
 
-[tool.uv]
-package = false
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.uv.workspace]
-members = ["packages/engine", "packages/front-streamlit"]
-
-[tool.uv.sources]
-dtk-engine = { workspace = true }
-dtk-streamlit = { workspace = true }
+[tool.hatch.build.targets.wheel]
+packages = ["src/dtk_engine"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff.lint]
-extend-select = ["I", "TID"]
-
-[tool.ruff.lint.flake8-tidy-imports.banned-api]
-"dtk_engine".msg = "The front must not import the engine; go through dtk_streamlit.client (see ARCHITECTURE.md in ~/datatoolkit-hub)."
-
-[tool.ruff.lint.per-file-ignores]
-"packages/front-streamlit/src/dtk_streamlit/client.py" = ["TID251"]
-"packages/engine/**" = ["TID251"]
-"tests/**" = ["TID251"]
+extend-select = ["I"]

@@ -1,5 +1,6 @@
 import pandas as pd
 import pytest
+
 from dtk_engine.ops.join import (
     LabelJoinError,
     is_index_like,

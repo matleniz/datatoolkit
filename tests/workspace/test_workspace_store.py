@@ -1,8 +1,9 @@
 import pytest
+from pydantic import ValidationError
+
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.workspace import JsonWorkspaceStore, Workspace, WorkspaceNotFoundError
 from dtk_engine.workspace.store import default_root
-from pydantic import ValidationError
 
 
 def _ws(name="demo", **kw):
