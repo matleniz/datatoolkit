@@ -6,6 +6,7 @@ import pytest
 
 from dtk_engine import api, run_key
 from dtk_engine.demo_data import TRAIN_CSV
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.transform_registry import get_transform
 
 
@@ -57,3 +58,35 @@ def test_api_door_planted_and_suggested_steps_are_valid():
 def test_unknown_target():
     with pytest.raises(ValueError, match="target"):
         api.select_features(api.load(TRAIN_CSV), target="nope")
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"target": "nope"},
+        {"columns": ["Name"]},
+        {"columns": ["Survived"]},
+        {"columns": ["nope"]},
+        {"target": "Name", "task": "regression"},
+    ],
+)
+def test_bad_params_raise_key_params_error(params):
+    with pytest.raises(KeyParamsError):
+        run_key("feature_selection", params)
+
+
+def test_no_numeric_feature_gives_encode_first_result():
+    df = pd.DataFrame(
+        {
+            "city": ["Paris", "Lyon", "Nice"] * 10,
+            "size": ["S", "M", "L"] * 10,
+            "amount": np.arange(30.0),
+        }
+    )
+    res = api.select_features(df, target="amount")
+    assert res.metrics["n_features"] == 0
+    assert res.metrics["n_non_numeric_columns"] == 2
+    steps = next(t for t in res.tables if t.title == "encode_first_steps").records
+    assert {s["op"] for s in steps} >= {"onehot", "ordinal"}
+    assert "re-run feature_selection" in res.text
+    json.dumps(res.model_dump())

@@ -7,6 +7,8 @@ import plotly.express as px
 from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
+from dtk_engine.errors import KeyParamsError
+from dtk_engine.ops.advisor import advise
 from dtk_engine.ops.selection import (
     COLLINEAR_CORR,
     FAMILIES,
@@ -77,9 +79,20 @@ def selection_result(
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.select_features``)."""
     if target not in df.columns:
-        raise ValueError(f"feature_selection: target {target!r} not in the frame")
-    columns = candidate_columns(df, target, columns, "feature_selection")
+        raise KeyParamsError(f"feature_selection: target {target!r} not in the frame")
+    if df[target].notna().sum() == 0:
+        raise KeyParamsError(f"feature_selection: target {target!r} is all missing")
     task = resolve_task(df[target], task)
+    if task == "regression" and not pd.api.types.is_numeric_dtype(df[target]):
+        raise KeyParamsError(
+            f"feature_selection: regression needs a numeric target, {target!r} is not"
+        )
+    if columns is None and not _numeric_features(df, target):
+        return _encode_first_result(df, target, task)
+    try:
+        columns = candidate_columns(df, target, columns, "feature_selection")
+    except (KeyError, ValueError) as exc:
+        raise KeyParamsError(exc.args[0]) from exc
     scores = feature_scores(df, target, task, columns, wrapper, random_state)
     pairs = collinear_pairs(df, columns)
     constant = near_constant(df, columns)
@@ -116,6 +129,40 @@ def selection_result(
         "PCA cumulative explained variance (standardized features)",
         px.line(pca_table, x="component", y="cumulative", markers=True),
     )
+    return result
+
+
+def _numeric_features(df: pd.DataFrame, target: str) -> list[str]:
+    return [
+        str(c)
+        for c in df.columns
+        if c != target and pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+
+def _encode_first_result(df: pd.DataFrame, target: str, task: str) -> Result:
+    """No numeric feature to score: the advisor's preparation steps (encode the
+    categories, parse dates, drop what cannot be a feature), then re-run."""
+    steps, summary = advise(df, target=target)
+    features = summary[summary["column"] != target]
+    result = Result(
+        metrics={
+            "task": task,
+            "n_rows": len(df),
+            "n_features": 0,
+            "n_non_numeric_columns": len(features),
+            "n_encode_steps": len(steps),
+        },
+        text=(
+            f"No numeric feature besides the target {target!r}: selection scores "
+            "need numbers. Apply the encode-first steps (preprocessing_advisor: "
+            "onehot / ordinal for categories, datetime_parts for dates, drops for "
+            "ids / free text), then re-run feature_selection on the encoded table."
+        ),
+    )
+    result.add_table("non_numeric_columns", features)
+    result.add_table("encode_first_steps", steps)
+    result.add_table("families", FAMILIES)
     return result
 
 

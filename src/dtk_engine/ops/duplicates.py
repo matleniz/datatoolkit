@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from dtk_engine.ops.profile import columns_of_type
+from dtk_engine.ops.profile import columns_of_type, hashable_frame
 
 ID_TYPES = ("id_like", "group_id")
 
@@ -17,18 +17,9 @@ def default_subset(df: pd.DataFrame) -> list[str]:
     return columns_of_type(df, *ID_TYPES)
 
 
-def _hashable(df: pd.DataFrame) -> pd.DataFrame:
-    """Copy where unhashable cells (lists, dicts) become strings."""
-    out = df.copy()
-    for col in out.columns:
-        if out[col].map(lambda v: isinstance(v, list | dict | set)).any():
-            out[col] = out[col].astype(str)
-    return out
-
-
 def exact_duplicates(df: pd.DataFrame) -> tuple[int, pd.DataFrame]:
     """(n redundant rows, all rows involved in a duplicate set, keep=False)."""
-    flat = _hashable(df)
+    flat = hashable_frame(df)
     n_redundant = int(flat.duplicated().sum())
     involved = df[flat.duplicated(keep=False).to_numpy()]
     return n_redundant, involved
@@ -37,7 +28,7 @@ def exact_duplicates(df: pd.DataFrame) -> tuple[int, pd.DataFrame]:
 def duplicate_groups(df: pd.DataFrame, subset: list[str]) -> pd.DataFrame:
     """Rows sharing their ``subset`` values with another row (keep=False), plus a
     ``duplicate_group`` number, grouped together and sorted by group."""
-    flat = _hashable(df)
+    flat = hashable_frame(df)
     mask = flat.duplicated(subset=subset, keep=False).to_numpy()
     rows = df[mask].copy()
     if rows.empty:
@@ -60,7 +51,7 @@ def conflicts(df: pd.DataFrame, subset: list[str]) -> tuple[pd.DataFrame, pd.Dat
         return empty, groups
     n_groups = int(groups[GROUP_COLUMN].nunique())
     others = [c for c in df.columns if c not in subset]
-    flat = _hashable(groups)
+    flat = hashable_frame(groups)
     disagree = pd.DataFrame(
         {c: flat.groupby(GROUP_COLUMN)[c].nunique(dropna=False) > 1 for c in others},
         index=pd.Index(sorted(flat[GROUP_COLUMN].unique()), name=GROUP_COLUMN),

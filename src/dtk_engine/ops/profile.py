@@ -15,6 +15,8 @@ SEMANTIC_TYPES = (
     "id_like",
     "group_id",
     "constant",
+    "nested",
+    "binary",
 )
 
 # Distinct / non-null ratios: above ID_UNIQUE_RATIO an integer or spaceless string
@@ -37,6 +39,61 @@ GROUP_MIN_UNIQUE = 100
 GROUP_MIN_RATIO = 0.01
 GROUP_RANGE_DENSITY = 0.5
 N_SAMPLES = 3
+# Longer sample values (a WKB geometry, a big JSON list) are cut to this many chars.
+SAMPLE_MAX_CHARS = 60
+
+# Object cells that break hashing (nunique, duplicated, value_counts) or text
+# conversion (bytes are not UTF-8): list / dict / ndarray from nested JSON or
+# Parquet, bytes from GeoParquet WKB or blob columns.
+NESTED_CELL_TYPES = (list, tuple, dict, set, frozenset, np.ndarray)
+BINARY_CELL_TYPES = (bytes, bytearray, memoryview)
+
+
+def object_kind(series: pd.Series) -> str | None:
+    """The kind of an object column holding such cells ("nested" / "binary"), else None."""
+    if series.dtype != object:
+        return None
+    values = series.dropna()
+    if values.map(lambda v: isinstance(v, NESTED_CELL_TYPES)).any():
+        return "nested"
+    if values.map(lambda v: isinstance(v, BINARY_CELL_TYPES)).any():
+        return "binary"
+    return None
+
+
+def _cell_key(value: object) -> object:
+    if isinstance(value, np.ndarray):
+        return repr(value.tolist())
+    if isinstance(value, NESTED_CELL_TYPES):
+        return repr(value)
+    if isinstance(value, memoryview | bytearray):
+        return repr(bytes(value))
+    return value
+
+
+def hashable(series: pd.Series) -> pd.Series:
+    """`series` with nested cells replaced by their repr (hashable, comparable);
+    bytes stay bytes. Unchanged (same object) when there is nothing to convert."""
+    if object_kind(series) is None:
+        return series
+    return series.map(_cell_key)
+
+
+def hashable_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """`df` safe for duplicated / groupby / nunique (see `hashable`)."""
+    if not any(object_kind(df[c]) for c in df.columns):
+        return df
+    out = df.copy()
+    for i in range(out.shape[1]):
+        out.isetitem(i, hashable(out.iloc[:, i]))
+    return out
+
+
+def as_text(series: pd.Series) -> pd.Series:
+    """`series.astype(str)` that survives nested and non-UTF-8 bytes cells."""
+    if object_kind(series) is None:
+        return series.astype(str)
+    return series.map(lambda v: str(_cell_key(v))).astype(str)
 
 
 def _parses_as_datetime(strings: pd.Series) -> bool:
@@ -59,9 +116,12 @@ def _group_band(n_unique: int, ratio: float) -> bool:
 def semantic_type(series: pd.Series) -> str:
     """Classify a column into one of SEMANTIC_TYPES from its dtype and values."""
     values = series.dropna()
-    n_unique = values.nunique()
+    kind = object_kind(values)
+    n_unique = hashable(values).nunique()
     if n_unique <= 1:
         return "constant"
+    if kind:
+        return kind
     if pdt.is_bool_dtype(series):
         return "boolean"
     if pdt.is_datetime64_any_dtype(series):
@@ -98,7 +158,7 @@ def pct_numeric_parsable(series: pd.Series) -> float:
     (e.g. "unknown" in an age column).
     """
     values = series.dropna()
-    if values.empty or pdt.is_bool_dtype(series):
+    if values.empty or pdt.is_bool_dtype(series) or object_kind(values):
         return 0.0
     if pdt.is_numeric_dtype(series):
         return 100.0
@@ -108,9 +168,16 @@ def pct_numeric_parsable(series: pd.Series) -> float:
     return round(100 * float(parsed.notna().mean()), 2)
 
 
+def _short(value: object) -> str:
+    text = str(_cell_key(value))
+    if len(text) <= SAMPLE_MAX_CHARS:
+        return text
+    return text[: SAMPLE_MAX_CHARS - 3] + "..."
+
+
 def _samples(series: pd.Series) -> str:
-    uniques = series.dropna().unique()[:N_SAMPLES]
-    return ", ".join(str(v) for v in uniques)
+    uniques = hashable(series.dropna()).unique()[:N_SAMPLES]
+    return ", ".join(_short(v) for v in uniques)
 
 
 def column_profile(df: pd.DataFrame) -> pd.DataFrame:
@@ -127,7 +194,7 @@ def column_profile(df: pd.DataFrame) -> pd.DataFrame:
                 "semantic_type": semantic_type(col),
                 "n_missing": n_missing,
                 "pct_missing": round(100 * n_missing / n_rows, 2) if n_rows else 0.0,
-                "n_unique": int(col.nunique()),
+                "n_unique": int(hashable(col).nunique()),
                 "pct_numeric_parsable": pct_numeric_parsable(col),
                 "sample_values": _samples(col),
             }

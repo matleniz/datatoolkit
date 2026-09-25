@@ -25,3 +25,11 @@ def test_api_inconsistencies():
     df = pd.DataFrame({"c": ["Paris", "paris ", "Lyon"]})
     res = api.inconsistencies(df)
     assert res.metrics["n_merged_variants"] == 1
+
+
+def test_api_inconsistencies_mixed_date_formats():
+    df = pd.DataFrame({"d": ["2020-01-01", "01/15/2020", "15-01-2020", "garbage"]})
+    res = api.inconsistencies(df)
+    assert res.metrics["n_mixed_date_format_columns"] == 1
+    assert "mixed date formats" in {t.title for t in res.tables}
+    assert "parse_dates" in res.text
