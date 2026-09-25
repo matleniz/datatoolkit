@@ -55,6 +55,9 @@ class Transform:
     params_model: type[BaseModel]
     fit_fn: FitFn
     apply_fn: ApplyFn
+    # Fit reads the target column named by ``params.target`` (supervised op):
+    # ``DtkTransformer.fit(X, y)`` joins y under that name for fit only.
+    needs_target: bool = False
 
     def parse(self, params: dict | BaseModel) -> BaseModel:
         """Validate raw params; invalid -> KeyParamsError naming the op."""
@@ -93,13 +96,19 @@ def transform(
     fit: FitFn | None = None,
     title: str | None = None,
     description: str | None = None,
+    needs_target: bool = False,
 ):
     """Register ``apply(df, params, state) -> df`` (and an optional ``fit``) as ``op``.
 
     ``title`` defaults to the op name, ``description`` to the first docstring line.
+    ``needs_target``: fit uses the column named by the ``target`` param (it must
+    then be a param of ``params_model``).
     """
     if not (isinstance(params_model, type) and issubclass(params_model, BaseModel)):
         raise TypeError(f"transform {op!r}: params_model must be a pydantic model")
+
+    if needs_target and "target" not in params_model.model_fields:
+        raise TypeError(f"transform {op!r}: needs_target requires a 'target' param")
 
     def decorator(fn: ApplyFn) -> ApplyFn:
         if op in _TRANSFORMS:
@@ -112,6 +121,7 @@ def transform(
             params_model=params_model,
             fit_fn=fit or _no_fit,
             apply_fn=fn,
+            needs_target=needs_target,
         )
         return fn
 
