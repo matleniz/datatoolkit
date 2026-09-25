@@ -9,6 +9,8 @@ from typing import Any
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from dtk_engine.ops.profile import as_text, object_kind
+
 # Rows of each table shown by _repr_html_ (the Result keeps them all).
 HTML_TABLE_ROWS = 10
 
@@ -39,6 +41,14 @@ class Result(BaseModel):
 
     def add_table(self, title: str, df: pd.DataFrame, group: str | None = None) -> None:
         """Attach a DataFrame as JSON-safe records; `group` buckets it in a tab."""
+        # Bytes cells (WKB geometry, blobs) are not JSON: shown as their repr.
+        binary = [
+            i for i in range(df.shape[1]) if object_kind(df.iloc[:, i]) == "binary"
+        ]
+        if binary:
+            df = df.copy()
+            for i in binary:
+                df.isetitem(i, as_text(df.iloc[:, i]).where(df.iloc[:, i].notna()))
         records = json.loads(df.to_json(orient="records"))
         self.tables.append(Table(title=title, records=records, group=group))
 

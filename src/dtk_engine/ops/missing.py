@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
+from dtk_engine.ops.profile import object_kind
+
 # Missing rate (%) above which dropping the column is the default advice.
 DROP_PCT = 60.0
 REVIEW_PCT = 20.0
@@ -114,6 +116,9 @@ def missing_per_row(df: pd.DataFrame) -> pd.DataFrame:
 def _sentinel_hits(series: pd.Series) -> dict[str, int]:
     non_null = series.dropna()
     hits: dict[str, int] = {}
+    if object_kind(non_null):
+        # Lists / dicts / bytes (WKB, blobs) hold no textual sentinel.
+        return hits
     if pdt.is_datetime64_any_dtype(series):
         stamps = non_null.dt.strftime("%Y-%m-%d")
         for s in DATE_SENTINELS:

@@ -32,7 +32,7 @@ from dtk_engine.ops.missing import (
     sentinel_counts,
 )
 from dtk_engine.ops.outliers import univariate_outliers
-from dtk_engine.ops.profile import pct_numeric_parsable, semantic_types
+from dtk_engine.ops.profile import hashable, pct_numeric_parsable, semantic_types
 from dtk_engine.ops.transforms.impute import INDICATOR_SUFFIX
 from dtk_engine.transform_registry import get_transform
 
@@ -146,7 +146,7 @@ def _summary(df: pd.DataFrame, col: str, semantic: str) -> _Col:
         col,
         semantic_type=semantic,
         pct_missing=round(100 * n_missing / n, 2) if n else 0.0,
-        n_unique=int(df[col].nunique()),
+        n_unique=int(hashable(df[col]).nunique()),
     )
 
 
@@ -254,6 +254,16 @@ def _drop_rec(
             "identifier: unique per row, a model can only memorise it (and it may "
             "encode collection order); drop it",
         )
+    if semantic in ("nested", "binary"):
+        advice = (
+            "lists / dicts per cell (nested JSON or Parquet): no op reads it; drop "
+            "it, or flatten it into scalar columns first (pandas.json_normalize, "
+            "explode)"
+            if semantic == "nested"
+            else "raw bytes per cell (geometry WKB, blob): no op reads it; drop it, "
+            "or decode it into scalar columns first (e.g. x / y of a geometry)"
+        )
+        return _drop(col, "drop", "warning", advice)
     if target is not None and _names_target(col, target):
         return _drop(
             col,

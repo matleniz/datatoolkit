@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
 
+from dtk_engine.ops.profile import hashable_frame
 from dtk_engine.transform_registry import TransformParams, transform
 
 
@@ -103,7 +104,8 @@ def drop_duplicates(
     missing = [c for c in cols if c not in df.columns]
     if missing:
         raise KeyError(f"columns not in frame: {missing}")
-    pos = pd.DataFrame(df.reset_index(drop=True))
+    # Lists / dicts / arrays compared by value (they are not hashable as is).
+    pos = hashable_frame(pd.DataFrame(df.reset_index(drop=True)))
     order = (
         pos.sort_values(params.sort_by, kind="stable").index.to_numpy()
         if params.sort_by

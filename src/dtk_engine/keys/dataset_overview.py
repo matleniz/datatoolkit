@@ -11,6 +11,7 @@ from dtk_engine.ops.profile import (
     column_profile,
     columns_of_type,
     datetime_stats,
+    hashable_frame,
     id_stats,
     numeric_histograms,
     numeric_stats,
@@ -52,7 +53,7 @@ def overview_result(df: pd.DataFrame, head_rows: int = 5) -> Result:
             "pct_missing_cells": (
                 round(100 * int(df.isna().sum().sum()) / n_cells, 2) if n_cells else 0.0
             ),
-            "n_duplicate_rows": int(df.duplicated().sum()),
+            "n_duplicate_rows": int(hashable_frame(df).duplicated().sum()),
         }
     )
     result.add_table("columns", profile, group="Overview")

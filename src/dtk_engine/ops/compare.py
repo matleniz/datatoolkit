@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
-from dtk_engine.ops.profile import column_profile
+from dtk_engine.ops.profile import as_text, column_profile
 
 # Semantic types (as strings, see ops.profile) treated as entity identifiers /
 # as categories. `group_id` may not exist yet in profile: comparing on strings
@@ -335,7 +335,8 @@ def is_row_counter(train: pd.Series, test: pd.Series) -> bool:
 def _row_hashes(df: pd.DataFrame) -> pd.Series:
     # Stringify first: rows are compared on their printed values across frames
     # whose dtypes may differ.
-    return pd.util.hash_pandas_object(df.astype(str), index=False)
+    text = pd.DataFrame({c: as_text(df[c]) for c in df.columns}, index=df.index)
+    return pd.util.hash_pandas_object(text, index=False)
 
 
 def overlap(
