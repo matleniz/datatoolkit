@@ -1,0 +1,82 @@
+"""Train vs test consistency: schema, missing, ranges, categories, overlap, drift, issues.
+
+Split by concern: `schema` (schema diff, per-column shifts, overlap), `drift`
+(KS / PSI / SMD / category shares) and `issues` (severity-ranked findings).
+The public names are re-exported here.
+"""
+
+from dtk_engine.ops.compare.drift import (
+    CATEGORICAL_DRIFT_FIELDS,
+    CATEGORICAL_TOP,
+    KS_WARNING,
+    NUMERIC_DRIFT_FIELDS,
+    OUTSIDE_P1_P99_INFO,
+    OUTSIDE_P1_P99_WARNING,
+    PSI_BINS,
+    PSI_EPSILON,
+    PSI_INFO,
+    PSI_WARNING,
+    SMD_WARNING,
+    TVD_WARNING,
+    categorical_drift,
+    drift_columns,
+    histogram_pair,
+    ks_statistic,
+    numeric_drift,
+    psi,
+)
+from dtk_engine.ops.compare.issues import ISSUE_FIELDS, SEVERITIES, find_issues
+from dtk_engine.ops.compare.schema import (
+    CATEGORY_TYPES,
+    COLUMN_FIELDS,
+    ID_TYPES,
+    MISSING_DELTA_INFO,
+    MISSING_DELTA_WARNING,
+    OUT_OF_RANGE_WARNING,
+    OVERLAP_FIELDS,
+    auto_id_columns,
+    category_shift,
+    compare_columns,
+    is_row_counter,
+    numeric_shift,
+    overlap,
+    schema_diff,
+)
+
+__all__ = [
+    "CATEGORICAL_DRIFT_FIELDS",
+    "CATEGORICAL_TOP",
+    "CATEGORY_TYPES",
+    "COLUMN_FIELDS",
+    "ID_TYPES",
+    "ISSUE_FIELDS",
+    "KS_WARNING",
+    "MISSING_DELTA_INFO",
+    "MISSING_DELTA_WARNING",
+    "NUMERIC_DRIFT_FIELDS",
+    "OUTSIDE_P1_P99_INFO",
+    "OUTSIDE_P1_P99_WARNING",
+    "OUT_OF_RANGE_WARNING",
+    "OVERLAP_FIELDS",
+    "PSI_BINS",
+    "PSI_EPSILON",
+    "PSI_INFO",
+    "PSI_WARNING",
+    "SEVERITIES",
+    "SMD_WARNING",
+    "TVD_WARNING",
+    "auto_id_columns",
+    "categorical_drift",
+    "category_shift",
+    "compare_columns",
+    "drift_columns",
+    "find_issues",
+    "histogram_pair",
+    "is_row_counter",
+    "ks_statistic",
+    "numeric_drift",
+    "numeric_shift",
+    "overlap",
+    "psi",
+    "schema_diff",
+]
