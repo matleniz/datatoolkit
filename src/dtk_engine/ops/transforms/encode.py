@@ -10,21 +10,16 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator
 
+from dtk_engine.ops._util import py as _py
 from dtk_engine.transform_registry import TransformParams, transform
 
 INFREQUENT_SUFFIX = "infrequent"
 UNKNOWN_CODE = -1
 
 Category = str | int | float | bool
-
-
-def _py(value):
-    """numpy scalar -> plain Python value (JSON-safe)."""
-    return value.item() if isinstance(value, np.generic) else value
 
 
 # --- onehot -------------------------------------------------------------------

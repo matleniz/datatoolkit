@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
+from dtk_engine.ops._util import pct as _pct
 from dtk_engine.ops.profile import as_text, column_profile
 
 # Semantic types (as strings, see ops.profile) treated as entity identifiers /
@@ -108,10 +109,6 @@ OVERLAP_FIELDS = [
     "row_counter",
 ]
 ISSUE_FIELDS = ["severity", "check", "column", "message"]
-
-
-def _pct(part: float, total: float) -> float:
-    return round(100 * part / total, 2) if total else 0.0
 
 
 def _is_number(series: pd.Series) -> bool:

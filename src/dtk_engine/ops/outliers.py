@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
+from dtk_engine.ops._util import pct as _pct
 from dtk_engine.ops.profile import columns_of_type
 
 IQR_K = 1.5
@@ -34,10 +35,6 @@ Outliers: decide by cause, not by the detector.
 - Legitimate and informative (fraud, rare events, the very thing to predict): keep.
 - Heavy right skew everywhere: transform the column instead of touching rows.
 Fit any fence / clip bound on train only and reuse it on test."""
-
-
-def _pct(count: float, total: float) -> float:
-    return round(100 * count / total, 2) if total else 0.0
 
 
 def numeric_columns(df: pd.DataFrame) -> list[str]:

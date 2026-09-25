@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
+from dtk_engine.ops._util import py as _py
 from dtk_engine.ops.consistency import text_columns, variants
 from dtk_engine.ops.duplicates import exact_duplicates
 from dtk_engine.ops.missing import (
@@ -148,10 +149,6 @@ def _summary(df: pd.DataFrame, col: str, semantic: str) -> _Col:
         pct_missing=round(100 * n_missing / n, 2) if n else 0.0,
         n_unique=int(hashable(df[col]).nunique()),
     )
-
-
-def _py(value):
-    return value.item() if isinstance(value, np.generic) else value
 
 
 def _apply(rec: Rec, train: pd.DataFrame, test: pd.DataFrame | None):

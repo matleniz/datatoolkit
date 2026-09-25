@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from dtk_engine.ops._util import json_scalar as _py
 from dtk_engine.transform_registry import TransformParams, transform
 
 MAX_INTERACTION_COLUMNS = 10
@@ -203,13 +204,6 @@ class GroupAggParams(TransformParams):
                 "Use out-of-fold target encoding instead (planned)."
             )
         return self
-
-
-def _py(v):
-    """JSON-safe scalar (numpy -> python, NaN -> None)."""
-    if isinstance(v, np.generic):
-        v = v.item()
-    return None if isinstance(v, float) and np.isnan(v) else v
 
 
 def _group_agg_fit(df: pd.DataFrame, params: GroupAggParams) -> dict:
