@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,6 +18,16 @@ class CsvSource(BaseModel):
     header: int | None = Field(
         default=0, description="Row number of the header; null = no header"
     )
+    na_values: list[str] | None = Field(
+        default=None, description="Extra strings read as missing"
+    )
+    dtype: dict[str, str] | None = Field(
+        default=None, description="Column -> dtype (e.g. {'zip': 'str'})"
+    )
+    parse_dates: list[str] | None = Field(
+        default=None, description="Columns parsed as datetimes"
+    )
+    usecols: list[str] | None = Field(default=None, description="Columns to keep")
 
 
 class DatasetSource(BaseModel):
@@ -33,12 +43,63 @@ class DatasetSource(BaseModel):
     )
 
 
+class ParquetSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["parquet"] = "parquet"
+    path: str = Field(description="Parquet file or partitioned directory")
+    columns: list[str] | None = Field(default=None, description="Columns to keep")
+    filters: list[tuple[str, str, Any]] | None = Field(
+        default=None,
+        description="Row filters [column, op, value], ANDed; op in ==, !=, <, <=, >, >=, in, not in",
+    )
+
+
+class ExcelSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["excel"] = "excel"
+    path: str = Field(description="Local path to the .xlsx file")
+    sheet: str | int = Field(default=0, description="Sheet name or 0-based index")
+    header: int | None = Field(
+        default=0, description="Row number of the header; null = no header"
+    )
+    usecols: list[str] | None = Field(default=None, description="Columns to keep")
+
+
+class JsonSource(BaseModel):
+    """JSON or JSON lines. Nested objects are flattened (``a_b``); lists stay as-is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["json"] = "json"
+    path: str = Field(description="Local path to the JSON / JSONL file")
+    lines: bool = Field(default=False, description="One JSON record per line (jsonl)")
+    record_path: str | None = Field(
+        default=None, description="Dotted path to the list of records, e.g. data.items"
+    )
+
+
+class SqlSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["sql"] = "sql"
+    url_env: str = Field(
+        description="NAME of the environment variable holding the SQLAlchemy URL "
+        "(never the URL itself)"
+    )
+    query: str = Field(description="SQL run on the server")
+
+
 # Sources that read a file. A workspace's X / y must be one of these (never a
 # `dataset`, which would let a workspace point at itself).
-FileSourceSpec = Annotated[Union[CsvSource], Field(discriminator="kind")]  # noqa: UP007
+FileSourceSpec = Annotated[
+    Union[CsvSource, ParquetSource, ExcelSource, JsonSource],  # noqa: UP007
+    Field(discriminator="kind"),
+]
 
 # Add new readers' specs to this union (file readers also to FileSourceSpec).
 SourceSpec = Annotated[
-    Union[CsvSource, DatasetSource],  # noqa: UP007
+    CsvSource | DatasetSource | ParquetSource | ExcelSource | JsonSource | SqlSource,
     Field(discriminator="kind"),
 ]

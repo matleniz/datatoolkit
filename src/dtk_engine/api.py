@@ -40,7 +40,14 @@ __all__ = [
 ]
 
 # File suffix -> source kind for `load(path)`; other options need a full spec.
-SUFFIX_KINDS = {".csv": "csv", ".tsv": "csv"}
+SUFFIX_KINDS = {
+    ".csv": "csv",
+    ".tsv": "csv",
+    ".parquet": "parquet",
+    ".xlsx": "excel",
+    ".json": "json",
+    ".jsonl": "json",
+}
 
 _SPEC = TypeAdapter(SourceSpec)
 
@@ -57,6 +64,8 @@ def load(source: str | Path | dict | BaseModel) -> pd.DataFrame:
                 f"(known: {sorted(SUFFIX_KINDS)}); pass a source spec dict instead"
             )
         source = {"kind": SUFFIX_KINDS[suffix], "path": str(source)}
+        if suffix == ".jsonl":
+            source["lines"] = True
     if isinstance(source, dict):
         try:
             source = _SPEC.validate_python(source)
