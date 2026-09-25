@@ -48,6 +48,14 @@ from dtk_engine import run_key, Result
 Result(**run_key("train_test_check", {})).show()
 ```
 
+Omitted params take each key's defaults, and the default `source` / `test` are
+the demo CSVs shipped in `dtk_engine/demo_data` (synthetic, Titanic-like): the
+call above analyses those files, not your data. Always pass a `source` spec.
+
+`list_keys()` / `list_transforms()` flag `needs_target` (the key or op requires
+a target column). A `Result` table with `kind: "steps"` holds workspace steps
+(`op`, `target`, `params` per row) that a front can apply as is.
+
 Add a transform op: pick its family module in `src/dtk_engine/ops/transforms/`
 (`cleaning`, `impute`, `encode`, `scale`, `features`) and register it with
 `@transform(op, params_model=..., fit=...)` (see `drop_columns` in

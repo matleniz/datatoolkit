@@ -120,7 +120,7 @@ def selection_result(
     result.add_table("near_constant", constant)
     result.add_table("pca_explained_variance", pca_table)
     result.add_table("families", FAMILIES)
-    result.add_table("suggested_steps", steps)
+    result.add_table("suggested_steps", steps, kind="steps")
     result.add_figure(
         "Mutual information per feature (color: combined rank, 1 = best)",
         px.bar(scores, x="column", y="mutual_info", color="combined_rank"),
@@ -161,7 +161,7 @@ def _encode_first_result(df: pd.DataFrame, target: str, task: str) -> Result:
         ),
     )
     result.add_table("non_numeric_columns", features)
-    result.add_table("encode_first_steps", steps)
+    result.add_table("encode_first_steps", steps, kind="steps")
     result.add_table("families", FAMILIES)
     return result
 

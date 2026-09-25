@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import json
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -15,10 +15,16 @@ from dtk_engine.ops.profile import as_text, object_kind
 HTML_TABLE_ROWS = 10
 
 
+# Table.kind values. "steps": each record is a workspace step (``op``,
+# ``target``, ``params``, plus key-specific fields), ready for a front to apply.
+TableKind = Literal["steps"]
+
+
 class Table(BaseModel):
     title: str
     records: list[dict[str, Any]]
     group: str | None = None
+    kind: TableKind | None = None
 
 
 class Figure(BaseModel):
@@ -39,8 +45,15 @@ class Result(BaseModel):
             Figure(title=title, plotly=json.loads(fig.to_json()), group=group)
         )
 
-    def add_table(self, title: str, df: pd.DataFrame, group: str | None = None) -> None:
-        """Attach a DataFrame as JSON-safe records; `group` buckets it in a tab."""
+    def add_table(
+        self,
+        title: str,
+        df: pd.DataFrame,
+        group: str | None = None,
+        kind: TableKind | None = None,
+    ) -> None:
+        """Attach a DataFrame as JSON-safe records; `group` buckets it in a tab,
+        `kind` tells a front how to read the rows (see ``TableKind``)."""
         # Bytes cells (WKB geometry, blobs) are not JSON: shown as their repr.
         binary = [
             i for i in range(df.shape[1]) if object_kind(df.iloc[:, i]) == "binary"
@@ -50,7 +63,7 @@ class Result(BaseModel):
             for i in binary:
                 df.isetitem(i, as_text(df.iloc[:, i]).where(df.iloc[:, i].notna()))
         records = json.loads(df.to_json(orient="records"))
-        self.tables.append(Table(title=title, records=records, group=group))
+        self.tables.append(Table(title=title, records=records, group=group, kind=kind))
 
     def show(self) -> None:
         """Render in a notebook: print metrics, show each figure."""

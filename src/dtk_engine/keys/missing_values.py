@@ -5,6 +5,7 @@ import plotly.express as px
 from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.missing import (
     cooccurrence,
     cooccurrence_pairs,
@@ -68,7 +69,7 @@ def missing_result(
     issues = []
     if target is not None:
         if target not in df.columns:
-            raise ValueError(f"target {target!r} is not a column of the source")
+            raise KeyParamsError(f"target {target!r} is not a column of the source")
         n_target = int(df[target].isna().sum())
         metrics["n_rows_missing_target"] = n_target
         if n_target:

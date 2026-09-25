@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.advisor.cleaning import sentinel_rec, type_rec, variant_rec
 from dtk_engine.ops.advisor.common import (
     COLUMN_FIELDS,
@@ -60,13 +61,14 @@ def advise(
     ``target`` / ``params`` form a workspace step, ``order`` the suggested
     application order. ``model_family`` (tree | linear | distance | neural)
     decides scaling, skew and high-cardinality encoding; None = advice for all.
+    An unknown ``model_family`` or ``target`` raises KeyParamsError.
     """
     if model_family is not None and model_family not in MODEL_FAMILIES:
-        raise ValueError(
+        raise KeyParamsError(
             f"unknown model_family {model_family!r} (known: {list(MODEL_FAMILIES)})"
         )
     if target is not None and target not in train.columns:
-        raise ValueError(f"target {target!r} is not a column of the source")
+        raise KeyParamsError(f"target {target!r} is not a column of the source")
 
     recs = row_recs(train, target)
     semantic = semantic_types(train)
