@@ -2,10 +2,10 @@ import pandas as pd
 import pytest
 
 from dtk_engine import transform_registry as registry
-from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.errors import KeyParamsError, SourceError, UnknownTransformError
 from dtk_engine.transform_registry import TransformParams, transform
 from dtk_engine.workspace import Step
-from dtk_engine.workspace.replay import replay
+from dtk_engine.workspace.replay import replay, replay_fitted
 
 
 class AddParams(TransformParams):
@@ -35,8 +35,11 @@ def ops(monkeypatch):
 
 def test_unknown_op_is_clear_error():
     steps = [Step(op="not_an_op", target="train")]
-    with pytest.raises(SourceError, match="unknown transform op 'not_an_op'"):
-        replay(steps, "train", pd.DataFrame({"v": [1]}))
+    for role in ("train", "test"):
+        with pytest.raises(UnknownTransformError, match="unknown transform op"):
+            replay(steps, role, pd.DataFrame({"v": [1]}))
+    with pytest.raises(UnknownTransformError):
+        replay_fitted(steps, pd.DataFrame({"v": [1]}))
 
 
 def test_invalid_params_fail_before_any_work(ops):
@@ -102,3 +105,29 @@ def test_op_failure_names_the_step():
     steps = [Step(op="drop_columns", target="train", params={"columns": ["nope"]})]
     with pytest.raises(SourceError, match=r"step 0 \('drop_columns' on train\)"):
         replay(steps, "train", pd.DataFrame({"v": [1]}))
+
+
+def test_invalid_params_are_not_source_errors(ops):
+    steps = [Step(op="add", target="both", params={"n": "x"})]
+    # no train frame: the bad params win over the missing-train SourceError
+    with pytest.raises(KeyParamsError):
+        replay(steps, "test", pd.DataFrame({"v": [1.0]}))
+
+
+def test_replay_fitted_matches_replay(ops):
+    steps = [
+        Step(op="add", target="train", params={"n": 1}),
+        Step(op="center", target="both"),
+        Step(op="add", target="test", params={"n": 10}),
+        Step(op="add", target="train", params={"n": 100}),
+    ]
+    train, test = pd.DataFrame({"v": [0.0, 2.0]}), pd.DataFrame({"v": [5.0]})
+    tr, te, fitted = replay_fitted(steps, train, test)
+    pd.testing.assert_frame_equal(tr, replay(steps, "train", train))
+    pd.testing.assert_frame_equal(te, replay(steps, "test", test, train))
+    assert tr["v"].tolist() == [99.0, 101.0] and te["v"].tolist() == [13.0]
+    assert [f["fitted_on"] for f in fitted] == ["train", "train", "test", "train"]
+    assert fitted[1]["state"] == {"mean": 2.0}
+    # no test frame: the "test" step is recorded as not fitted
+    _, te, fitted = replay_fitted(steps, train)
+    assert te is None and fitted[2] == {"fitted_on": None, "state": {}}

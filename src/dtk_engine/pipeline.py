@@ -16,6 +16,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 from sklearn.utils.validation import check_is_fitted
 
+from dtk_engine.errors import UnknownTransformError
 from dtk_engine.ops import transforms  # noqa: F401  (registers every transform op)
 from dtk_engine.transform_registry import get_transform
 from dtk_engine.workspace import JsonWorkspaceStore
@@ -46,8 +47,15 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
         return {"op": self.op, **self.params}
 
     def set_params(self, **params) -> DtkTransformer:
-        if "op" in params:
-            self.op = params.pop("op")
+        # A new op keeps only the current params it declares (e.g. `columns`);
+        # the old op's own params (e.g. `missing_ok`) are dropped.
+        if "op" in params and (op := params.pop("op")) != self.op:
+            try:
+                fields = get_transform(op).params_model.model_fields
+            except UnknownTransformError:
+                fields = {}  # unknown op: fails at fit, carry nothing over
+            self.op = op
+            self.params = {k: v for k, v in self.params.items() if k in fields}
         self.params = {**self.params, **params}
         return self
 

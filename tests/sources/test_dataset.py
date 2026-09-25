@@ -3,7 +3,7 @@ import pytest
 
 from dtk_engine import run_key, save_workspace
 from dtk_engine import transform_registry as registry
-from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.errors import KeyParamsError, SourceError, UnknownTransformError
 from dtk_engine.sources import DatasetSource, load
 from dtk_engine.transform_registry import TransformParams, transform
 
@@ -104,9 +104,9 @@ def test_steps_replayed_per_role(files, monkeypatch):
 
 
 def test_unknown_step_op(files):
-    _save(files, steps=[{"op": "nope", "target": "test"}])
-    with pytest.raises(SourceError, match="unknown transform op 'nope'"):
-        load(DatasetSource(workspace="w", role="test"))
+    # rejected at save, not deferred to the first load
+    with pytest.raises(UnknownTransformError, match="unknown transform op 'nope'"):
+        _save(files, steps=[{"op": "nope", "target": "test"}])
 
 
 def test_keys_run_on_dataset_source(files):

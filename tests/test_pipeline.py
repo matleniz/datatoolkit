@@ -11,6 +11,7 @@ from dtk_engine import transform_registry as registry
 from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.errors import KeyParamsError, UnknownTransformError
 from dtk_engine.transform_registry import TransformParams, transform
+from dtk_engine.workspace import JsonWorkspaceStore, Workspace
 
 
 @pytest.fixture
@@ -98,7 +99,10 @@ def test_workspace_pipeline(tmp_path, monkeypatch):
     assert workspace_pipeline("w").fit_transform(df).equals(df)
 
     ws["steps"] = [{"op": "drop_columns", "target": "both", "params": {}}]
-    save_workspace(ws)
+    with pytest.raises(KeyParamsError):  # rejected at save
+        save_workspace(ws)
+    # a workspace file written behind the contract's back still fails early
+    JsonWorkspaceStore().save(Workspace.model_validate(ws))
     with pytest.raises(KeyParamsError):
         workspace_pipeline("w")
 
@@ -134,3 +138,20 @@ def test_advised_workspace_pipeline_in_cross_val_score(tmp_path, monkeypatch):
     X, y = train.drop(columns="Survived"), train["Survived"]
     scores = cross_val_score(pipe, X, y, cv=3)
     assert len(scores) == 3 and np.isfinite(scores).all()
+
+
+def test_set_params_op_change_drops_old_op_params():
+    t = DtkTransformer("drop_columns", columns=["a"], missing_ok=True)
+    t.set_params(op="scale")
+    assert t.get_params() == {"op": "scale", "columns": ["a"]}
+    t.set_params(op="scale", method="minmax")  # same op: params merge
+    assert t.params == {"columns": ["a"], "method": "minmax"}
+    t.set_params(op="nope")
+    assert t.get_params() == {"op": "nope"}
+    # a fixed op still clones / round-trips as before
+    c = clone(DtkTransformer("drop_columns", columns=["a"], missing_ok=True))
+    assert c.get_params() == {
+        "op": "drop_columns",
+        "columns": ["a"],
+        "missing_ok": True,
+    }
