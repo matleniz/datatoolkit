@@ -12,6 +12,14 @@ class EngineClient(Protocol):
 
     def run_key(self, key_id: str, params: dict) -> dict: ...
 
+    def list_workspaces(self) -> list[dict]: ...
+
+    def get_workspace(self, name: str) -> dict: ...
+
+    def save_workspace(self, workspace: dict) -> dict: ...
+
+    def delete_workspace(self, name: str) -> None: ...
+
 
 class LocalClient:
     """In-process client calling `dtk_engine.contract` directly."""
@@ -24,3 +32,15 @@ class LocalClient:
 
     def run_key(self, key_id: str, params: dict) -> dict:
         return contract.run_key(key_id, params)
+
+    def list_workspaces(self) -> list[dict]:
+        return contract.list_workspaces()
+
+    def get_workspace(self, name: str) -> dict:
+        return contract.get_workspace(name)
+
+    def save_workspace(self, workspace: dict) -> dict:
+        return contract.save_workspace(workspace)
+
+    def delete_workspace(self, name: str) -> None:
+        contract.delete_workspace(name)
