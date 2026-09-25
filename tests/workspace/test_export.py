@@ -117,6 +117,39 @@ def test_existing_export_needs_overwrite(workspace, tmp_path):
     )
 
 
+def _tamper(out, mutate):
+    manifest = json.loads((out / "manifest.json").read_text())
+    mutate(manifest)
+    (out / "manifest.json").write_text(json.dumps(manifest))
+
+
+@pytest.mark.parametrize("bad", ["../victim.csv", "processed/../../victim.csv", "abs"])
+def test_overwrite_refuses_unsafe_manifest_paths(workspace, tmp_path, bad):
+    out = tmp_path / "export"
+    export_workspace(workspace, str(out))
+    victim = tmp_path / "victim.csv"
+    victim.write_text("raw")
+    bad = str(victim) if bad == "abs" else bad
+    _tamper(out, lambda m: m["outputs"]["train"].update(path=bad))
+    with pytest.raises(KeyParamsError, match="outside|non-relative"):
+        export(workspace, out, overwrite=True)
+    assert victim.exists() and (out / "processed" / "train.parquet").exists()
+
+
+def test_overwrite_refuses_foreign_manifest(workspace, tmp_path):
+    out = tmp_path / "export"
+    out.mkdir()
+    keep = out / "processed" / "train.parquet"
+    keep.parent.mkdir()
+    keep.write_text("mine")
+    (out / "manifest.json").write_text(
+        json.dumps({"outputs": {"train": {"path": "processed/train.parquet"}}})
+    )
+    with pytest.raises(KeyParamsError, match="not written by"):
+        export(workspace, out, overwrite=True)
+    assert keep.exists()
+
+
 def test_refuses_to_overwrite_a_raw_input(tmp_path, monkeypatch):
     monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
     raw = tmp_path / "processed" / "train.parquet"

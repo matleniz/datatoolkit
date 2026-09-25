@@ -10,7 +10,8 @@
 The manifest records the sources (path, size, sha256, mtime), the export time,
 every step with its fitted state (inline, or a side file with its sha256) and
 the engine / pandas / sklearn / pyarrow / python versions. Raw inputs are only
-read: an output path that is a source path is refused.
+read: an output path that is a source path is refused. Overwrite only deletes
+relative paths under processed/ or states/ listed by a manifest of ours.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from dtk_engine.workspace.replay import replay_fitted
 from dtk_engine.workspace.store import JsonWorkspaceStore
 
 MANIFEST_VERSION = 1
+GENERATOR = "dtk_engine"
 MANIFEST = "manifest.json"
 PROCESSED_DIR = "processed"
 STATES_DIR = "states"
@@ -160,13 +162,42 @@ def _step_entry(i: int, step, fitted: dict, out_dir: Path, inline_limit: int) ->
     return entry
 
 
+def _owned_paths(out_dir: Path) -> list[Path]:
+    """Files a previous export of ours listed, validated; raises before any delete."""
+    manifest = out_dir / MANIFEST
+    try:
+        old = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise KeyParamsError(f"{manifest} is unreadable: {exc}") from exc
+    if not isinstance(old, dict) or old.get("generator") != GENERATOR:
+        raise KeyParamsError(
+            f"{manifest} was not written by {GENERATOR}; refusing to overwrite"
+        )
+    try:
+        listed = [o["path"] for o in old.get("outputs", {}).values()]
+        listed += [s["state_file"] for s in old.get("steps", []) if "state_file" in s]
+    except (TypeError, KeyError, AttributeError) as exc:
+        raise KeyParamsError(f"{manifest} is malformed: {exc!r}") from exc
+    owned = []
+    for rel in listed:
+        if not isinstance(rel, str) or Path(rel).is_absolute():
+            raise KeyParamsError(f"{manifest} lists a non-relative path: {rel!r}")
+        path = (out_dir / rel).resolve()
+        if not any(
+            path.is_relative_to(out_dir / d) for d in (PROCESSED_DIR, STATES_DIR)
+        ):
+            raise KeyParamsError(
+                f"{manifest} lists {rel!r}, outside {PROCESSED_DIR}/ and {STATES_DIR}/"
+            )
+        owned.append(path)
+    return owned
+
+
 def _remove_previous(out_dir: Path) -> None:
     """Delete the files a previous export listed (and nothing else)."""
-    old = json.loads((out_dir / MANIFEST).read_text(encoding="utf-8"))
-    owned = [o["path"] for o in old.get("outputs", {}).values()]
-    owned += [s["state_file"] for s in old.get("steps", []) if "state_file" in s]
-    for rel in owned:
-        (out_dir / rel).unlink(missing_ok=True)
+    owned = _owned_paths(out_dir)  # all validated before the first unlink
+    for path in owned:
+        path.unlink(missing_ok=True)
     (out_dir / MANIFEST).unlink()
 
 
@@ -189,7 +220,7 @@ def export_workspace(
     sources = _sources(ws)  # hashed before reading: provenance of what was read
 
     source_paths = {Path(s["path"]) for s in sources}
-    targets = [out / MANIFEST, out / PROCESSED_DIR]
+    targets = [out / MANIFEST, out / PROCESSED_DIR, out / STATES_DIR]
     for src in source_paths:
         if any(src == t or t in src.parents for t in targets):
             raise KeyParamsError(
@@ -215,6 +246,7 @@ def export_workspace(
         outputs["test"] = _write_parquet(test, out / PROCESSED_DIR / "test.parquet")
 
     manifest = {
+        "generator": GENERATOR,
         "manifest_version": MANIFEST_VERSION,
         "workspace": ws.name,
         "exported_at": datetime.now(UTC).isoformat(),
