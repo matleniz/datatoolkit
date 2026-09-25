@@ -1,5 +1,6 @@
 """Raw look at a data file before parsing: bytes, BOM, encoding, delimiter, header."""
 
+import csv
 import json
 import os
 import re
@@ -14,14 +15,21 @@ from dtk_engine.errors import SourceError
 from dtk_engine.params import KeyParams
 from dtk_engine.registry import key
 from dtk_engine.result import Result
-from dtk_engine.sources.csv_pandas import SNIFF_CHARS, resolve_path, sniff_sep
+from dtk_engine.sources.csv_pandas import (
+    BOMS,
+    SNIFF_CHARS,
+    find_bad_record,
+    guess_decimal,
+    guess_encoding,
+    is_leading_zero_column,
+    resolve_path,
+    sniff_sep,
+)
 
 PREVIEW_BYTES = 120
-BOMS = [
-    (b"\xef\xbb\xbf", "utf-8-sig"),
-    (b"\xff\xfe", "utf-16-le"),
-    (b"\xfe\xff", "utf-16-be"),
-]
+# Records read to guess the header / leading zeros.
+HEADER_SCAN = 200
+NUMBER = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
 EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
 JSON_MAX_BYTES = 50_000_000  # bigger files are not parsed just to suggest a path
 
@@ -35,8 +43,10 @@ class Params(KeyParams):
     title="File inspect",
     category="analysis",
     description=(
-        "Raw file facts: first bytes, BOM, encoding guess, line endings, delimiter, "
-        "likely header line, empty `Unnamed:` columns, size and mtime; sheets for Excel."
+        "Raw file facts: first bytes, BOM, encoding / decimal guesses, line endings, "
+        "delimiter, header line (or none), empty `Unnamed:` columns, leading-zero "
+        "columns, first malformed line, size and mtime, and a csv `load_spec` "
+        "applying the guesses; sheets for Excel."
     ),
 )
 def run(params: Params) -> Result:
@@ -62,7 +72,7 @@ def run(params: Params) -> Result:
         result.add_table("sheets", _excel_sheets(path, params.path))
         return result
     result.metrics["first_bytes"] = repr(raw[:PREVIEW_BYTES])
-    result.metrics.update(_text_facts(raw))
+    result.metrics.update(_text_facts(raw, params.path))
     if Path(path).suffix.lower() == ".json" and stat.st_size <= JSON_MAX_BYTES:
         _add_record_paths(result, path)
     return result
@@ -127,55 +137,132 @@ def _excel_header_row(raw: pd.DataFrame) -> int:
     return counts.index(modal) if modal is not None else 0
 
 
-def _text_facts(raw: bytes) -> dict:
+def _text_facts(raw: bytes, shown: str) -> dict:
     bom = next((name for mark, name in BOMS if raw.startswith(mark)), None)
-    if bom in ("utf-16-le", "utf-16-be"):
-        encoding = bom
-    else:
-        try:
-            # A sample cut mid-character must not read as invalid utf-8.
-            raw.decode("utf-8", errors="strict" if len(raw) < SNIFF_CHARS else "ignore")
-            encoding = "utf-8-sig" if bom else "utf-8"
-        except UnicodeDecodeError:
-            encoding = "cp1252"
-    text = raw.decode(encoding if bom != "utf-8-sig" else "utf-8-sig", errors="replace")
+    encoding = guess_encoding(raw, complete=len(raw) < SNIFF_CHARS)
+    text = raw.decode(encoding, errors="replace").removeprefix("\ufeff")
     crlf, lf = text.count("\r\n"), text.count("\n") - text.count("\r\n")
     cr = text.count("\r") - crlf
     endings = [n for n, c in (("CRLF", crlf), ("LF", lf), ("CR", cr)) if c]
     lines = text.splitlines()
     if len(raw) >= SNIFF_CHARS and lines:
         lines = lines[:-1]  # last line is cut by the sample limit
-    sep = sniff_sep("\n".join(lines) + "\n") if lines else None
+    sample = "\n".join(lines) + "\n" if lines else ""
+    sep = sniff_sep(sample) if lines else None
+    decimal = guess_decimal(sample, sep)
     facts = {
         "bom": bom or "none",
         "encoding_guess": encoding,
         "line_endings": "+".join(endings) or "none",
         "delimiter": repr(sep) if sep else "unknown",
+        "decimal_guess": decimal,
     }
-    header = _header_line(lines, sep)
-    if header is not None:
-        facts["header_line"] = header + 1
-        facts["title_lines_above_header"] = header
-        if sep:
-            facts["unnamed_columns"] = ", ".join(_unnamed_columns(lines[header], sep))
+    spec: dict = {"kind": "csv", "path": shown, "sep": sep or "auto"}
+    spec |= {"encoding": encoding, "decimal": decimal}
+    records = _records(lines, sep)
+    header = _header_record(records)
+    if header is None:
+        facts["header_guess"] = "none"
+        spec["header"] = None
+    elif not _has_header(records, header, decimal):
+        facts["header_guess"] = "none"
+        spec["header"] = None
+        # header=None reads title lines as data: report them so they can be dropped.
+        if header:
+            facts["title_lines_above_data"] = records[header][0]
+    else:
+        line, fields = records[header]
+        facts["header_guess"] = "present"
+        facts["header_line"] = line + 1
+        facts["title_lines_above_header"] = line
+        facts["unnamed_columns"] = ", ".join(
+            f"Unnamed: {i}" for i, name in enumerate(fields) if not name.strip()
+        )
+        spec["header"] = sum(1 for _, f in records[:header] if f)
+        zeros = _leading_zero_columns(records[header:], fields)
+        facts["leading_zero_columns"] = ", ".join(zeros)
+        if zeros:
+            spec["dtype"] = dict.fromkeys(zeros, "str")
+    if sep:
+        bad = find_bad_record(sample, sep, spec["header"])
+        if bad and bad[1] == "unclosed quote" and len(raw) >= SNIFF_CHARS:
+            bad = None  # a quoted field cut by the sample limit
+        facts["bad_line"] = f"line {bad[0]}: {bad[1]}" if bad else "none"
+    facts["load_spec"] = json.dumps(spec)
     return facts
 
 
-def _header_line(lines: list[str], sep: str | None) -> int | None:
-    """Index of the first line with the modal field count (title lines have fewer)."""
-    if not lines:
-        return None
+def _records(lines: list[str], sep: str | None) -> list[tuple[int, list[str]]]:
+    """(0-based start line, fields) of the first records, quotes honoured like the
+    csv reader: a quoted ``,`` does not split, a quoted newline spans lines."""
     if not sep:
-        return 0
-    counts = [len(line.split(sep)) for line in lines[:50]]
-    modal = max(set(counts), key=counts.count)
-    return counts.index(modal)
+        return [(i, [line]) for i, line in enumerate(lines[:HEADER_SCAN])]
+    reader = csv.reader(lines, delimiter=sep)
+    records, start = [], 0
+    try:
+        for fields in reader:
+            records.append((start, fields))
+            start = reader.line_num
+            if len(records) >= HEADER_SCAN:
+                break
+    except csv.Error:
+        pass  # malformed tail: judge on the records read so far
+    return records
 
 
-def _unnamed_columns(header: str, sep: str) -> list[str]:
-    """Pandas' names for empty header cells (``Unnamed: 3``)."""
+def _header_record(records: list[tuple[int, list[str]]]) -> int | None:
+    """Index of the first record with the modal field count (title lines have fewer)."""
+    counts = [len(fields) for _, fields in records if fields]
+    if not counts:
+        return None
+    # Ties (tiny files): the count seen first.
+    modal = max(counts, key=lambda c: (counts.count(c), -counts.index(c)))
+    return next(i for i, (_, fields) in enumerate(records) if len(fields) == modal)
+
+
+def _has_header(
+    records: list[tuple[int, list[str]]], header: int, decimal: str
+) -> bool:
+    """False when the would-be header looks like data: every column numeric in the
+    rows below is numeric on that line too (UCI dumps: ``39,State-gov,77516``)."""
+    first = records[header][1]
+    data = [fields for _, fields in records[header + 1 :] if fields]
+    numeric = [
+        i
+        for i in range(len(first))
+        if _mostly_numeric([row[i] for row in data if i < len(row)], decimal)
+    ]
+    if not numeric:
+        return True  # all-text columns: cannot tell, assume a header
+    return not all(_is_number(first[i], decimal) for i in numeric)
+
+
+def _mostly_numeric(values: list[str], decimal: str) -> bool:
+    values = [v for v in values if v.strip()]
+    return bool(values) and sum(_is_number(v, decimal) for v in values) >= 0.8 * len(
+        values
+    )
+
+
+def _is_number(value: str, decimal: str) -> bool:
+    value = value.strip()
+    if decimal == ",":
+        value = value.replace(",", ".")
+    return bool(NUMBER.fullmatch(value))
+
+
+def _leading_zero_columns(
+    records: list[tuple[int, list[str]]], header: list[str]
+) -> list[str]:
+    """Header names of the columns whose sample values would lose leading zeros."""
+    rows = [fields for _, fields in records[1:] if fields]
     return [
-        f"Unnamed: {i}"
-        for i, name in enumerate(header.split(sep))
-        if not re.sub(r'[\s"]', "", name)
+        name
+        for i, name in enumerate(header)
+        if is_leading_zero_column(
+            pd.Series(
+                [row[i].strip() for row in rows if i < len(row) and row[i].strip()],
+                dtype=str,
+            )
+        )
     ]
