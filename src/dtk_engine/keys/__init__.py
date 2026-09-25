@@ -5,5 +5,7 @@ from . import (  # noqa: F401
     duplicates,
     file_inspect,
     inconsistencies,
+    missing_values,
+    outliers,
     train_test_check,
 )

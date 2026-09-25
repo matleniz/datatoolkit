@@ -23,6 +23,8 @@ from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.keys.dataset_overview import overview_result
 from dtk_engine.keys.duplicates import duplicates_result
 from dtk_engine.keys.inconsistencies import inconsistencies_result
+from dtk_engine.keys.missing_values import missing_result
+from dtk_engine.keys.outliers import outliers_result
 from dtk_engine.keys.train_test_check import check_result
 from dtk_engine.result import Result
 from dtk_engine.sources import SourceSpec
@@ -35,6 +37,8 @@ __all__ = [
     "inconsistencies",
     "list_transforms",
     "load",
+    "missing",
+    "outliers",
     "overview",
     "transform",
 ]
@@ -101,3 +105,21 @@ def duplicates(df: pd.DataFrame, subset: list[str] | None = None) -> Result:
 def inconsistencies(df: pd.DataFrame, columns: list[str] | None = None) -> Result:
     """``inconsistencies`` on a DataFrame."""
     return inconsistencies_result(df, columns)
+
+
+def missing(
+    df: pd.DataFrame, test: pd.DataFrame | None = None, target: str | None = None
+) -> Result:
+    """``missing_values`` on a DataFrame (and an optional test frame)."""
+    return missing_result(df, test, target)
+
+
+def outliers(
+    df: pd.DataFrame,
+    iqr_k: float = 1.5,
+    z_threshold: float = 3.0,
+    contamination: float = 0.01,
+    random_state: int = 0,
+) -> Result:
+    """``outliers`` on a DataFrame."""
+    return outliers_result(df, iqr_k, z_threshold, contamination, random_state)
