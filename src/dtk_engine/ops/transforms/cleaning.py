@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
+import numpy as np
 import pandas as pd
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from dtk_engine.transform_registry import TransformParams, transform
 
@@ -23,3 +26,341 @@ def drop_columns(
     return df.drop(
         columns=params.columns, errors="ignore" if params.missing_ok else "raise"
     )
+
+
+class RenameParams(TransformParams):
+    mapping: dict[str, str] = Field(
+        min_length=1, description="Old column name -> new column name"
+    )
+    missing_ok: bool = Field(
+        default=False, description="Ignore old names absent from the frame"
+    )
+
+
+@transform("rename", params_model=RenameParams, title="Rename columns")
+def rename(df: pd.DataFrame, params: RenameParams, state: dict) -> pd.DataFrame:
+    """Rename columns via an old -> new mapping."""
+    return df.rename(
+        columns=params.mapping, errors="ignore" if params.missing_ok else "raise"
+    )
+
+
+class CastParams(TransformParams):
+    dtypes: dict[str, str] = Field(
+        min_length=1, description="Column -> target dtype (e.g. 'int64', 'category')"
+    )
+
+    @field_validator("dtypes")
+    @classmethod
+    def _valid_dtypes(cls, value: dict[str, str]) -> dict[str, str]:
+        for col, dtype in value.items():
+            try:
+                pd.api.types.pandas_dtype(dtype)
+            except TypeError as exc:
+                raise ValueError(f"column {col!r}: unknown dtype {dtype!r}") from exc
+        return value
+
+
+@transform("cast", params_model=CastParams, title="Cast column types")
+def cast(df: pd.DataFrame, params: CastParams, state: dict) -> pd.DataFrame:
+    """Cast columns to the given dtypes; a failing conversion raises."""
+    missing = [c for c in params.dtypes if c not in df.columns]
+    if missing:
+        raise KeyError(f"columns not in frame: {missing}")
+    return df.astype(params.dtypes, errors="raise")
+
+
+class DropDuplicatesParams(TransformParams):
+    subset: list[str] | None = Field(
+        default=None, description="Columns defining a duplicate (default: all)"
+    )
+    keep: Literal["first", "last", "none"] = Field(
+        default="last",
+        description="Row kept per duplicate group by sort_by order "
+        "(last = most recent); 'none' drops every duplicated row",
+    )
+    sort_by: list[str] | None = Field(
+        default=None,
+        description="Columns ordering rows before picking first/last (ascending, "
+        "so last = greatest); required when keep is first or last",
+    )
+
+    @model_validator(mode="after")
+    def _sort_by_required(self) -> DropDuplicatesParams:
+        if self.keep != "none" and not self.sort_by:
+            raise ValueError("sort_by is required when keep is 'first' or 'last'")
+        return self
+
+
+@transform(
+    "drop_duplicates", params_model=DropDuplicatesParams, title="Drop duplicates"
+)
+def drop_duplicates(
+    df: pd.DataFrame, params: DropDuplicatesParams, state: dict
+) -> pd.DataFrame:
+    """Drop duplicate rows, keeping first/last by an explicit sort order."""
+    cols = list(params.subset or []) + list(params.sort_by or [])
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"columns not in frame: {missing}")
+    pos = pd.DataFrame(df.reset_index(drop=True))
+    order = (
+        pos.sort_values(params.sort_by, kind="stable").index.to_numpy()
+        if params.sort_by
+        else np.arange(len(pos))
+    )
+    keep = False if params.keep == "none" else params.keep
+    dup = pos.iloc[order].duplicated(subset=params.subset, keep=keep).to_numpy()
+    mask = np.ones(len(pos), dtype=bool)
+    mask[order[dup]] = False
+    return df[mask]
+
+
+class StandardizeTextParams(TransformParams):
+    columns: list[str] = Field(min_length=1, description="Text columns to normalize")
+    strip: bool = Field(default=True, description="Strip surrounding whitespace")
+    lower: bool = Field(default=False, description="Lowercase")
+    mapping: dict[str, str] = Field(
+        default_factory=dict,
+        description="Variant -> canonical value, matched after strip / lower",
+    )
+
+
+@transform(
+    "standardize_text", params_model=StandardizeTextParams, title="Standardize text"
+)
+def standardize_text(
+    df: pd.DataFrame, params: StandardizeTextParams, state: dict
+) -> pd.DataFrame:
+    """Strip / lowercase text columns and map variants to canonical values."""
+    out = df.copy()
+    for col in params.columns:
+        s = out[col]
+        if not (pd.api.types.is_string_dtype(s) or pd.api.types.is_object_dtype(s)):
+            raise TypeError(f"column {col!r} is not text (dtype {s.dtype})")
+        if params.strip:
+            s = s.str.strip()
+        if params.lower:
+            s = s.str.lower()
+        if params.mapping:
+            s = s.mask(s.isin(list(params.mapping)), s.map(params.mapping))
+        out[col] = s
+    return out
+
+
+class ParseDatesParams(TransformParams):
+    columns: list[str] = Field(min_length=1, description="Columns to parse")
+    format: str | None = Field(
+        default=None, description="strptime format (default: pandas inference)"
+    )
+
+
+@transform("parse_dates", params_model=ParseDatesParams, title="Parse dates")
+def parse_dates(
+    df: pd.DataFrame, params: ParseDatesParams, state: dict
+) -> pd.DataFrame:
+    """Parse columns to datetime; unparseable values raise, never become NaT."""
+    out = df.copy()
+    for col in params.columns:
+        out[col] = pd.to_datetime(out[col], format=params.format, errors="raise")
+    return out
+
+
+Scalar = str | int | float | bool
+
+
+class ReplaceSentinelsParams(TransformParams):
+    sentinels: dict[str, list[Scalar]] = Field(
+        min_length=1, description="Column -> values to turn into NaN (e.g. -999)"
+    )
+
+
+@transform(
+    "replace_sentinels",
+    params_model=ReplaceSentinelsParams,
+    title="Replace sentinels with NaN",
+)
+def replace_sentinels(
+    df: pd.DataFrame, params: ReplaceSentinelsParams, state: dict
+) -> pd.DataFrame:
+    """Turn sentinel values (-999, 'N/A', ...) into NaN, per column."""
+    out = df.copy()
+    for col, values in params.sentinels.items():
+        out[col] = out[col].mask(out[col].isin(values))
+    return out
+
+
+class DropMissingTargetParams(TransformParams):
+    target: str = Field(description="Target column; rows missing it are dropped")
+
+
+def _fit_drop_missing_target(df: pd.DataFrame, params: DropMissingTargetParams) -> dict:
+    return {"dropped": int(df[params.target].isna().sum())}
+
+
+@transform(
+    "drop_missing_target",
+    params_model=DropMissingTargetParams,
+    fit=_fit_drop_missing_target,
+    title="Drop rows with missing target",
+)
+def drop_missing_target(
+    df: pd.DataFrame, params: DropMissingTargetParams, state: dict
+) -> pd.DataFrame:
+    """Drop rows whose target is missing (state: rows dropped at fit).
+
+    A frame without the target column (e.g. an unlabelled test) is unchanged.
+    """
+    if params.target not in df.columns:
+        return df.copy()
+    return df[df[params.target].notna()]
+
+
+class Condition(TransformParams):
+    column: str
+    op: Literal["eq", "ne", "gt", "ge", "lt", "le", "isin", "notin", "isna", "notna"]
+    value: Any = None
+
+    @model_validator(mode="after")
+    def _value_matches_op(self) -> Condition:
+        if self.op in ("isna", "notna"):
+            return self
+        if self.value is None:
+            raise ValueError(f"op {self.op!r} needs a value")
+        if self.op in ("isin", "notin") and not isinstance(self.value, list):
+            raise ValueError(f"op {self.op!r} needs a list value")
+        return self
+
+
+class FilterRowsParams(TransformParams):
+    conditions: list[Condition] = Field(
+        min_length=1, description="Conditions (column, op, value) on rows to KEEP"
+    )
+    combine: Literal["and", "or"] = Field(
+        default="and", description="How conditions combine"
+    )
+
+
+def _condition_mask(df: pd.DataFrame, c: Condition) -> pd.Series:
+    s = df[c.column]
+    match c.op:
+        case "eq":
+            return s == c.value
+        case "ne":
+            return s != c.value
+        case "gt":
+            return s > c.value
+        case "ge":
+            return s >= c.value
+        case "lt":
+            return s < c.value
+        case "le":
+            return s <= c.value
+        case "isin":
+            return s.isin(c.value)
+        case "notin":
+            return ~s.isin(c.value)
+        case "isna":
+            return s.isna()
+        case _:
+            return s.notna()
+
+
+@transform("filter_rows", params_model=FilterRowsParams, title="Filter rows")
+def filter_rows(
+    df: pd.DataFrame, params: FilterRowsParams, state: dict
+) -> pd.DataFrame:
+    """Keep the rows matching the conditions (no free-form expressions)."""
+    masks = [_condition_mask(df, c) for c in params.conditions]
+    combine = np.logical_and if params.combine == "and" else np.logical_or
+    return df[np.asarray(combine.reduce(masks), dtype=bool)]
+
+
+class ClipParams(TransformParams):
+    columns: list[str] = Field(min_length=1, description="Numeric columns to clip")
+    lower: float = Field(default=1.0, ge=0, le=100, description="Lower percentile")
+    upper: float = Field(default=99.0, ge=0, le=100, description="Upper percentile")
+
+    @model_validator(mode="after")
+    def _ordered(self) -> ClipParams:
+        if self.lower >= self.upper:
+            raise ValueError("lower percentile must be below upper")
+        return self
+
+
+def _fit_clip(df: pd.DataFrame, params: ClipParams) -> dict:
+    bounds = {}
+    for col in params.columns:
+        s = pd.to_numeric(df[col], errors="raise")
+        lo, hi = s.quantile([params.lower / 100, params.upper / 100])
+        bounds[col] = [
+            None if pd.isna(lo) else float(lo),
+            None if pd.isna(hi) else float(hi),
+        ]
+    return {"bounds": bounds}
+
+
+@transform("clip", params_model=ClipParams, fit=_fit_clip, title="Clip outliers")
+def clip(df: pd.DataFrame, params: ClipParams, state: dict) -> pd.DataFrame:
+    """Clip columns to percentile bounds learned on train (state: bounds)."""
+    out = df.copy()
+    for col in params.columns:
+        lo, hi = state["bounds"][col]
+        out[col] = out[col].clip(lower=lo, upper=hi)
+    return out
+
+
+class AlignToTrainParams(TransformParams):
+    columns: list[str] = Field(min_length=1, description="Numeric columns to align")
+    mode: Literal["shift_mean", "standardize_to_train"] = Field(
+        default="shift_mean",
+        description="shift_mean: move the frame's mean onto train's; "
+        "standardize_to_train: also rescale its std to train's",
+    )
+
+
+def _fit_align(df: pd.DataFrame, params: AlignToTrainParams) -> dict:
+    stats = {}
+    for col in params.columns:
+        s = pd.to_numeric(df[col], errors="raise")
+        std = s.std()
+        stats[col] = {
+            "mean": None if pd.isna(s.mean()) else float(s.mean()),
+            "std": None if pd.isna(std) else float(std),
+        }
+    return {"train": stats}
+
+
+@transform(
+    "align_to_train",
+    params_model=AlignToTrainParams,
+    fit=_fit_align,
+    title="Align to train statistics",
+)
+def align_to_train(
+    df: pd.DataFrame, params: AlignToTrainParams, state: dict
+) -> pd.DataFrame:
+    """Realign a shifted column to train statistics (mean, optionally std).
+
+    State holds train's mean / std; the frame's own mean / std are measured at
+    apply time. Applied to train itself this is the identity. Minimal version:
+    options to be confirmed.
+    """
+    out = df.copy()
+    for col in params.columns:
+        ref = state["train"][col]
+        s = pd.to_numeric(out[col], errors="raise")
+        mean, std = s.mean(), s.std()
+        if ref["mean"] is None or pd.isna(mean):
+            continue
+        centered = s - mean
+        rescale = (
+            params.mode == "standardize_to_train"
+            and ref["std"] is not None
+            and std
+            and not pd.isna(std)
+        )
+        if rescale:
+            centered = centered / std * ref["std"]
+        out[col] = centered + ref["mean"]
+    return out

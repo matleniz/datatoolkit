@@ -44,7 +44,7 @@ def test_check_matches_key():
 def test_transform():
     df = pd.DataFrame({"a": [1], "b": [2]})
     assert api.transform(df, "drop_columns", columns=["a"]).columns.tolist() == ["b"]
-    assert {"op": "drop_columns"}.items() <= api.list_transforms()[0].items()
+    assert "drop_columns" in [t["op"] for t in api.list_transforms()]
 
 
 def test_repr_html():
