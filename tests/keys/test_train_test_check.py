@@ -31,7 +31,18 @@ def test_defaults_find_demo_inconsistencies():
     overlap = tables["overlap"]
     assert overlap[0]["kind"] == "rows" and overlap[0]["n_test_in_train"] == 0
     assert "PassengerId" in {o["column"] for o in overlap if o["kind"] == "id"}
-    assert len(res["figures"]) == 1
+    assert len(res["figures"]) >= 2  # % missing + drift histograms
+    assert res["figures"][0]["title"] == "% missing train vs test"
+    assert all(
+        f["title"].endswith("train vs test") or ": train vs test" in f["title"]
+        for f in res["figures"]
+    )
+    assert len(res["figures"]) <= 7
+    assert {"numeric_drift", "categorical_drift"} <= set(tables)
+    assert m["n_drifted"] >= 1
+    assert {d["column"] for d in tables["numeric_drift"]} >= {"Fare"}
+    assert all(d["diff"] is not None for d in tables["categorical_drift"])
+    assert any(i["check"] == "drift" for i in issues)
 
 
 def test_explicit_id_columns_detect_leak(tmp_path):
