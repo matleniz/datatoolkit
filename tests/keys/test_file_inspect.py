@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 import pytest
 
@@ -82,3 +84,72 @@ def test_excel_suggests_header_row(tmp_path):
         {"kind": "excel", "path": str(path), "header": sheet["suggested_header"]}
     )
     assert list(df.columns) == ["Part", "Qty", "MPN"]
+
+
+def test_quoted_commas_do_not_move_the_header(tmp_path):
+    content = (
+        b'sku,name,price\nA,"Go, 2nd ed.",1\nB,"x, y, z",2\nC,"a,b,c,d,e",3\nD,"q",4\n'
+    )
+    m = _facts(tmp_path, content)
+    assert (m["header_line"], m["title_lines_above_header"]) == (1, 0)
+    assert m["unnamed_columns"] == ""
+
+
+def test_multiline_quoted_field(tmp_path):
+    m = _facts(tmp_path, b'Title\na,b\n1,"two\nlines"\n2,x\n3,y\n')
+    assert m["header_line"] == 2
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"39,State-gov,77516\n50,Self-emp,83311\n38,Private,215646\n", b"1,2\n3,4\n5,6\n"],
+)
+def test_headerless_file(tmp_path, content):
+    m = _facts(tmp_path, content)
+    assert m["header_guess"] == "none"
+    assert "header_line" not in m
+    assert json.loads(m["load_spec"])["header"] is None
+
+
+def test_text_only_file_assumes_header(tmp_path):
+    assert _facts(tmp_path, b"a,b\nx,y\nz,w\n")["header_guess"] == "present"
+
+
+def test_decimal_and_load_spec(tmp_path):
+    m = _facts(tmp_path, "nom;prix\nHélène;12,5\nZoé;8,75\n".encode("cp1252"))
+    assert m["decimal_guess"] == ","
+    spec = json.loads(m["load_spec"])
+    assert spec | {"path": "x"} == {
+        "kind": "csv",
+        "path": "x",
+        "sep": ";",
+        "encoding": "cp1252",
+        "decimal": ",",
+        "header": 0,
+    }
+    df = api.load(json.loads(m["load_spec"]))
+    assert df["prix"].tolist() == [12.5, 8.75]
+
+
+def test_load_spec_skips_blank_title_lines(tmp_path):
+    path = tmp_path / "f.csv"
+    path.write_bytes(b"Report 2024\n\na,b,c\n1,2,3\n4,5,6\n")
+    m = run_key("file_inspect", {"path": str(path)})["metrics"]
+    spec = json.loads(m["load_spec"])
+    assert spec["header"] == 1
+    assert list(api.load(spec).columns) == ["a", "b", "c"]
+
+
+def test_leading_zero_columns(tmp_path):
+    m = _facts(tmp_path, b"zip,n\n08123,1\n90210,2\n")
+    assert m["leading_zero_columns"] == "zip"
+    assert json.loads(m["load_spec"])["dtype"] == {"zip": "str"}
+
+
+def test_bad_line(tmp_path):
+    assert _facts(tmp_path, b"a,b\n1,2\n3,4,5\n")["bad_line"] == (
+        "line 3: 3 fields, expected 2"
+    )
+    m = _facts(tmp_path, b'a,b\n1,"x" y\n')
+    assert m["bad_line"].startswith("line 2: text after a closing quote")
+    assert _facts(tmp_path, b"a,b\n1,2\n")["bad_line"] == "none"

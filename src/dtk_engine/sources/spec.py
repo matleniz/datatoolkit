@@ -13,8 +13,14 @@ class CsvSource(BaseModel):
     kind: Literal["csv"] = "csv"
     path: str = Field(description="Local path to the CSV file")
     sep: str = Field(default="auto", description='Separator; "auto" sniffs it')
-    encoding: str = "utf-8"
-    decimal: str = Field(default=".", description="Decimal mark")
+    encoding: str = Field(
+        default="auto",
+        description='"auto": BOM, else utf-8, else cp1252 (latin-1 as a last resort)',
+    )
+    decimal: str = Field(
+        default="auto",
+        description='Decimal mark; "auto" picks "," for non-comma files full of 1,5 values',
+    )
     header: int | None = Field(
         default=0, description="Row number of the header; null = no header"
     )
@@ -28,6 +34,16 @@ class CsvSource(BaseModel):
         default=None, description="Columns parsed as datetimes"
     )
     usecols: list[str] | None = Field(default=None, description="Columns to keep")
+    on_bad_lines: Literal["error", "warn", "skip"] = Field(
+        default="error",
+        description="Malformed rows (unclosed quote, text after a quote, too many "
+        'fields): "error" fails with the line, "warn" / "skip" load anyway with '
+        "pandas (rows with too many fields dropped)",
+    )
+    keep_leading_zeros: bool = Field(
+        default=True,
+        description="Digits-only columns with leading zeros (ZIP, ids) stay strings",
+    )
 
 
 class DatasetSource(BaseModel):
