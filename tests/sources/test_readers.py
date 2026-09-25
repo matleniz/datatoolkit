@@ -112,3 +112,26 @@ def test_errors_raise_source_error(tmp_path, monkeypatch):
     ]:
         with pytest.raises(SourceError):
             load(spec)
+
+
+def test_ndjson_suffix(tmp_path):
+    path = tmp_path / "d.ndjson"
+    path.write_text('{"a": 1}\n{"a": 2}\n')
+    assert api.load(path)["a"].tolist() == [1, 2]
+
+
+def test_json_bom_and_encoding(tmp_path):
+    bom = tmp_path / "bom.jsonl"
+    bom.write_bytes(b'\xef\xbb\xbf{"a": 1}\n{"a": 2}\n')
+    assert api.load(bom)["a"].tolist() == [1, 2]
+    plain = tmp_path / "bom.json"
+    plain.write_bytes(b'\xef\xbb\xbf[{"a": 1}]')
+    assert api.load(plain)["a"].tolist() == [1]
+    latin = tmp_path / "latin.json"
+    latin.write_bytes('[{"a": "café"}]'.encode("cp1252"))
+    with pytest.raises(SourceError):
+        api.load(latin)
+    df = api.load({"kind": "json", "path": str(latin), "encoding": "cp1252"})
+    assert df["a"].tolist() == ["café"]
+    with pytest.raises(SourceError, match="unknown encoding"):
+        api.load({"kind": "json", "path": str(latin), "encoding": "nope"})

@@ -1,5 +1,6 @@
 """Raw look at a data file before parsing: bytes, BOM, encoding, delimiter, header."""
 
+import json
 import os
 import re
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ BOMS = [
     (b"\xfe\xff", "utf-16-be"),
 ]
 EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
+JSON_MAX_BYTES = 50_000_000  # bigger files are not parsed just to suggest a path
 
 
 class Params(KeyParams):
@@ -61,20 +63,68 @@ def run(params: Params) -> Result:
         return result
     result.metrics["first_bytes"] = repr(raw[:PREVIEW_BYTES])
     result.metrics.update(_text_facts(raw))
+    if Path(path).suffix.lower() == ".json" and stat.st_size <= JSON_MAX_BYTES:
+        _add_record_paths(result, path)
     return result
 
 
+def _add_record_paths(result: Result, path: str) -> None:
+    """Suggest ``record_path`` when the records sit under an API-style envelope."""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    found = sorted(_record_lists(data, ""), key=lambda item: -item[1])
+    if found:
+        result.metrics["suggested_record_path"] = found[0][0]
+        result.add_table(
+            "record_paths", pd.DataFrame(found, columns=["record_path", "records"])
+        )
+
+
+def _record_lists(node: dict, prefix: str) -> list[tuple[str, int]]:
+    """(dotted path, length) of every non-empty list of objects under dict keys."""
+    out = []
+    for name, value in node.items():
+        here = f"{prefix}{name}"
+        if (
+            isinstance(value, list)
+            and value
+            and all(isinstance(v, dict) for v in value)
+        ):
+            out.append((here, len(value)))
+        elif isinstance(value, dict):
+            out.extend(_record_lists(value, f"{here}."))
+    return out
+
+
 def _excel_sheets(path: str, shown: str) -> pd.DataFrame:
+    """One row per sheet; ``suggested_header`` is a 0-based value for ``header``."""
     try:
         sheets = pd.read_excel(path, sheet_name=None, header=None, engine="openpyxl")
     except Exception as exc:
         raise SourceError(f"cannot read excel {shown}: {exc}") from exc
     return pd.DataFrame(
         [
-            {"sheet": n, "rows": d.shape[0], "cols": d.shape[1]}
+            {
+                "sheet": n,
+                "rows": d.shape[0],
+                "cols": d.shape[1],
+                "suggested_header": _excel_header_row(d),
+            }
             for n, d in sheets.items()
         ]
     )
+
+
+def _excel_header_row(raw: pd.DataFrame) -> int:
+    """First row with the modal non-empty cell count (title / banner rows have fewer)."""
+    counts = raw.head(50).notna().sum(axis=1).tolist()
+    modal = max(set(counts) - {0}, key=counts.count, default=None)
+    return counts.index(modal) if modal is not None else 0
 
 
 def _text_facts(raw: bytes) -> dict:

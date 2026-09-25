@@ -61,7 +61,10 @@ SUFFIX_KINDS = {
     ".xlsx": "excel",
     ".json": "json",
     ".jsonl": "json",
+    ".ndjson": "json",
 }
+
+JSON_LINES_SUFFIXES = {".jsonl", ".ndjson"}
 
 _SPEC = TypeAdapter(SourceSpec)
 
@@ -78,7 +81,7 @@ def load(source: str | Path | dict | BaseModel) -> pd.DataFrame:
                 f"(known: {sorted(SUFFIX_KINDS)}); pass a source spec dict instead"
             )
         source = {"kind": SUFFIX_KINDS[suffix], "path": str(source)}
-        if suffix == ".jsonl":
+        if suffix in JSON_LINES_SUFFIXES:
             source["lines"] = True
     if isinstance(source, dict):
         try:

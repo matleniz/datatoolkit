@@ -14,7 +14,7 @@ from dtk_engine.sources.spec import JsonSource
 
 
 def _records(spec: JsonSource, path: str) -> list | dict:
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding=spec.encoding) as fh:
         if spec.lines:
             return [json.loads(line) for line in fh if line.strip()]
         return json.load(fh)
@@ -34,6 +34,8 @@ def read_json(spec: JsonSource) -> pd.DataFrame:
         return pd.json_normalize(data, sep="_")
     except FileNotFoundError:
         raise SourceError(f"json source not found: {spec.path}") from None
+    except LookupError:
+        raise SourceError(f"unknown encoding {spec.encoding!r}") from None
     # JSONDecodeError / UnicodeDecodeError are ValueErrors.
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise SourceError(f"cannot read json {spec.path}: {exc}") from exc

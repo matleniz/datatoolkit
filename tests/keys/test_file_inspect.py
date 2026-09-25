@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from dtk_engine import run_key
+from dtk_engine import api, run_key
 from dtk_engine.errors import SourceError
 
 
@@ -47,3 +47,38 @@ def test_excel_lists_sheets(tmp_path):
 def test_missing_file(tmp_path):
     with pytest.raises(SourceError):
         run_key("file_inspect", {"path": str(tmp_path / "nope.csv")})
+
+
+def test_json_suggests_record_path(tmp_path):
+    path = tmp_path / "api.json"
+    path.write_text(
+        '{"meta": {"page": 1}, "data": {"items": [{"id": 1}, {"id": 2}], "x": [{"k": 1}]}}'
+    )
+    result = run_key("file_inspect", {"path": str(path)})
+    assert result["metrics"]["suggested_record_path"] == "data.items"
+    records = result["tables"][-1]["records"]
+    assert [r["record_path"] for r in records] == ["data.items", "data.x"]
+    flat = tmp_path / "flat.json"
+    flat.write_text('[{"a": 1}]')
+    assert (
+        "suggested_record_path"
+        not in run_key("file_inspect", {"path": str(flat)})["metrics"]
+    )
+
+
+def test_excel_suggests_header_row(tmp_path):
+    path = tmp_path / "bom.xlsx"
+    rows = [
+        ["Company BOM Export", None, None],
+        ["Rev 3", None, None],
+        ["Part", "Qty", "MPN"],
+        ["r1", 2, "x1"],
+        ["r2", 3, "x2"],
+    ]
+    pd.DataFrame(rows).to_excel(path, header=False, index=False)
+    sheet = run_key("file_inspect", {"path": str(path)})["tables"][0]["records"][0]
+    assert sheet["suggested_header"] == 2
+    df = api.load(
+        {"kind": "excel", "path": str(path), "header": sheet["suggested_header"]}
+    )
+    assert list(df.columns) == ["Part", "Qty", "MPN"]
