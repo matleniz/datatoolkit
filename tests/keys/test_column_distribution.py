@@ -78,3 +78,18 @@ def test_errors():
     df = pd.DataFrame({"a": [1.5, 2.5, 3.5], "y": [0, 1, 0]})
     with pytest.raises(ValueError, match="target"):
         api.distribution(df, columns=["y"], target="y", by_label=True)
+
+
+def test_bad_params_raise_key_params_error():
+    import pytest
+
+    from dtk_engine import run_key
+    from dtk_engine.errors import KeyParamsError
+
+    for params in (
+        {"by_label": True},
+        {"by_label": True, "target": "nope"},
+        {"columns": ["nope"]},
+    ):
+        with pytest.raises(KeyParamsError):
+            run_key("column_distribution", params)

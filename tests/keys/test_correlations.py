@@ -78,3 +78,11 @@ def test_errors():
 
 def test_transform_registry_still_has_drop_correlated():
     assert get_transform("drop_correlated").needs_target
+
+
+def test_bad_params_raise_key_params_error():
+    from dtk_engine.errors import KeyParamsError
+
+    for params in ({"target": "nope"}, {"columns": ["nope"]}):
+        with pytest.raises(KeyParamsError):
+            run_key("correlations", params)

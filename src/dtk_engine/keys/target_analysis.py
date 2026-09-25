@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.columns import pick_columns, value_kind
 from dtk_engine.ops.distribution import TOP_K
 from dtk_engine.ops.selection import resolve_task
@@ -92,10 +93,10 @@ def target_result(
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.target_analysis``)."""
     op = "target_analysis"
     if target not in df.columns:
-        raise ValueError(f"{op}: target {target!r} not in the frame")
+        raise KeyParamsError(f"{op}: target {target!r} not in the frame")
     rows = labeled_rows(df, target)
     if rows.empty:
-        raise ValueError(f"{op}: target {target!r} has no value")
+        raise KeyParamsError(f"{op}: target {target!r} has no value")
     picked, n_capped = pick_columns(
         df, columns or [], op, exclude=[target], cap=MAX_COLUMNS
     )

@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 
 import pandas as pd
 
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.profile import semantic_type
 
 # Semantic types a key analyses by default ("every eligible column"): ids, free
@@ -53,24 +54,24 @@ def pick_columns(
 
     ``columns`` empty: every ``eligible`` column but ``exclude``, first ``cap``.
     Otherwise the pick as given (not capped): absent or excluded columns, or
-    columns failing ``required``, raise a ``ValueError`` naming them.
+    columns failing ``required``, raise a ``KeyParamsError`` naming them.
     """
     excluded = {c for c in exclude if c is not None}
     if not columns:
         picked = [str(c) for c in df.columns if c not in excluded and eligible(df[c])]
         if not picked:
-            raise ValueError(f"{op}: no eligible column in the frame")
+            raise KeyParamsError(f"{op}: no eligible column in the frame")
         if cap is not None and len(picked) > cap:
             return picked[:cap], len(picked) - cap
         return picked, 0
     absent = [c for c in columns if c not in df.columns]
     if absent:
-        raise ValueError(f"{op}: columns not in the frame {absent}")
+        raise KeyParamsError(f"{op}: columns not in the frame {absent}")
     clash = [c for c in columns if c in excluded]
     if clash:
-        raise ValueError(f"{op}: {clash} cannot be picked (it is the target)")
+        raise KeyParamsError(f"{op}: {clash} cannot be picked (it is the target)")
     if required is not None:
         bad = [c for c in columns if not required(df[c])]
         if bad:
-            raise ValueError(f"{op}: {bad} {requirement}")
+            raise KeyParamsError(f"{op}: {bad} {requirement}")
     return list(dict.fromkeys(columns)), 0

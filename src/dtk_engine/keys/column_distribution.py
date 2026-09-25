@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from pydantic import Field
 
 from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.columns import pick_columns, value_kind
 from dtk_engine.ops.distribution import (
     GROUP,
@@ -107,9 +108,9 @@ def distribution_result(
     op = "column_distribution"
     if by_label:
         if target is None:
-            raise ValueError(f"{op}: by_label needs a target column")
+            raise KeyParamsError(f"{op}: by_label needs a target column")
         if target not in df.columns:
-            raise ValueError(f"{op}: target {target!r} not in the frame")
+            raise KeyParamsError(f"{op}: target {target!r} not in the frame")
     picked, n_capped = pick_columns(
         df, columns or [], op, exclude=[target] if by_label else [], cap=MAX_COLUMNS
     )

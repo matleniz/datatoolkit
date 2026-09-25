@@ -7,6 +7,7 @@ import plotly.express as px
 from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.columns import is_numeric, numeric_feature, pick_columns
 from dtk_engine.ops.correlation import (
     DEFAULT_THRESHOLD,
@@ -80,7 +81,7 @@ def correlations_result(
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.correlations``)."""
     op = "correlations"
     if target is not None and target not in df.columns:
-        raise ValueError(f"{op}: target {target!r} not in the frame")
+        raise KeyParamsError(f"{op}: target {target!r} not in the frame")
     picked, n_capped = pick_columns(
         df,
         columns or [],

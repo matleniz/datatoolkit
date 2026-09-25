@@ -35,10 +35,18 @@ def columns_field(
     *,
     source: str = "source",
     dtype: ColumnDtype = "any",
+    nullable: bool = False,
+    min_length: int | None = None,
 ) -> Any:
-    """A ``list[str]`` param picking columns of the ``source`` param (default: [])."""
+    """A ``list[str]`` param picking columns of the ``source`` param (default: []).
+
+    ``nullable=True`` (default None, type ``list[str] | None``) keeps a key's "null = auto" semantics.
+    """
     return Field(
-        default=[],  # pydantic copies it; a factory would hide it from the schema
+        default=None
+        if nullable
+        else [],  # pydantic copies it; a factory would hide it from the schema
+        min_length=min_length,
         description=description,
         json_schema_extra=_hints("columns", source, dtype),
     )

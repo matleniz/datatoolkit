@@ -90,3 +90,14 @@ def test_errors():
         api.target_analysis(df, target="y", columns=["y"])
     with pytest.raises(ValueError, match="regression needs a numeric"):
         api.target_analysis(df, target="cat_signal", task="regression")
+
+
+def test_bad_params_raise_key_params_error():
+    import pytest
+
+    from dtk_engine import run_key
+    from dtk_engine.errors import KeyParamsError
+
+    for params in ({"target": "nope"}, {"columns": ["nope"]}):
+        with pytest.raises(KeyParamsError):
+            run_key("target_analysis", params)
