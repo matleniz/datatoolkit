@@ -9,6 +9,7 @@ from dtk_engine import (
     list_keys,
     list_transforms,
     list_workspaces,
+    preview_workspace,
     run_key,
     save_workspace,
     transform_schema,
@@ -105,3 +106,57 @@ def test_transform_schema():
     assert "columns" in schema["required"]
     with pytest.raises(UnknownTransformError):
         transform_schema("does-not-exist")
+
+
+def _snapshot(root):
+    return sorted((str(p), p.stat().st_mtime_ns) for p in root.rglob("*"))
+
+
+def test_preview_workspace_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    save_workspace(
+        _workspace("w.preview")
+    )  # a real workspace with the old scratch name
+    before = _snapshot(tmp_path)
+    ws = _workspace("w")
+    ws["steps"] = [
+        {"op": "drop_columns", "target": "both", "params": {"columns": ["Name"]}}
+    ]
+    out = preview_workspace(ws, "train", head_rows=3)
+    assert json.dumps(out)
+    assert out["shape"] == [41, len(out["columns"])]
+    assert "Name" not in out["columns"] and len(out["head"]) == 3
+    assert _snapshot(tmp_path) == before
+    assert [w["name"] for w in list_workspaces()] == ["w.preview"]
+
+
+def test_preview_workspace_impute_both_uses_train_median(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("DTK_HOME", str(home))
+    (tmp_path / "train.csv").write_text("Age,id\n10,1\n20,2\n30,3\n")  # median 20
+    (tmp_path / "test.csv").write_text("Age,id\n100,1\n,2\n300,3\n")  # own median 200
+    ws = {
+        "name": "w",
+        "datasets": {
+            "train": {"x": {"kind": "csv", "path": str(tmp_path / "train.csv")}},
+            "test": {"x": {"kind": "csv", "path": str(tmp_path / "test.csv")}},
+        },
+        "steps": [
+            {
+                "op": "impute",
+                "target": "both",
+                "params": {"columns": ["Age"], "strategy": "median"},
+            }
+        ],
+    }
+    out = preview_workspace(ws, "test")
+    assert out["shape"] == [3, 2]
+    assert [r["Age"] for r in out["head"]] == [100, 20, 300]
+    assert not home.exists()
+
+
+def test_preview_workspace_errors():
+    with pytest.raises(KeyParamsError):
+        preview_workspace({"name": "w"}, "train")
+    with pytest.raises(KeyParamsError):
+        preview_workspace(_workspace(), "val")

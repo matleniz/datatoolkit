@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from dtk_engine.contract import list_transforms
+from dtk_engine.contract import list_transforms, preview_workspace
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.keys.dataset_overview import overview_result
 from dtk_engine.keys.duplicates import duplicates_result
@@ -46,6 +46,7 @@ __all__ = [
     "missing",
     "outliers",
     "overview",
+    "preview_workspace",
     "transform",
 ]
 

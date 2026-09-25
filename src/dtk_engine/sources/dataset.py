@@ -34,7 +34,6 @@ def labeled_frame(dataset, label, labeled: bool) -> pd.DataFrame:
 @reader("dataset")
 def read_dataset(spec: DatasetSource, store=None) -> pd.DataFrame:
     # Imported here: dtk_engine.workspace imports sources.spec (import cycle).
-    from dtk_engine.workspace.replay import needs_train, replay
     from dtk_engine.workspace.store import JsonWorkspaceStore, WorkspaceNotFoundError
 
     store = store if store is not None else JsonWorkspaceStore()
@@ -42,11 +41,18 @@ def read_dataset(spec: DatasetSource, store=None) -> pd.DataFrame:
         ws = store.get(spec.workspace)
     except WorkspaceNotFoundError:
         raise SourceError(f"workspace not found: {spec.workspace!r}") from None
-    dataset = getattr(ws.datasets, spec.role)
+    return workspace_frame(ws, spec.role, spec.labeled)
+
+
+def workspace_frame(ws, role: str, labeled: bool = True) -> pd.DataFrame:
+    """Current state of ``role`` for a Workspace object (no store access)."""
+    from dtk_engine.workspace.replay import needs_train, replay
+
+    dataset = getattr(ws.datasets, role)
     if dataset is None:
-        raise SourceError(f"workspace {ws.name!r} has no {spec.role} dataset")
-    frame = labeled_frame(dataset, ws.label, spec.labeled)
+        raise SourceError(f"workspace {ws.name!r} has no {role} dataset")
+    frame = labeled_frame(dataset, ws.label, labeled)
     train = None
-    if spec.role == "test" and needs_train(ws.steps):
-        train = labeled_frame(ws.datasets.train, ws.label, spec.labeled)
-    return replay(ws.steps, spec.role, frame, train)
+    if role == "test" and needs_train(ws.steps):
+        train = labeled_frame(ws.datasets.train, ws.label, labeled)
+    return replay(ws.steps, role, frame, train)
