@@ -72,6 +72,10 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
             encoding=spec.encoding,
             decimal=spec.decimal,
             header=spec.header,
+            na_values=spec.na_values,
+            dtype=spec.dtype,
+            parse_dates=spec.parse_dates,
+            usecols=spec.usecols,
         )
     except FileNotFoundError:
         raise SourceError(f"csv source not found: {spec.path}") from None

@@ -1,14 +1,34 @@
 """Sources: a JSON SourceSpec -> load() -> pd.DataFrame. Never knows about keys."""
 
-from . import csv_pandas, dataset  # noqa: F401  (registers the readers)
+from . import (  # noqa: F401  (registers the readers)
+    csv_pandas,
+    dataset,
+    excel,
+    json_reader,
+    parquet,
+    sql,
+)
 from .registry import load, reader
-from .spec import CsvSource, DatasetSource, FileSourceSpec, SourceSpec
+from .spec import (
+    CsvSource,
+    DatasetSource,
+    ExcelSource,
+    FileSourceSpec,
+    JsonSource,
+    ParquetSource,
+    SourceSpec,
+    SqlSource,
+)
 
 __all__ = [
     "CsvSource",
     "DatasetSource",
+    "ExcelSource",
     "FileSourceSpec",
+    "JsonSource",
+    "ParquetSource",
     "SourceSpec",
+    "SqlSource",
     "load",
     "reader",
 ]

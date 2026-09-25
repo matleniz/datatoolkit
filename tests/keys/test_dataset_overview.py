@@ -56,4 +56,4 @@ def test_missing_file_surfaces_source_error(tmp_path):
 
 def test_unknown_source_kind_rejected():
     with pytest.raises(KeyParamsError):
-        run_key("dataset_overview", {"source": {"kind": "parquet", "path": "x"}})
+        run_key("dataset_overview", {"source": {"kind": "xml", "path": "x"}})
