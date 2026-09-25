@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 from pydantic import ValidationError
 
 from . import keys  # noqa: F401  (registers every key)
 from .errors import KeyParamsError
 from .ops import transforms  # noqa: F401  (registers every transform op)
 from .registry import all_keys, get_key
+from .sources.dataset import workspace_frame
 from .transform_registry import all_transforms, get_transform
 from .workspace import JsonWorkspaceStore, Workspace
 from .workspace.export import export_workspace as _export
@@ -71,6 +74,26 @@ def save_workspace(workspace: dict) -> dict:
         raise KeyParamsError(str(exc)) from exc
     JsonWorkspaceStore().save(parsed)
     return parsed.model_dump(mode="json")
+
+
+def preview_workspace(ws: dict, role: str, head_rows: int = 5) -> dict:
+    """Replay an unsaved workspace dict in memory (nothing is written to the store).
+
+    Validates like ``save_workspace``; returns ``{shape: [rows, cols], columns,
+    head: records}`` for ``role`` ("train" | "test") with its steps applied.
+    """
+    try:
+        parsed = Workspace.model_validate(ws)
+    except ValidationError as exc:
+        raise KeyParamsError(str(exc)) from exc
+    if role not in ("train", "test"):
+        raise KeyParamsError(f"role must be 'train' or 'test', got {role!r}")
+    df = workspace_frame(parsed, role)
+    return {
+        "shape": [len(df), df.shape[1]],
+        "columns": [str(c) for c in df.columns],
+        "head": json.loads(df.head(head_rows).to_json(orient="records")),
+    }
 
 
 def delete_workspace(name: str) -> None:
