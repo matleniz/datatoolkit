@@ -131,10 +131,22 @@ def _excel_sheets(path: str, shown: str) -> pd.DataFrame:
 
 
 def _excel_header_row(raw: pd.DataFrame) -> int:
-    """First row with the modal non-empty cell count (title / banner rows have fewer)."""
-    counts = raw.head(50).notna().sum(axis=1).tolist()
+    """First row at least as full as the modal row, preferring mostly-text rows.
+
+    Title / banner rows are sparser than the modal count; data rows with missing
+    cells can be sparser than the header, so the header only needs to reach it.
+    """
+    head = raw.head(50)
+    counts = head.notna().sum(axis=1).tolist()
     modal = max(set(counts) - {0}, key=counts.count, default=None)
-    return counts.index(modal) if modal is not None else 0
+    if modal is None:
+        return 0
+    full = [i for i, c in enumerate(counts) if c >= modal]
+    for i in full:
+        cells = head.iloc[i].dropna()
+        if sum(isinstance(v, str) for v in cells) * 2 > len(cells):
+            return i
+    return full[0]
 
 
 def _text_facts(raw: bytes, shown: str) -> dict:
