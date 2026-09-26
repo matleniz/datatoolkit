@@ -70,6 +70,6 @@ def advisor_result(
     lines = [f"- {r.column}: {r.advice}" for r in warnings.itertuples()]
     text = "Warnings:\n" + "\n".join(lines) if lines else ""
     result = Result(metrics=metrics, text=text)
-    result.add_table("recommendations", recs)
+    result.add_table("recommendations", recs, kind="steps")
     result.add_table("columns", columns)
     return result

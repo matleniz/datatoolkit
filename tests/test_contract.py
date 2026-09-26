@@ -41,6 +41,44 @@ def test_bad_params_raise(key_id):
         run_key(key_id, {"__not_a_param__": object()})
 
 
+def test_list_keys_needs_target():
+    keys = {k["id"]: k for k in list_keys()}
+    assert json.dumps(keys)
+    assert keys["feature_selection"]["needs_target"] is True
+    assert keys["target_analysis"]["needs_target"] is True
+    # An optional target does not make the key supervised.
+    assert keys["preprocessing_advisor"]["needs_target"] is False
+    assert keys["dataset_overview"]["needs_target"] is False
+
+
+TARGET_KEYS = [k for k in KEY_IDS if "target" in key_schema(k)["properties"]]
+# Params that make a key actually read its target.
+READS_TARGET = {"column_distribution": {"by_label": True}}
+
+
+@pytest.mark.parametrize("key_id", TARGET_KEYS)
+def test_unknown_target_raises_params_error(key_id):
+    with pytest.raises(KeyParamsError, match="nope"):
+        run_key(key_id, {"target": "nope", **READS_TARGET.get(key_id, {})})
+
+
+STEP_TABLES = {
+    "preprocessing_advisor": {"recommendations"},
+    "feature_selection": {"suggested_steps"},
+    "correlations": {"suggested_steps"},
+}
+
+
+@pytest.mark.parametrize("key_id", KEY_IDS)
+def test_steps_tables_are_tagged(key_id):
+    tables = run_key(key_id, {})["tables"]
+    steps = {t["title"] for t in tables if t["kind"] == "steps"}
+    assert steps == STEP_TABLES.get(key_id, set())
+    for t in tables:
+        if t["kind"] == "steps":
+            assert all({"op", "target", "params"} <= set(r) for r in t["records"])
+
+
 def test_unknown_key_raises():
     with pytest.raises(UnknownKeyError):
         run_key("does-not-exist", {})
@@ -95,8 +133,10 @@ def test_save_invalid_workspace_raises(tmp_path, monkeypatch):
 def test_list_transforms_is_json():
     transforms = list_transforms()
     assert json.dumps(transforms)
-    assert {"op", "title", "description"} == set(transforms[0])
-    assert "drop_columns" in [t["op"] for t in transforms]
+    assert {"op", "title", "description", "needs_target"} == set(transforms[0])
+    by_op = {t["op"]: t for t in transforms}
+    assert by_op["select_k_best"]["needs_target"] is True
+    assert by_op["drop_columns"]["needs_target"] is False
 
 
 def test_transform_schema():

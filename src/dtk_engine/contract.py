@@ -20,12 +20,14 @@ from .workspace.replay import validate_steps
 
 
 def list_keys() -> list[dict]:
+    """Registered keys; ``needs_target``: the key requires a ``target`` column."""
     return [
         {
             "id": k.id,
             "title": k.title,
             "category": k.category,
             "description": k.description,
+            "needs_target": k.needs_target,
         }
         for k in all_keys()
     ]
@@ -36,6 +38,13 @@ def key_schema(key_id: str) -> dict:
 
 
 def run_key(key_id: str, params: dict) -> dict:
+    """Run a key; returns its Result as a JSON dict.
+
+    Omitted params take the key's defaults, and ``source`` / ``test`` default
+    to the shipped ``demo_data`` CSVs: ``run_key(id, {})`` really analyses the
+    Titanic-like demo files (meant for demos and tests), it is not a no-op.
+    Invalid params -> KeyParamsError; unknown key -> UnknownKeyError.
+    """
     k = get_key(key_id)
     try:
         parsed = k.params_model.model_validate(params)
@@ -62,8 +71,15 @@ def source_columns(spec: dict) -> list[dict]:
 
 
 def list_transforms() -> list[dict]:
+    """Registered transform ops; ``needs_target``: fit reads the column named by
+    the op's ``target`` param (supervised op)."""
     return [
-        {"op": t.op, "title": t.title, "description": t.description}
+        {
+            "op": t.op,
+            "title": t.title,
+            "description": t.description,
+            "needs_target": t.needs_target,
+        }
         for t in all_transforms()
     ]
 

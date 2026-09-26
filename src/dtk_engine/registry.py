@@ -20,6 +20,13 @@ class Key:
     params_model: type[BaseModel]
     run: Callable[[BaseModel], Result]
 
+    @property
+    def needs_target(self) -> bool:
+        """The key analyses a label: its ``target`` param is a non-nullable string
+        (e.g. ``feature_selection``); an optional ``target`` does not count."""
+        field = self.params_model.model_fields.get("target")
+        return field is not None and field.annotation is str
+
 
 _REGISTRY: dict[str, Key] = {}
 

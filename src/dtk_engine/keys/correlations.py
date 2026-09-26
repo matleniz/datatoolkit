@@ -139,7 +139,7 @@ def correlations_result(
             "abs_corr_with_target",
             to_target.rename("abs_corr").rename_axis("column").reset_index(),
         )
-    result.add_table("suggested_steps", steps)
+    result.add_table("suggested_steps", steps, kind="steps")
     fig = px.imshow(
         corr,
         zmin=-1,
