@@ -86,6 +86,30 @@ def test_excel_suggests_header_row(tmp_path):
     assert list(df.columns) == ["Part", "Qty", "MPN"]
 
 
+def _excel_header(tmp_path, rows) -> int:
+    path = tmp_path / "s.xlsx"
+    pd.DataFrame(rows).to_excel(path, header=False, index=False)
+    records = run_key("file_inspect", {"path": str(path)})["tables"][0]["records"]
+    return records[0]["suggested_header"]
+
+
+def test_excel_header_with_missing_cells(tmp_path):
+    rows = [["PassengerId", "Name", "Age", "Cabin"]]
+    rows += [[i, f"n{i}", 20 + i, None] for i in range(8)] + [[9, "n9", 30, "C85"]]
+    assert _excel_header(tmp_path, rows) == 0
+
+
+def test_excel_header_with_nan_heavy_numeric_column(tmp_path):
+    rows = [["id", "x", "y"]] + [[i, None, float(i)] for i in range(6)]
+    rows += [[7, 1.5, 7.0]]
+    assert _excel_header(tmp_path, rows) == 0
+
+
+def test_excel_header_numeric_labels(tmp_path):
+    rows = [["name", 2020, 2021], ["a", 1, 2], ["b", 3, 4]]
+    assert _excel_header(tmp_path, rows) == 0
+
+
 def test_quoted_commas_do_not_move_the_header(tmp_path):
     content = (
         b'sku,name,price\nA,"Go, 2nd ed.",1\nB,"x, y, z",2\nC,"a,b,c,d,e",3\nD,"q",4\n'
