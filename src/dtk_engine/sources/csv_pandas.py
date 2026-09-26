@@ -83,10 +83,16 @@ def guess_encoding(raw: bytes, *, complete: bool = True) -> str:
     if bom:
         return bom
     try:
-        raw.decode("utf-8", errors="strict" if complete else "ignore")
+        raw.decode("utf-8")
         return "utf-8"
-    except UnicodeDecodeError:
-        pass
+    except UnicodeDecodeError as exc:
+        # A sample only tolerates a multi-byte character cut at its very end.
+        if (
+            not complete
+            and exc.reason == "unexpected end of data"
+            and exc.start >= len(raw) - 3
+        ):
+            return "utf-8"
     try:
         raw.decode("cp1252")
         return "cp1252"

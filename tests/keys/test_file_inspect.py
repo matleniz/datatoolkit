@@ -153,3 +153,23 @@ def test_bad_line(tmp_path):
     m = _facts(tmp_path, b'a,b\n1,"x" y\n')
     assert m["bad_line"].startswith("line 2: text after a closing quote")
     assert _facts(tmp_path, b"a,b\n1,2\n")["bad_line"] == "none"
+
+
+def test_large_cp1252_file_guess_round_trips(tmp_path):
+    rows = "".join(f"Île-de-France;{i},5\n" for i in range(6000))
+    content = ("region;val\n" + rows).encode("cp1252")
+    assert len(content) > 64 * 1024
+    m = _facts(tmp_path, content)
+    assert m["encoding_guess"] == "cp1252"
+    df = api.load(json.loads(m["load_spec"]))
+    assert df["region"].iloc[0] == "Île-de-France"
+
+
+def test_large_utf8_file_cut_mid_character_stays_utf8(tmp_path):
+    from dtk_engine.keys.file_inspect import SNIFF_CHARS
+
+    head = "a;b\n" + "x" * (SNIFF_CHARS - 5)
+    content = (head + "é" * 10 + "\n" * 2).encode("utf-8")
+    # 'é' is 2 bytes: the sample boundary falls inside one iff the offset is odd.
+    assert content[:SNIFF_CHARS][-1:] == b"\xc3"
+    assert _facts(tmp_path, content)["encoding_guess"] == "utf-8"
