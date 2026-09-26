@@ -22,6 +22,7 @@ from sklearn.impute import IterativeImputer, KNNImputer
 
 from dtk_engine.ops._util import py as _py
 from dtk_engine.ops._util import require_numeric as _numeric
+from dtk_engine.params import column_field, columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 INDICATOR_SUFFIX = "_was_missing"
@@ -52,7 +53,9 @@ def _put_back(df: pd.DataFrame, columns: list[str], X: np.ndarray) -> pd.DataFra
 
 
 class ImputeParams(TransformParams):
-    columns: list[str] = Field(min_length=1, description="Columns to fill")
+    columns: list[str] = columns_field(
+        "Columns to fill", source="step", required=True, min_length=1
+    )
     strategy: Literal["median", "mean", "most_frequent", "constant"] = Field(
         default="median",
         description="Fill value learned on train: median / mean (numeric), "
@@ -114,10 +117,13 @@ def impute(df: pd.DataFrame, params: ImputeParams, state: dict) -> pd.DataFrame:
 
 
 class ImputeKnnParams(TransformParams):
-    columns: list[str] = Field(
-        min_length=1,
-        description="Numeric columns, used both as neighbor features and filled. "
+    columns: list[str] = columns_field(
+        "Numeric columns, used both as neighbor features and filled. "
         "Distances are raw: scale the features first",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
     )
     n_neighbors: int = Field(default=5, ge=1, description="Neighbors averaged")
     weights: Literal["uniform", "distance"] = Field(
@@ -149,8 +155,12 @@ def impute_knn(df: pd.DataFrame, params: ImputeKnnParams, state: dict) -> pd.Dat
 
 
 class ImputeIterativeParams(TransformParams):
-    columns: list[str] = Field(
-        min_length=1, description="Numeric columns, each regressed on the others"
+    columns: list[str] = columns_field(
+        "Numeric columns, each regressed on the others",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
     )
     max_iter: int = Field(default=10, ge=1, description="Imputation rounds")
     random_state: int = Field(default=0, description="Seed (fixed: replay is exact)")
@@ -183,9 +193,11 @@ def impute_iterative(
 
 
 class FfillParams(TransformParams):
-    sort_by: str = Field(description="Column giving the order (e.g. a timestamp)")
-    columns: list[str] | None = Field(
-        default=None, description="Columns to fill; default all but sort_by"
+    sort_by: str = column_field(
+        ..., "Column giving the order (e.g. a timestamp)", source="step"
+    )
+    columns: list[str] | None = columns_field(
+        "Columns to fill; default all but sort_by", source="step", nullable=True
     )
     limit: int | None = Field(
         default=None, ge=1, description="Max consecutive missing values filled"

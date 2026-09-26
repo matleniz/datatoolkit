@@ -10,6 +10,7 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from dtk_engine.ops._util import json_scalar as _py
+from dtk_engine.params import column_field, columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 MAX_INTERACTION_COLUMNS = 10
@@ -19,8 +20,8 @@ MAX_INTERACTION_COLUMNS = 10
 
 
 class DeriveParams(TransformParams):
-    a: str = Field(description="Left column")
-    b: str = Field(description="Right column")
+    a: str = column_field(..., "Left column", source="step")
+    b: str = column_field(..., "Right column", source="step")
     op: Literal["ratio", "difference", "product", "days_between"] = Field(
         description="a/b, a-b, a*b, or days from a to b (both parsed as dates)"
     )
@@ -59,7 +60,7 @@ _DT_PARTS = ("hour", "dayofweek", "month", "year", "is_weekend")
 
 
 class DatetimePartsParams(TransformParams):
-    column: str = Field(description="Datetime (or date-like) column")
+    column: str = column_field(..., "Datetime (or date-like) column", source="step")
     parts: list[Literal["hour", "dayofweek", "month", "year", "is_weekend"]] = Field(
         default_factory=lambda: list(_DT_PARTS),
         min_length=1,
@@ -89,7 +90,9 @@ def datetime_parts(
 
 
 class CyclicalParams(TransformParams):
-    column: str = Field(description="Numeric column holding the cyclic value")
+    column: str = column_field(
+        ..., "Numeric column holding the cyclic value", source="step", dtype="numeric"
+    )
     period: float = Field(gt=0, description="Cycle length (24 hour, 7 dow, 12 month)")
 
 
@@ -109,7 +112,9 @@ def cyclical(df: pd.DataFrame, params: CyclicalParams, state: dict) -> pd.DataFr
 
 
 class BinParams(TransformParams):
-    column: str = Field(description="Numeric column to bin")
+    column: str = column_field(
+        ..., "Numeric column to bin", source="step", dtype="numeric"
+    )
     mode: Literal["cut", "qcut"] = Field(
         description="cut: explicit edges; qcut: quantile edges fitted on train"
     )
@@ -185,14 +190,17 @@ _AGGS = ("mean", "std", "count", "median")
 
 
 class GroupAggParams(TransformParams):
-    group: str = Field(description="Group-by column")
-    value: str = Field(description="Numeric column to aggregate")
+    group: str = column_field(..., "Group-by column", source="step")
+    value: str = column_field(
+        ..., "Numeric column to aggregate", source="step", dtype="numeric"
+    )
     aggs: list[Literal["mean", "std", "count", "median"]] = Field(
         min_length=1, description="Aggregations (column '<value>_<agg>_by_<group>')"
     )
-    target: str | None = Field(
-        default=None,
-        description="Declared target column; aggregating it is refused (target leak)",
+    target: str | None = column_field(
+        None,
+        "Declared target column; aggregating it is refused (target leak)",
+        source="step",
     )
 
     @model_validator(mode="after")
@@ -238,10 +246,13 @@ def group_agg(df: pd.DataFrame, params: GroupAggParams, state: dict) -> pd.DataF
 
 
 class InteractionsParams(TransformParams):
-    columns: list[str] = Field(
+    columns: list[str] = columns_field(
+        f"Numeric columns to combine (at most {MAX_INTERACTION_COLUMNS})",
+        source="step",
+        dtype="numeric",
+        required=True,
         min_length=2,
         max_length=MAX_INTERACTION_COLUMNS,
-        description=f"Numeric columns to combine (at most {MAX_INTERACTION_COLUMNS})",
     )
     interaction_only: bool = Field(
         default=True, description="Only products of distinct columns (no squares)"

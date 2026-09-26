@@ -7,7 +7,11 @@ source instead of a free-text field). A field built by ``columns_field`` /
 - ``x-dtk-widget``: ``"columns"`` (multiselect, ``list[str]``) or ``"column"``
   (single choice, ``str``);
 - ``x-dtk-source``: name of the sibling param (a ``SourceSpec``) whose columns
-  are the options (``contract.source_columns(spec)`` lists them);
+  are the options (``contract.source_columns(spec)`` lists them), or the special
+  value ``"step"`` (transform ops, which have no sibling ``SourceSpec``): "the
+  frame this step applies to", i.e. the workspace ``dataset`` source of the
+  step's role (train for ``train`` / ``both``, test for ``test``), in its state
+  before the step;
 - ``x-dtk-dtype``: ``"any"`` or ``"numeric"`` (offer only numeric columns).
 
 An empty ``columns`` list means "every eligible column" (each key caps it).
@@ -36,30 +40,35 @@ def columns_field(
     source: str = "source",
     dtype: ColumnDtype = "any",
     nullable: bool = False,
+    required: bool = False,
     min_length: int | None = None,
+    max_length: int | None = None,
 ) -> Any:
     """A ``list[str]`` param picking columns of the ``source`` param (default: []).
 
     ``nullable=True`` (default None, type ``list[str] | None``) keeps a key's "null = auto" semantics.
+    ``required=True`` drops the default (the param must be given).
     """
+    default = ... if required else None if nullable else []  # pydantic copies []
     return Field(
-        default=None
-        if nullable
-        else [],  # pydantic copies it; a factory would hide it from the schema
+        default=default,
         min_length=min_length,
+        max_length=max_length,
         description=description,
         json_schema_extra=_hints("columns", source, dtype),
     )
 
 
 def column_field(
-    default: str | None,
+    default: Any,
     description: str,
     *,
     source: str = "source",
     dtype: ColumnDtype = "any",
 ) -> Any:
-    """A single-column param (e.g. a target) picking a column of ``source``."""
+    """A single-column param (e.g. a target) picking a column of ``source``.
+
+    ``default=...`` makes the param required."""
     return Field(
         default=default,
         description=description,
