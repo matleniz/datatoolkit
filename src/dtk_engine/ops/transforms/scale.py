@@ -14,13 +14,16 @@ import pandas as pd
 from pydantic import Field
 
 from dtk_engine.ops._util import require_numeric as _numeric
+from dtk_engine.params import columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 # --- scale --------------------------------------------------------------------
 
 
 class ScaleParams(TransformParams):
-    columns: list[str] = Field(min_length=1, description="Numeric columns")
+    columns: list[str] = columns_field(
+        "Numeric columns", source="step", dtype="numeric", required=True, min_length=1
+    )
     method: Literal["standard", "minmax", "robust", "maxabs"] = Field(
         default="standard",
         description="standard: mean 0, std 1; minmax: train range -> [0, 1]; "
@@ -70,8 +73,12 @@ def scale(df: pd.DataFrame, params: ScaleParams, state: dict) -> pd.DataFrame:
 
 
 class Log1pParams(TransformParams):
-    columns: list[str] = Field(
-        min_length=1, description="Non-negative, right-skewed numeric columns"
+    columns: list[str] = columns_field(
+        "Non-negative, right-skewed numeric columns",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
     )
 
 

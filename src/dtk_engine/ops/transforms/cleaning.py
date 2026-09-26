@@ -9,11 +9,14 @@ import pandas as pd
 from pydantic import Field, field_validator, model_validator
 
 from dtk_engine.ops.profile import hashable_frame
+from dtk_engine.params import column_field, columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 
 class DropColumnsParams(TransformParams):
-    columns: list[str] = Field(min_length=1, description="Columns to drop")
+    columns: list[str] = columns_field(
+        "Columns to drop", source="step", required=True, min_length=1
+    )
     missing_ok: bool = Field(
         default=False, description="Ignore listed columns absent from the frame"
     )
@@ -72,18 +75,19 @@ def cast(df: pd.DataFrame, params: CastParams, state: dict) -> pd.DataFrame:
 
 
 class DropDuplicatesParams(TransformParams):
-    subset: list[str] | None = Field(
-        default=None, description="Columns defining a duplicate (default: all)"
+    subset: list[str] | None = columns_field(
+        "Columns defining a duplicate (default: all)", source="step", nullable=True
     )
     keep: Literal["first", "last", "none"] = Field(
         default="last",
         description="Row kept per duplicate group by sort_by order "
         "(last = most recent); 'none' drops every duplicated row",
     )
-    sort_by: list[str] | None = Field(
-        default=None,
-        description="Columns ordering rows before picking first/last (ascending, "
+    sort_by: list[str] | None = columns_field(
+        "Columns ordering rows before picking first/last (ascending, "
         "so last = greatest); required when keep is first or last",
+        source="step",
+        nullable=True,
     )
 
     @model_validator(mode="after")
@@ -119,7 +123,9 @@ def drop_duplicates(
 
 
 class StandardizeTextParams(TransformParams):
-    columns: list[str] = Field(min_length=1, description="Text columns to normalize")
+    columns: list[str] = columns_field(
+        "Text columns to normalize", source="step", required=True, min_length=1
+    )
     strip: bool = Field(default=True, description="Strip surrounding whitespace")
     lower: bool = Field(default=False, description="Lowercase")
     mapping: dict[str, str] = Field(
@@ -151,7 +157,9 @@ def standardize_text(
 
 
 class ParseDatesParams(TransformParams):
-    columns: list[str] = Field(min_length=1, description="Columns to parse")
+    columns: list[str] = columns_field(
+        "Columns to parse", source="step", required=True, min_length=1
+    )
     format: str | None = Field(
         default=None, description="strptime format (default: pandas inference)"
     )
@@ -193,7 +201,9 @@ def replace_sentinels(
 
 
 class DropMissingTargetParams(TransformParams):
-    target: str = Field(description="Target column; rows missing it are dropped")
+    target: str = column_field(
+        ..., "Target column; rows missing it are dropped", source="step"
+    )
 
 
 def _fit_drop_missing_target(df: pd.DataFrame, params: DropMissingTargetParams) -> dict:
@@ -219,7 +229,7 @@ def drop_missing_target(
 
 
 class Condition(TransformParams):
-    column: str
+    column: str = column_field(..., "Column the condition tests", source="step")
     op: Literal["eq", "ne", "gt", "ge", "lt", "le", "isin", "notin", "isna", "notna"]
     value: Any = None
 
@@ -279,7 +289,13 @@ def filter_rows(
 
 
 class ClipParams(TransformParams):
-    columns: list[str] = Field(min_length=1, description="Numeric columns to clip")
+    columns: list[str] = columns_field(
+        "Numeric columns to clip",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
+    )
     lower: float = Field(default=1.0, ge=0, le=100, description="Lower percentile")
     upper: float = Field(default=99.0, ge=0, le=100, description="Upper percentile")
 

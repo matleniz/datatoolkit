@@ -14,6 +14,7 @@ import pandas as pd
 from pydantic import Field, field_validator
 
 from dtk_engine.ops._util import py as _py
+from dtk_engine.params import columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 INFREQUENT_SUFFIX = "infrequent"
@@ -26,7 +27,9 @@ Category = str | int | float | bool
 
 
 class OnehotParams(TransformParams):
-    columns: list[str] = Field(min_length=1, description="Categorical columns")
+    columns: list[str] = columns_field(
+        "Categorical columns", source="step", required=True, min_length=1
+    )
     min_frequency: int | float | None = Field(
         default=None,
         gt=0,

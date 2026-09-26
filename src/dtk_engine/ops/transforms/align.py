@@ -8,11 +8,18 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
 
+from dtk_engine.params import column_field, columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 
 class AlignToTrainParams(TransformParams):
-    columns: list[str] = Field(min_length=1, description="Numeric columns to align")
+    columns: list[str] = columns_field(
+        "Numeric columns to align",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
+    )
     mode: Literal["shift_mean", "shift_median", "standardize", "robust", "quantile"] = (
         Field(
             default="shift_mean",
@@ -21,10 +28,11 @@ class AlignToTrainParams(TransformParams):
             "quantile: map onto train's quantile function",
         )
     )
-    group: str | None = Field(
-        default=None,
-        description="Column: align per group (statistics fitted on train); unseen "
+    group: str | None = column_field(
+        None,
+        "Column: align per group (statistics fitted on train); unseen "
         "or small groups fall back to the global statistics",
+        source="step",
     )
     min_rows: int = Field(
         default=30,

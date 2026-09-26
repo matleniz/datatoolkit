@@ -37,17 +37,19 @@ from dtk_engine.ops.selection import (
     target_vector,
     tree_model,
 )
+from dtk_engine.params import column_field, columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 Task = Literal["auto", "classification", "regression"]
 
 
 def _columns_field():
-    return Field(
-        default=None,
+    return columns_field(
+        "Candidate numeric columns; default every numeric column but the target",
+        source="step",
+        dtype="numeric",
+        nullable=True,
         min_length=1,
-        description="Candidate numeric columns; default every numeric column but "
-        "the target",
     )
 
 
@@ -85,8 +87,8 @@ class DropLowVarianceParams(TransformParams):
         description="Drop columns whose train variance is <= this (0 = constants)",
     )
     columns: list[str] | None = _columns_field()
-    target: str | None = Field(
-        default=None, description="Target column: never a candidate"
+    target: str | None = column_field(
+        None, "Target column: never a candidate", source="step"
     )
 
 
@@ -121,10 +123,11 @@ class DropCorrelatedParams(TransformParams):
         description="Drop one column of each pair with |corr| >= this",
     )
     columns: list[str] | None = _columns_field()
-    target: str | None = Field(
-        default=None,
-        description="Target column: when given, the column more correlated with "
+    target: str | None = column_field(
+        None,
+        "Target column: when given, the column more correlated with "
         "it is kept (else the first in column order)",
+        source="step",
     )
 
 
@@ -168,7 +171,7 @@ def drop_correlated(
 
 
 class SelectKBestParams(TransformParams):
-    target: str = Field(description="Target column (read at fit only)")
+    target: str = column_field(..., "Target column (read at fit only)", source="step")
     score: Literal["mutual_info", "f_test"] = Field(
         default="mutual_info",
         description="mutual_info (any dependence) | f_test (linear: ANOVA F / "
@@ -228,7 +231,7 @@ def select_k_best(
 
 
 class SelectFromModelParams(TransformParams):
-    target: str = Field(description="Target column (read at fit only)")
+    target: str = column_field(..., "Target column (read at fit only)", source="step")
     model: Literal["l1", "tree"] = Field(
         default="tree",
         description="l1: L1 logistic / LassoCV on standardized columns (zeroes "
@@ -303,8 +306,8 @@ class PcaParams(TransformParams):
     whiten: bool = Field(
         default=False, description="Rescale components to unit variance"
     )
-    target: str | None = Field(
-        default=None, description="Target column: never a candidate"
+    target: str | None = column_field(
+        None, "Target column: never a candidate", source="step"
     )
     prefix: str = Field(
         default="pc", min_length=1, description="Output names: pc1..pcN"
