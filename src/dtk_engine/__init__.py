@@ -2,6 +2,8 @@
 
 from . import api
 from .contract import (
+    align_report,
+    column_profiles,
     delete_workspace,
     export_workspace,
     get_workspace,
@@ -9,11 +11,13 @@ from .contract import (
     list_keys,
     list_transforms,
     list_workspaces,
+    preview_step,
     preview_workspace,
     run_key,
     save_workspace,
     source_columns,
     transform_schema,
+    workspace_rows,
 )
 from .params import KeyParams
 from .pipeline import DtkTransformer, workspace_pipeline
@@ -26,7 +30,9 @@ __all__ = [
     "KeyParams",
     "Result",
     "TransformParams",
+    "align_report",
     "api",
+    "column_profiles",
     "delete_workspace",
     "export_workspace",
     "get_workspace",
@@ -35,6 +41,7 @@ __all__ = [
     "list_keys",
     "list_transforms",
     "list_workspaces",
+    "preview_step",
     "preview_workspace",
     "run_key",
     "save_workspace",
@@ -42,4 +49,5 @@ __all__ = [
     "transform",
     "transform_schema",
     "workspace_pipeline",
+    "workspace_rows",
 ]
