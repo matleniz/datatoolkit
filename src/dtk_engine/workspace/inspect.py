@@ -33,7 +33,7 @@ from dtk_engine.ops.profile import (
     semantic_type,
 )
 from dtk_engine.sources import load
-from dtk_engine.sources.dataset import labeled_frame
+from dtk_engine.sources.dataset import raw_workspace_frame
 from dtk_engine.workspace.models import Step, Workspace
 from dtk_engine.workspace.replay import (
     needs_train,
@@ -150,10 +150,7 @@ def _with_rids(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _raw_role(ws: Workspace, role: str, labeled: bool = True) -> pd.DataFrame:
-    dataset = getattr(ws.datasets, role)
-    if dataset is None:
-        raise SourceError(f"workspace {ws.name!r} has no {role} dataset")
-    return _with_rids(labeled_frame(dataset, ws.label, labeled))
+    return _with_rids(raw_workspace_frame(ws, role, labeled))
 
 
 def _replay_role(

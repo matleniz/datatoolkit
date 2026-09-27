@@ -27,7 +27,7 @@ import pandas as pd
 
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
-from dtk_engine.sources.dataset import labeled_frame
+from dtk_engine.sources.dataset import raw_workspace_frame
 from dtk_engine.workspace.models import Workspace
 from dtk_engine.workspace.replay import replay_fitted
 from dtk_engine.workspace.store import JsonWorkspaceStore
@@ -247,14 +247,10 @@ def export_workspace(
             )
         _remove_previous(out)
 
-    train = labeled_frame(
-        ws.datasets.train, ws.label, True, merges=ws.merges, role="train"
-    )
+    train = raw_workspace_frame(ws, "train", labeled=True)
     test = None
     if ws.datasets.test is not None:
-        test = labeled_frame(
-            ws.datasets.test, ws.label, True, merges=ws.merges, role="test"
-        )
+        test = raw_workspace_frame(ws, "test", labeled=True)
     train, test, fitted = replay_fitted(ws.steps, train, test)
 
     (out / PROCESSED_DIR).mkdir(parents=True, exist_ok=True)

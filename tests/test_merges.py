@@ -4,10 +4,14 @@ import pandas as pd
 import pytest
 
 from dtk_engine.contract import (
+    align_report,
+    column_profiles,
     export_workspace,
     get_workspace,
+    preview_step,
     preview_workspace,
     save_workspace,
+    workspace_rows,
 )
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.join import merge_match_stats, merge_table
@@ -340,4 +344,110 @@ def test_export_refuses_to_overwrite_merge_source(tmp_path, monkeypatch):
 
     with pytest.raises(KeyParamsError, match="would overwrite the raw input"):
         export_workspace("w_merge_overwrite", str(tmp_path))
+
+
+def test_workspace_rows_sees_merged_columns(workspace_files):
+    ws_both = _make_ws(workspace_files, apply_to="both", columns=["city", "tier"])
+    train_res = workspace_rows(ws_both, "train")
+    col_names_train = [c["name"] for c in train_res["columns"]]
+    assert "city" in col_names_train and "tier" in col_names_train
+    assert train_res["total"] == 4
+    assert [r["city"] for r in train_res["rows"]] == ["Paris", "Lyon", "Paris", "Marseille"]
+    assert [r["tier"] for r in train_res["rows"]] == ["gold", "silver", "bronze", "gold"]
+    assert [r["_rid"] for r in train_res["rows"]] == [0, 1, 2, 3]
+
+    test_res = workspace_rows(ws_both, "test")
+    col_names_test = [c["name"] for c in test_res["columns"]]
+    assert "city" in col_names_test and "tier" in col_names_test
+    assert test_res["total"] == 3
+    assert [r["city"] for r in test_res["rows"]] == ["Paris", "Marseille", None]
+    assert [r["tier"] for r in test_res["rows"]] == ["bronze", "gold", None]
+    assert [r["_rid"] for r in test_res["rows"]] == [0, 1, 2]
+
+    # apply_to=train keeps test without merged columns
+    ws_train = _make_ws(workspace_files, apply_to="train", columns=["city", "tier"])
+    train_only_res = workspace_rows(ws_train, "train")
+    assert "city" in [c["name"] for c in train_only_res["columns"]]
+    assert "tier" in [c["name"] for c in train_only_res["columns"]]
+
+    test_only_res = workspace_rows(ws_train, "test")
+    test_cols = [c["name"] for c in test_only_res["columns"]]
+    assert "city" not in test_cols and "tier" not in test_cols
+    for row in test_only_res["rows"]:
+        assert "city" not in row and "tier" not in row
+
+
+def test_column_profiles_sees_merged_columns(workspace_files):
+    ws_both = _make_ws(workspace_files, apply_to="both", columns=["city", "tier"])
+    train_prof = column_profiles(ws_both, "train")
+    train_cols = {c["name"]: c for c in train_prof["columns"]}
+    assert "city" in train_cols and "tier" in train_cols
+    assert train_cols["city"]["count"] == 4
+    assert train_cols["city"]["missing"] == 0
+
+    test_prof = column_profiles(ws_both, "test")
+    test_cols = {c["name"]: c for c in test_prof["columns"]}
+    assert "city" in test_cols and "tier" in test_cols
+    assert test_cols["city"]["count"] == 2
+    assert test_cols["city"]["missing"] == 1
+
+    # apply_to=train keeps test without merged columns
+    ws_train = _make_ws(workspace_files, apply_to="train", columns=["city", "tier"])
+    train_prof_only = column_profiles(ws_train, "train")
+    assert "city" in {c["name"] for c in train_prof_only["columns"]}
+
+    test_prof_only = column_profiles(ws_train, "test")
+    assert "city" not in {c["name"] for c in test_prof_only["columns"]}
+    assert "tier" not in {c["name"] for c in test_prof_only["columns"]}
+
+
+def test_preview_step_sees_merged_columns(workspace_files):
+    ws_both = _make_ws(workspace_files, apply_to="both", columns=["city", "tier"])
+    step = {"op": "drop_columns", "target": "both", "params": {"columns": ["city"]}}
+
+    train_prev = preview_step(ws_both, step, "train")
+    assert train_prev["removed_columns"] == ["city"]
+    assert "city" not in train_prev["columns"]
+    assert "tier" in train_prev["columns"]
+
+    test_prev = preview_step(ws_both, step, "test")
+    assert test_prev["removed_columns"] == ["city"]
+    assert "city" not in test_prev["columns"]
+    assert "tier" in test_prev["columns"]
+
+    # apply_to=train keeps test without merged columns
+    ws_train = _make_ws(workspace_files, apply_to="train", columns=["city", "tier"])
+    noop_step = {
+        "op": "cast",
+        "target": "both",
+        "params": {"dtypes": {"age": "float64"}},
+    }
+    train_prev_only = preview_step(ws_train, noop_step, "train")
+    assert "city" in train_prev_only["columns"]
+    assert "tier" in train_prev_only["columns"]
+
+    test_prev_only = preview_step(ws_train, noop_step, "test")
+    assert "city" not in test_prev_only["columns"]
+    assert "tier" not in test_prev_only["columns"]
+
+
+def test_align_report_sees_merged_columns(workspace_files):
+    ws_both = _make_ws(workspace_files, apply_to="both", columns=["city", "tier"])
+    rep_both = align_report(ws_both)
+    cols_both = {c["train"]["name"]: c for c in rep_both["columns"] if c["train"] is not None}
+    assert "city" in cols_both and "tier" in cols_both
+    assert cols_both["city"]["status"] == "match"
+    assert cols_both["city"]["test"]["name"] == "city"
+    assert cols_both["tier"]["status"] == "match"
+    assert cols_both["tier"]["test"]["name"] == "tier"
+
+    # apply_to=train keeps test without merged columns
+    ws_train = _make_ws(workspace_files, apply_to="train", columns=["city", "tier"])
+    rep_train = align_report(ws_train)
+    cols_train = {c["train"]["name"]: c for c in rep_train["columns"] if c["train"] is not None}
+    assert "city" in cols_train and "tier" in cols_train
+    assert cols_train["city"]["status"] == "missing_in_test"
+    assert cols_train["city"]["test"] is None
+    assert cols_train["tier"]["status"] == "missing_in_test"
+    assert cols_train["tier"]["test"] is None
 

@@ -59,19 +59,22 @@ def read_dataset(spec: DatasetSource, store=None) -> pd.DataFrame:
     return workspace_frame(ws, spec.role, spec.labeled)
 
 
-def workspace_frame(ws, role: str, labeled: bool = True) -> pd.DataFrame:
-    """Current state of ``role`` for a Workspace object (no store access)."""
-    from dtk_engine.workspace.replay import needs_train, replay
-
+def raw_workspace_frame(ws, role: str, labeled: bool = True) -> pd.DataFrame:
+    """Raw frame for ``role`` with labels and merges applied (no steps replayed)."""
     dataset = getattr(ws.datasets, role)
     if dataset is None:
         raise SourceError(f"workspace {ws.name!r} has no {role} dataset")
     merges = getattr(ws, "merges", [])
-    frame = labeled_frame(dataset, ws.label, labeled, merges=merges, role=role)
+    return labeled_frame(dataset, ws.label, labeled, merges=merges, role=role)
+
+
+def workspace_frame(ws, role: str, labeled: bool = True) -> pd.DataFrame:
+    """Current state of ``role`` for a Workspace object (no store access)."""
+    from dtk_engine.workspace.replay import needs_train, replay
+
+    frame = raw_workspace_frame(ws, role, labeled)
     train = None
     if role == "test" and needs_train(ws.steps):
-        train = labeled_frame(
-            ws.datasets.train, ws.label, labeled, merges=merges, role="train"
-        )
+        train = raw_workspace_frame(ws, "train", labeled)
     return replay(ws.steps, role, frame, train)
 
