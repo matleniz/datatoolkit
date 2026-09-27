@@ -9,12 +9,18 @@ from __future__ import annotations
 import pandas as pd
 
 from dtk_engine.errors import SourceError
-from dtk_engine.ops.join import LabelJoinError, join_labels
+from dtk_engine.ops.join import LabelJoinError, join_labels, merge_table
 from dtk_engine.sources.registry import load, reader
 from dtk_engine.sources.spec import DatasetSource
 
 
-def labeled_frame(dataset, label, labeled: bool) -> pd.DataFrame:
+def labeled_frame(
+    dataset,
+    label,
+    labeled: bool,
+    merges: list | None = None,
+    role: str = "train",
+) -> pd.DataFrame:
     x = load(dataset.x)
     if dataset.target_column is not None:
         if dataset.target_column not in x.columns:
@@ -22,13 +28,22 @@ def labeled_frame(dataset, label, labeled: bool) -> pd.DataFrame:
                 f"target column {dataset.target_column!r} not in X "
                 f"(columns: {list(x.columns)})"
             )
-        return x if labeled else x.drop(columns=dataset.target_column)
-    if dataset.y is None or not labeled:
-        return x
-    try:
-        return join_labels(x, load(dataset.y), label.mode, label.key)
-    except LabelJoinError as exc:
-        raise SourceError(str(exc)) from exc
+        frame = x if labeled else x.drop(columns=dataset.target_column)
+    elif dataset.y is None or not labeled:
+        frame = x
+    else:
+        try:
+            frame = join_labels(x, load(dataset.y), label.mode, label.key)
+        except LabelJoinError as exc:
+            raise SourceError(str(exc)) from exc
+
+    if merges:
+        for m in merges:
+            if m.apply_to == "both" or m.apply_to == role:
+                merge_df = load(m.source)
+                frame = merge_table(frame, merge_df, key=m.key, columns=m.columns)
+
+    return frame
 
 
 @reader("dataset")
@@ -51,8 +66,12 @@ def workspace_frame(ws, role: str, labeled: bool = True) -> pd.DataFrame:
     dataset = getattr(ws.datasets, role)
     if dataset is None:
         raise SourceError(f"workspace {ws.name!r} has no {role} dataset")
-    frame = labeled_frame(dataset, ws.label, labeled)
+    merges = getattr(ws, "merges", [])
+    frame = labeled_frame(dataset, ws.label, labeled, merges=merges, role=role)
     train = None
     if role == "test" and needs_train(ws.steps):
-        train = labeled_frame(ws.datasets.train, ws.label, labeled)
+        train = labeled_frame(
+            ws.datasets.train, ws.label, labeled, merges=merges, role="train"
+        )
     return replay(ws.steps, role, frame, train)
+

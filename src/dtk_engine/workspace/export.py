@@ -104,6 +104,16 @@ def _sources(ws: Workspace) -> list[dict]:
     return out
 
 
+def _merges(ws: Workspace) -> list[dict]:
+    out = []
+    for m in ws.merges:
+        entry = m.model_dump(mode="json")
+        entry.update(file_provenance(m.source.path))
+        out.append(entry)
+    return out
+
+
+
 def versions() -> dict:
     """Versions of everything that shapes the output."""
     import pyarrow
@@ -218,8 +228,11 @@ def export_workspace(
     ws = store.get(name)
     out = Path(out_dir).resolve()
     sources = _sources(ws)  # hashed before reading: provenance of what was read
+    merges = _merges(ws)
 
-    source_paths = {Path(s["path"]) for s in sources}
+    source_paths = {Path(s["path"]) for s in sources} | {
+        Path(m["path"]) for m in merges
+    }
     targets = [out / MANIFEST, out / PROCESSED_DIR, out / STATES_DIR]
     for src in source_paths:
         if any(src == t or t in src.parents for t in targets):
@@ -234,10 +247,14 @@ def export_workspace(
             )
         _remove_previous(out)
 
-    train = labeled_frame(ws.datasets.train, ws.label, True)
+    train = labeled_frame(
+        ws.datasets.train, ws.label, True, merges=ws.merges, role="train"
+    )
     test = None
     if ws.datasets.test is not None:
-        test = labeled_frame(ws.datasets.test, ws.label, True)
+        test = labeled_frame(
+            ws.datasets.test, ws.label, True, merges=ws.merges, role="test"
+        )
     train, test, fitted = replay_fitted(ws.steps, train, test)
 
     (out / PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
@@ -253,6 +270,8 @@ def export_workspace(
         "versions": versions(),
         "sources": sources,
         "label": ws.label.model_dump(mode="json"),
+        "merges": merges,
+        "variables": [v.model_dump(mode="json") for v in ws.variables],
         "steps": [
             _step_entry(i, step, f, out, inline_state_bytes)
             for i, (step, f) in enumerate(zip(ws.steps, fitted, strict=True))

@@ -8,12 +8,18 @@ from __future__ import annotations
 
 import pandas as pd
 
+from dtk_engine.errors import KeyParamsError
+
 # Column names read as a row index (e.g. `Index` in `y_train = Index,target`).
 INDEX_NAMES = {"index", "idx", "unnamed: 0", ""}
 
 
 class LabelJoinError(ValueError):
     """X and y cannot be joined without losing, duplicating or misaligning rows."""
+
+
+class MergeJoinError(KeyParamsError):
+    """A merge table cannot be joined onto X."""
 
 
 def is_index_like(s: pd.Series) -> bool:
@@ -119,3 +125,92 @@ def _join_on_key(x: pd.DataFrame, y: pd.DataFrame, key: str) -> pd.DataFrame:
     out = x.merge(y, on=key, how="left", validate="one_to_one")
     out.index = x.index
     return out
+
+
+def merge_match_stats(
+    x: pd.DataFrame, merge_df: pd.DataFrame, key: str
+) -> dict[str, int]:
+    """Report ``{'matched': int, 'total': int}`` for merging ``merge_df`` onto ``x`` on ``key``."""
+    missing = [
+        side
+        for side, df in (("X", x), ("merge table", merge_df))
+        if key not in df.columns
+    ]
+    if missing:
+        raise MergeJoinError(
+            f"merge on key: column {key!r} not in {' and '.join(missing)}"
+        )
+    matched = int(x[key].isin(merge_df[key]).sum())
+    return {"matched": matched, "total": len(x)}
+
+
+def merge_table(
+    x: pd.DataFrame,
+    merge_df: pd.DataFrame,
+    key: str,
+    columns: list[str] | None = None,
+    *,
+    return_stats: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, dict[str, int]]:
+    """Left join ``merge_df`` onto ``x`` on ``key`` (many-to-one).
+
+    ``columns``: non-key columns to pull from ``merge_df`` (None = all non-key columns).
+    The merge source must have unique non-null keys (else raises MergeJoinError listing
+    the duplicated keys). X rows are never lost or duplicated (assert row count), X row
+    order and index kept. Unmatched rows get NaN. A merged column clashing with an
+    existing X column raises.
+    """
+    missing = [
+        side
+        for side, df in (("X", x), ("merge table", merge_df))
+        if key not in df.columns
+    ]
+    if missing:
+        raise MergeJoinError(
+            f"merge on key: column {key!r} not in {' and '.join(missing)}"
+        )
+
+    null_keys = int(merge_df[key].isna().sum())
+    if null_keys:
+        raise MergeJoinError(
+            f"merge table key {key!r} contains {null_keys} null value(s)"
+        )
+
+    dup_mask = merge_df[key].duplicated(keep=False)
+    if dup_mask.any():
+        dup_keys = merge_df.loc[dup_mask, key].dropna().unique().tolist()
+        raise MergeJoinError(
+            f"merge table key {key!r} has {len(dup_keys)} duplicated keys: {dup_keys}"
+        )
+
+    if columns is not None:
+        missing_cols = [c for c in columns if c not in merge_df.columns]
+        if missing_cols:
+            raise MergeJoinError(
+                f"merge: column(s) {missing_cols} not in merge table"
+            )
+        merge_cols = [c for c in dict.fromkeys(columns) if c != key]
+    else:
+        merge_cols = [c for c in merge_df.columns if c != key]
+
+    clash = [c for c in merge_cols if c in x.columns]
+    if clash:
+        raise MergeJoinError(f"merge: column(s) {clash} already exist in X")
+
+    matched = int(x[key].isin(merge_df[key]).sum())
+    stats = {"matched": matched, "total": len(x)}
+
+    if not merge_cols:
+        out = x.copy()
+    else:
+        sub_merge = merge_df[[key, *merge_cols]]
+        out = x.merge(sub_merge, on=key, how="left", validate="many_to_one")
+        out.index = x.index
+        assert len(out) == len(x), (
+            f"merge altered row count: was {len(x)}, now {len(out)}"
+        )
+
+    if return_stats:
+        return out, stats
+    return out
+
