@@ -27,7 +27,7 @@ import pandas as pd
 
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
-from dtk_engine.sources.dataset import labeled_frame
+from dtk_engine.sources.dataset import raw_workspace_frame
 from dtk_engine.workspace.models import Workspace
 from dtk_engine.workspace.replay import replay_fitted
 from dtk_engine.workspace.store import JsonWorkspaceStore
@@ -102,6 +102,16 @@ def _sources(ws: Workspace) -> list[dict]:
                 }
             )
     return out
+
+
+def _merges(ws: Workspace) -> list[dict]:
+    out = []
+    for m in ws.merges:
+        entry = m.model_dump(mode="json")
+        entry.update(file_provenance(m.source.path))
+        out.append(entry)
+    return out
+
 
 
 def versions() -> dict:
@@ -218,8 +228,11 @@ def export_workspace(
     ws = store.get(name)
     out = Path(out_dir).resolve()
     sources = _sources(ws)  # hashed before reading: provenance of what was read
+    merges = _merges(ws)
 
-    source_paths = {Path(s["path"]) for s in sources}
+    source_paths = {Path(s["path"]) for s in sources} | {
+        Path(m["path"]) for m in merges
+    }
     targets = [out / MANIFEST, out / PROCESSED_DIR, out / STATES_DIR]
     for src in source_paths:
         if any(src == t or t in src.parents for t in targets):
@@ -234,10 +247,10 @@ def export_workspace(
             )
         _remove_previous(out)
 
-    train = labeled_frame(ws.datasets.train, ws.label, True)
+    train = raw_workspace_frame(ws, "train", labeled=True)
     test = None
     if ws.datasets.test is not None:
-        test = labeled_frame(ws.datasets.test, ws.label, True)
+        test = raw_workspace_frame(ws, "test", labeled=True)
     train, test, fitted = replay_fitted(ws.steps, train, test)
 
     (out / PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
@@ -253,6 +266,8 @@ def export_workspace(
         "versions": versions(),
         "sources": sources,
         "label": ws.label.model_dump(mode="json"),
+        "merges": merges,
+        "variables": [v.model_dump(mode="json") for v in ws.variables],
         "steps": [
             _step_entry(i, step, f, out, inline_state_bytes)
             for i, (step, f) in enumerate(zip(ws.steps, fitted, strict=True))
