@@ -133,6 +133,18 @@ def _check_expr(expr: str, declared_vars: set[str]) -> ast.Expression:
                 )
             if not node.args:
                 _refuse("Call", f"{node.func.id}() needs at least one argument")
+            if node.func.id == "round" and len(node.args) >= 2:
+                if len(node.args) > 2:
+                    _refuse("Call", "round() takes at most 2 arguments")
+                dec = node.args[1]
+                if (
+                    not isinstance(dec, ast.Constant)
+                    or type(dec.value) is not int
+                ):
+                    _refuse(
+                        "Call",
+                        "round() second argument must be an integer constant",
+                    )
             for arg in node.args:
                 walk(arg)
             return
@@ -236,9 +248,7 @@ def _np_func(name: str, args: list[np.ndarray]) -> np.ndarray:
     if name == "abs":
         return np.abs(args[0])
     if name == "round":
-        if len(args) == 1:
-            return np.round(args[0])
-        return np.round(args[0], args[1].astype(int))
+        return np.round(args[0])
     if name == "min":
         return np.minimum.reduce(args)
     return np.maximum.reduce(args)  # max
@@ -272,6 +282,13 @@ def _eval_node(node: ast.AST, env: dict[str, np.ndarray], n: int) -> np.ndarray:
             return np.power(a, b)
     if isinstance(node, ast.Call):
         assert isinstance(node.func, ast.Name)
+        # round(x, ndigits): ndigits is an int constant (checked in _check_expr).
+        if node.func.id == "round" and len(node.args) == 2:
+            x = _eval_node(node.args[0], env, n)
+            dec = node.args[1]
+            assert isinstance(dec, ast.Constant) and type(dec.value) is int
+            with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+                return np.round(x, int(dec.value))
         args = [_eval_node(arg, env, n) for arg in node.args]
         with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
             return _np_func(node.func.id, args)

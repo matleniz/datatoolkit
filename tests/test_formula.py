@@ -181,3 +181,22 @@ def test_overwrite_existing_column():
     df = pd.DataFrame({"a": [1.0, 2.0]})
     out = _run(df, name="a", expr="a * 2")
     assert out["a"].tolist() == [2.0, 4.0]
+
+
+def test_round_with_integer_decimals_and_nan():
+    df = pd.DataFrame({"a": [1.23, np.nan, 4.56]})
+    out = _run(df, name="y", expr="round(a, 1)")
+    assert out["y"].iloc[0] == pytest.approx(1.2)
+    assert np.isnan(out["y"].iloc[1])
+    assert out["y"].iloc[2] == pytest.approx(4.6)
+
+
+def test_round_refuses_non_constant_or_non_integer_decimals():
+    with pytest.raises(
+        KeyParamsError, match="round\\(\\) second argument must be an integer constant"
+    ):
+        _parse(name="y", expr="round(a, b)")
+    with pytest.raises(
+        KeyParamsError, match="round\\(\\) second argument must be an integer constant"
+    ):
+        _parse(name="y", expr="round(a, 1.5)")
