@@ -1,4 +1,15 @@
-"""The engine <-> front boundary. Everything in and out is plain JSON."""
+"""The engine <-> front boundary. Everything in and out is plain JSON.
+
+Contract surface (fronts call these; inputs/outputs are plain JSON)::
+
+    list_keys / key_schema / run_key
+    list_workspaces / get_workspace / save_workspace / delete_workspace
+    source_columns
+    list_transforms / transform_schema
+    preview_workspace
+    export_workspace
+    workspace_rows / column_profiles / preview_step / align_report  (Studio grid)
+"""
 
 from __future__ import annotations
 
@@ -15,6 +26,7 @@ from .sources import SourceSpec, load
 from .sources.dataset import workspace_frame
 from .transform_registry import all_transforms, get_transform
 from .workspace import JsonWorkspaceStore, Workspace
+from .workspace import inspect as _inspect
 from .workspace.export import export_workspace as _export
 from .workspace.replay import validate_steps
 
@@ -155,3 +167,51 @@ def export_workspace(name: str, out_dir: str, overwrite: bool = False) -> dict:
     UnknownTransformError, invalid step params -> KeyParamsError.
     """
     return _export(name, out_dir, overwrite=overwrite)
+
+
+# Studio grid (unsaved workspace dicts; nothing written to the store).
+
+
+def workspace_rows(
+    ws: dict,
+    role: str,
+    version: int | None = None,
+    offset: int = 0,
+    limit: int = 500,
+) -> dict:
+    """Paged rows for ``role`` at ``version`` (None = all steps).
+
+    Returns ``{columns: [{name, dtype, kind}], rows: [{..., _rid}], total,
+    version}``. ``kind`` is number|binary|text|date|identifier|bool (from
+    ``ops.profile.semantic_type``). ``_rid`` is the row's position in the raw
+    frame, preserved through row-dropping steps. NaN -> null, datetimes -> ISO.
+    """
+    return _inspect.workspace_rows(
+        _parse_workspace(ws), role, version=version, offset=offset, limit=limit
+    )
+
+
+def column_profiles(ws: dict, role: str, version: int | None = None) -> dict:
+    """Per-column profile for ``role`` at ``version`` (histograms, sentinels,
+    IQR bounds, variants, dates-/numbers-as-text, skew)."""
+    return _inspect.column_profiles(_parse_workspace(ws), role, version=version)
+
+
+def preview_step(ws: dict, step: dict, role: str) -> dict:
+    """Append ``step``, replay in memory; return shape / column / cell diffs
+    plus the step's fitted ``state`` and ``fitted_on``.
+
+    Invalid step -> KeyParamsError / UnknownTransformError (like
+    ``save_workspace``); a step failing on the data -> SourceError naming it.
+    """
+    return _inspect.preview_step(_parse_workspace(ws), step, role)
+
+
+def align_report(ws: dict) -> dict:
+    """Train / test column alignment after the workspace's steps.
+
+    Per column: train/test ``{name, kind, samples}``, status
+    (match|type_mismatch|missing_in_test|extra_in_test|label), means,
+    ``numbers_as_text``, and ``similar`` test-only names (difflib).
+    """
+    return _inspect.align_report(_parse_workspace(ws))
