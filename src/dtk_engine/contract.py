@@ -183,7 +183,8 @@ def workspace_rows(
 
     Returns ``{columns: [{name, dtype, kind}], rows: [{..., _rid}], total,
     version}``. ``kind`` is number|binary|text|date|identifier|bool (from
-    ``ops.profile.semantic_type``). ``_rid`` is the row's position in the raw
+    ``ops.profile.semantic_type``, plus an ``*_id`` / ``Id`` name heuristic for
+    high-distinctness text). ``_rid`` is the row's position in the raw
     frame, preserved through row-dropping steps. NaN -> null, datetimes -> ISO.
     """
     return _inspect.workspace_rows(

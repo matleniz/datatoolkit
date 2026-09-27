@@ -210,6 +210,66 @@ def test_column_profiles_numbers_as_text_and_dates(tmp_path):
     assert by["when"]["looks_like_dates"] is True
 
 
+def test_column_profiles_comma_decimal_numbers_as_text(tmp_path):
+    """European decimals ('41,0') must flag numbers_as_text on profiles + align."""
+    train = tmp_path / "t.csv"
+    test = tmp_path / "e.csv"
+    train.write_text("monthly_spend,Survived\n10.5,0\n20.0,1\n")
+    test.write_text('monthly_spend\n"41,0"\n"9,5"\n"-3,25"\n')
+    ws = {
+        "name": "w",
+        "datasets": {
+            "train": {
+                "x": {"kind": "csv", "path": str(train)},
+                "target_column": "Survived",
+            },
+            "test": {
+                "x": {
+                    "kind": "csv",
+                    "path": str(test),
+                    "dtype": {"monthly_spend": "str"},
+                }
+            },
+        },
+    }
+    by = {c["name"]: c for c in column_profiles(ws, "test")["columns"]}
+    assert by["monthly_spend"]["numbers_as_text"] is True
+    align = align_report(ws)
+    spend = next(
+        r for r in align["columns"] if r["train"] and r["train"]["name"] == "monthly_spend"
+    )
+    assert spend["numbers_as_text"] is True
+
+
+def test_column_profiles_id_name_heuristic(tmp_path):
+    """Text column named *_id with >=90% distinct non-null values -> identifier."""
+    train = tmp_path / "t.csv"
+    test = tmp_path / "e.csv"
+    # 18 distinct ids, 2 duplicate rows -> 18/20 = 0.9; below ID_MIN_NON_NULL
+    # so semantic_type stays text, but the name heuristic promotes kind.
+    ids = [f"C{i:03d}" for i in range(1, 19)] + ["C001", "C002"]
+    train.write_text(
+        "customer_id,Survived\n" + "".join(f"{i},0\n" for i in ids)
+    )
+    test.write_text("customer_id\nC001\n")
+    ws = {
+        "name": "w",
+        "datasets": {
+            "train": {
+                "x": {"kind": "csv", "path": str(train)},
+                "target_column": "Survived",
+            },
+            "test": {"x": {"kind": "csv", "path": str(test)}},
+        },
+    }
+    by = {c["name"]: c for c in column_profiles(ws, "train")["columns"]}
+    assert by["customer_id"]["kind"] == "identifier"
+    rows = workspace_rows(ws, "train", limit=1)
+    assert next(c["kind"] for c in rows["columns"] if c["name"] == "customer_id") == (
+        "identifier"
+    )
+
+
 def test_preview_step_drop_columns_diff():
     ws = _workspace()
     out = preview_step(
@@ -415,3 +475,11 @@ def test_column_kind_mapping():
     assert (
         column_kind(pd.Series(pd.to_datetime(["2020-01-01", "2020-02-01"]))) == "date"
     )
+    ids = pd.Series([f"C{i:03d}" for i in range(1, 19)] + ["C001", "C002"])
+    assert column_kind(ids, "customer_id") == "identifier"
+    assert column_kind(ids, "userId") == "identifier"
+    assert column_kind(ids, "id") == "identifier"
+    assert column_kind(ids, "city") == "text"
+    # Below 90% distinct -> stay text even with an id-like name.
+    low = pd.Series(["A", "A", "B", "B", "C"])
+    assert column_kind(low, "customer_id") == "text"

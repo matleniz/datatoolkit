@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 from typing import Any
 
 import numpy as np
@@ -29,7 +30,6 @@ from dtk_engine.ops.profile import (
     HIST_BINS,
     hashable,
     object_kind,
-    pct_numeric_parsable,
     semantic_type,
 )
 from dtk_engine.sources import load
@@ -81,23 +81,48 @@ _SAMPLE_N = 3
 # Prototype skew heuristic: non-negative, median > 0, mean > 1.3 * median.
 _SKEW_MEAN_OVER_MEDIAN = 1.3
 _SKEW_MIN_N = 5
+# Name heuristic: text column named like an id with high distinctness -> identifier.
+# semantic_type remains the primary signal (id_like / group_id already map above).
+_ID_NAME_DISTINCT_RATIO = 0.9
+# Numbers stored as text: optional sign, digits, optional decimal with '.' or ','
+# (thousands-free; a single ',' is treated as the decimal separator).
+_NUMBER_AS_TEXT_RE = re.compile(r"^[+-]?\d+(?:[.,]\d+)?$")
 
 
-def column_kind(series: pd.Series) -> str:
-    """Map a column to a Studio grid kind (see module docstring table)."""
+def _name_looks_like_id(name: str) -> bool:
+    return name == "id" or name.endswith(("_id", "Id"))
+
+
+def column_kind(series: pd.Series, name: str | None = None) -> str:
+    """Map a column to a Studio grid kind (see module docstring table).
+
+    ``name`` enables a secondary heuristic: a text column named ``id`` or ending
+    in ``_id`` / ``Id`` with >= 90% distinct non-null values becomes
+    ``identifier``. ``semantic_type`` remains the primary signal.
+    """
     st = semantic_type(series)
     if st != "constant":
-        return _SEMANTIC_TO_KIND[st]
-    if pdt.is_bool_dtype(series):
-        return KIND_BOOL
-    if pdt.is_datetime64_any_dtype(series):
-        return KIND_DATE
-    if pdt.is_numeric_dtype(series):
-        return KIND_NUMBER
-    kind = object_kind(series.dropna())
-    if kind == "binary":
-        return KIND_BINARY
-    return KIND_TEXT
+        kind = _SEMANTIC_TO_KIND[st]
+    elif pdt.is_bool_dtype(series):
+        kind = KIND_BOOL
+    elif pdt.is_datetime64_any_dtype(series):
+        kind = KIND_DATE
+    elif pdt.is_numeric_dtype(series):
+        kind = KIND_NUMBER
+    else:
+        obj = object_kind(series.dropna())
+        kind = KIND_BINARY if obj == "binary" else KIND_TEXT
+    if (
+        kind == KIND_TEXT
+        and name is not None
+        and _name_looks_like_id(name)
+    ):
+        values = series.dropna()
+        if len(values) > 0:
+            ratio = hashable(values).nunique() / len(values)
+            if ratio >= _ID_NAME_DISTINCT_RATIO:
+                return KIND_IDENTIFIER
+    return kind
 
 
 def _check_role(role: str) -> None:
@@ -178,7 +203,7 @@ def _column_meta(df: pd.DataFrame) -> list[dict]:
         {
             "name": str(c),
             "dtype": str(df[c].dtype),
-            "kind": column_kind(df[c]),
+            "kind": column_kind(df[c], str(c)),
         }
         for c in df.columns
     ]
@@ -279,11 +304,17 @@ def _looks_like_dates(series: pd.Series) -> bool:
 
 
 def _numbers_as_text(series: pd.Series) -> bool:
+    """True when every non-null cell is a string number ('.' or ',' decimal)."""
     if pdt.is_numeric_dtype(series) or pdt.is_bool_dtype(series):
         return False
     if pdt.is_datetime64_any_dtype(series) or object_kind(series.dropna()):
         return False
-    return bool(series.notna().any()) and pct_numeric_parsable(series) == 100.0
+    values = series.dropna()
+    if values.empty:
+        return False
+    if not values.map(lambda v: isinstance(v, str)).all():
+        return False
+    return bool(values.map(lambda v: bool(_NUMBER_AS_TEXT_RE.fullmatch(v.strip()))).all())
 
 
 def _skewed(series: pd.Series) -> bool:
@@ -301,7 +332,7 @@ def _skewed(series: pd.Series) -> bool:
 
 
 def _profile_one(name: str, series: pd.Series) -> dict:
-    kind = column_kind(series)
+    kind = column_kind(series, name)
     n_missing = int(series.isna().sum())
     count = int(series.notna().sum())
     distinct = int(hashable(series).nunique(dropna=True))
@@ -444,7 +475,7 @@ def _side_info(df: pd.DataFrame | None, name: str) -> dict | None:
     col = df[name]
     return {
         "name": name,
-        "kind": column_kind(col),
+        "kind": column_kind(col, name),
         "samples": _samples(col),
     }
 
@@ -522,7 +553,8 @@ def align_report(ws: Workspace) -> dict:
 
     for name in map(str, train.columns):
         if name in test.columns:
-            tk, ek = column_kind(train[name]), column_kind(test[name])
+            tk = column_kind(train[name], name)
+            ek = column_kind(test[name], name)
             status = "match" if _kinds_match(tk, ek) else "type_mismatch"
             rows.append(_row(name, status=status))
         elif name == label:
