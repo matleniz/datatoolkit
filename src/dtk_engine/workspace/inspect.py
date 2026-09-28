@@ -470,30 +470,31 @@ def _diff_cells(
         common_rids = sorted(before_rids & after_rids)
         b = before.loc[common_rids, common_cols]
         a = after.loc[common_rids, common_cols]
-    changed: list[dict] = []
-    changed_total = 0
+    # (row position, column position, before, after) of each confirmed cell.
+    # Column-wise: one array per column, not a boxed ``.iat`` per cell (MAT-212).
+    found: list[tuple[int, int, Any, Any]] = []
     if len(common_rids) and common_cols:
-        mask = np.column_stack(
-            [
-                _candidate_mask(b.iloc[:, j], a.iloc[:, j])
-                for j in range(len(common_cols))
-            ]
-        )
-        for i, j in zip(*np.nonzero(mask), strict=True):
-            bv, av = b.iat[i, j], a.iat[i, j]
-            bj, aj = _cell_json(bv), _cell_json(av)
-            if bj != aj:
-                changed_total += 1
-                if len(changed) < _CHANGED_CAP:
-                    changed.append(
-                        {
-                            "_rid": int(common_rids[i]),
-                            "column": str(common_cols[j]),
-                            "before": bj,
-                            "after": aj,
-                        }
-                    )
-    return changed, changed_total, removed
+        for j in range(len(common_cols)):
+            bc, ac = b.iloc[:, j], a.iloc[:, j]
+            rows = np.flatnonzero(_candidate_mask(bc, ac))
+            if not len(rows):
+                continue
+            bvals, avals = bc.array.take(rows), ac.array.take(rows)
+            for i, bv, av in zip(rows.tolist(), bvals, avals, strict=True):
+                bj, aj = _cell_json(bv), _cell_json(av)
+                if bj != aj:
+                    found.append((i, j, bj, aj))
+    found.sort(key=lambda cell: (cell[0], cell[1]))  # row-major: rid, then column
+    changed = [
+        {
+            "_rid": int(common_rids[i]),
+            "column": str(common_cols[j]),
+            "before": bj,
+            "after": aj,
+        }
+        for i, j, bj, aj in found[:_CHANGED_CAP]
+    ]
+    return changed, len(found), removed
 
 
 def preview_step(ws: Workspace, step: dict | Step, role: str) -> dict:

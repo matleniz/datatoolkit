@@ -15,6 +15,7 @@ from pathlib import Path, PurePath
 # FastAPI is an optional dependency; keep the import inside this module so
 # ``import dtk_engine`` still works without the ``api`` extra.
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
@@ -116,6 +117,10 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content=_error_body(exc))
 
     api = APIRouter(prefix="/api")
+    # Read-only compute endpoints run the (sync, CPU-bound) engine call in the
+    # threadpool: on the event loop, one slow key (feature_selection: tens of
+    # seconds) would stall every other request, previews included (MAT-212).
+    # Store writes stay on the loop, so they remain serialized.
 
     @api.get("/keys")
     def get_keys() -> list[dict]:
@@ -130,7 +135,7 @@ def create_app() -> FastAPI:
         body = await request.json()
         if not isinstance(body, dict) or "params" not in body:
             raise KeyParamsError("body must be {params: ...}")
-        return contract.run_key(key_id, body["params"])
+        return await run_in_threadpool(contract.run_key, key_id, body["params"])
 
     @api.get("/transforms")
     def get_transforms() -> list[dict]:
@@ -193,14 +198,15 @@ def create_app() -> FastAPI:
         body = await request.json()
         if not isinstance(body, dict) or "spec" not in body:
             raise KeyParamsError("body must be {spec: ...}")
-        return contract.source_columns(body["spec"])
+        return await run_in_threadpool(contract.source_columns, body["spec"])
 
     @api.post("/workspace/preview")
     async def post_preview(request: Request) -> dict:
         body = await request.json()
         if not isinstance(body, dict) or "workspace" not in body:
             raise KeyParamsError("body must include workspace")
-        return contract.preview_workspace(
+        return await run_in_threadpool(
+            contract.preview_workspace,
             body["workspace"],
             body.get("role", "train"),
             head_rows=int(body.get("head_rows", 5)),
@@ -211,7 +217,8 @@ def create_app() -> FastAPI:
         body = await request.json()
         if not isinstance(body, dict) or "workspace" not in body:
             raise KeyParamsError("body must include workspace")
-        return contract.workspace_rows(
+        return await run_in_threadpool(
+            contract.workspace_rows,
             body["workspace"],
             body.get("role", "train"),
             version=body.get("version"),
@@ -225,7 +232,8 @@ def create_app() -> FastAPI:
         body = await request.json()
         if not isinstance(body, dict) or "workspace" not in body:
             raise KeyParamsError("body must include workspace")
-        return contract.column_profiles(
+        return await run_in_threadpool(
+            contract.column_profiles,
             body["workspace"],
             body.get("role", "train"),
             version=body.get("version"),
@@ -237,7 +245,8 @@ def create_app() -> FastAPI:
         body = await request.json()
         if not isinstance(body, dict) or "workspace" not in body or "step" not in body:
             raise KeyParamsError("body must include workspace and step")
-        return contract.preview_step(
+        return await run_in_threadpool(
+            contract.preview_step,
             body["workspace"], body["step"], body.get("role", "train")
         )
 
@@ -246,7 +255,7 @@ def create_app() -> FastAPI:
         body = await request.json()
         if not isinstance(body, dict) or "workspace" not in body:
             raise KeyParamsError("body must include workspace")
-        return contract.align_report(body["workspace"])
+        return await run_in_threadpool(contract.align_report, body["workspace"])
 
     @api.put("/uploads/{filename}")
     async def put_upload(filename: str, request: Request) -> dict:

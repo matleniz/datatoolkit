@@ -338,3 +338,44 @@ def test_unexpected_error_500_no_traceback(home, monkeypatch):
     assert body == {"type": "RuntimeError", "message": "kaboom"}
     assert "traceback" not in body
     assert "Traceback" not in r.text
+
+
+def test_slow_key_does_not_block_preview_step(home, monkeypatch):
+    """A long run_key (Studio suggestions) must not stall previews (MAT-212)."""
+    import asyncio
+    import threading
+    import time
+
+    import httpx
+
+    from dtk_engine import contract
+
+    release = threading.Event()
+
+    def slow_run_key(key_id, params):
+        release.wait(timeout=10)
+        return {}
+
+    monkeypatch.setattr(contract, "run_key", slow_run_key)
+    ws = _workspace()
+    step = {"op": "drop_columns", "target": "both", "params": {"columns": ["Name"]}}
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            slow = asyncio.create_task(c.post("/api/keys/outliers/run", json={"params": {}}))
+            await asyncio.sleep(0.05)  # the key is running
+            start = time.perf_counter()
+            r = await c.post(
+                "/api/workspace/preview-step",
+                json={"workspace": ws, "step": step, "role": "train"},
+            )
+            elapsed = time.perf_counter() - start
+            done_before_key = not slow.done()
+            release.set()
+            await slow
+            return r, elapsed, done_before_key
+
+    r, elapsed, done_before_key = asyncio.run(scenario())
+    assert r.status_code == 200
+    assert done_before_key and elapsed < 5
