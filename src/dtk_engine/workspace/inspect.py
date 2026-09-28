@@ -21,7 +21,11 @@ from pydantic import ValidationError
 from dtk_engine.errors import KeyParamsError, SourceError, key_params_from_validation
 from dtk_engine.ops._util import json_scalar, py
 from dtk_engine.ops.compare import schema_diff
-from dtk_engine.ops.compare.schema import CATEGORY_TYPES, category_shift
+from dtk_engine.ops.compare.schema import (
+    CATEGORY_TYPES,
+    category_shift,
+    value_mismatch_is_blocking,
+)
 from dtk_engine.ops.consistency import DATE_LIKE_MIN_SHARE, date_format
 from dtk_engine.ops.consistency import normalize as _normalize_text
 from dtk_engine.ops.join import label_columns
@@ -554,9 +558,10 @@ def align_report(ws: Workspace) -> dict:
     ``ws.steps``. Per column: train/test side info, status, means, similar
     names for missing-in-test rows. Categorical / label columns present on
     both sides with test-only values get status ``value_mismatch`` plus
-    ``only_in_test`` (value+count), ``pct_test_rows_unseen``, and optional
+    ``only_in_test`` (value+count), ``pct_test_rows_unseen``, optional
     ``near_match_hint`` / ``near_matches`` (strip / casefold / trailing
-    punctuation). No test dataset -> ``SourceError``.
+    punctuation), and ``blocking`` (Studio "to decide" when near_matches
+    exist or pct unseen exceeds 50). No test dataset -> ``SourceError``.
     """
     if ws.datasets.test is None:
         raise SourceError(f"workspace {ws.name!r} has no test dataset")
@@ -596,6 +601,7 @@ def align_report(ws: Workspace) -> dict:
             "pct_test_rows_unseen": None,
             "near_match_hint": None,
             "near_matches": [],
+            "blocking": False,
         }
         if value_set is not None:
             out.update(value_set)
@@ -606,11 +612,14 @@ def align_report(ws: Workspace) -> dict:
         shift = category_shift(train_col, test_col)
         if shift["n_unseen_categories"] == 0:
             return None
+        near = shift["_near_matches"]
+        pct = shift["pct_test_rows_unseen"]
         return {
             "only_in_test": shift["_only_in_test"],
-            "pct_test_rows_unseen": shift["pct_test_rows_unseen"],
+            "pct_test_rows_unseen": pct,
             "near_match_hint": shift["near_match_hint"],
-            "near_matches": shift["_near_matches"],
+            "near_matches": near,
+            "blocking": value_mismatch_is_blocking(near, pct),
         }
 
     for name in map(str, train.columns):
