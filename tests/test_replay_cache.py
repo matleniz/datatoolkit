@@ -14,16 +14,18 @@ from dtk_engine.sources._cache import FrameLRU
 from dtk_engine.sources.registry import load
 from dtk_engine.sources.spec import CsvSource, SqlSource
 from dtk_engine.transform_registry import get_transform
-from dtk_engine.workspace import replay_cache
+from dtk_engine.workspace import replay_cache, shape_cache
 
 
 @pytest.fixture(autouse=True)
 def _fresh_caches():
     registry._RAW_CACHE.clear()
     replay_cache._CACHE.clear()
+    shape_cache.clear()
     yield
     registry._RAW_CACHE.clear()
     replay_cache._CACHE.clear()
+    shape_cache.clear()
 
 
 def _bump(path, seconds=5):

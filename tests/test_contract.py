@@ -130,8 +130,10 @@ def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
         list_workspace_summaries,
         rename_workspace,
     )
+    from dtk_engine.workspace import shape_cache
 
     monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    shape_cache.clear()
     save_workspace(
         _workspace("alpha")
         | {
@@ -154,19 +156,19 @@ def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
     assert alpha["target"] == "Survived"
     assert "+00:00" in alpha["mtime"] or alpha["mtime"].endswith("Z")
     assert alpha["train"]["file"] == Path(TRAIN_CSV).name
-    assert alpha["train"]["shape"] is None  # cheap: no step replay (MAT-200)
+    assert alpha["train"]["shape"] == [41, 11]  # Name dropped
     assert alpha["test"]["file"] == Path(TEST_CSV).name
-    assert alpha["test"]["shape"] is None
+    assert alpha["test"]["shape"] == [20, 10]
 
-    # Summaries must not load/replay frames (MAT-200).
+    # Cached shapes: no frame load on a second summaries call (MAT-200 / MAT-204).
     def _boom(*_a, **_k):
-        raise AssertionError("workspace_frame must not run during summaries")
+        raise AssertionError("workspace_frame must not run when shape is cached")
 
     monkeypatch.setattr("dtk_engine.contract.workspace_frame", _boom)
     monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", _boom)
     again = list_workspace_summaries()
-    assert again[0]["train"]["shape"] is None
-    assert again[0]["test"]["shape"] is None
+    assert again[0]["train"]["shape"] == [41, 11]
+    assert again[0]["test"]["shape"] == [20, 10]
 
     dup = duplicate_workspace("alpha", "alpha-copy")
     assert dup["name"] == "alpha-copy"
@@ -180,6 +182,7 @@ def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
     assert renamed["name"] == "alpha-renamed"
     with pytest.raises(WorkspaceNotFoundError):
         get_workspace("alpha-copy")
+    # Rename/dupe share content keys — shapes still cached, no frame load.
     assert [s["name"] for s in list_workspace_summaries()] == [
         "alpha",
         "alpha-renamed",
@@ -189,6 +192,63 @@ def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
     delete_workspace("alpha")
     delete_workspace("beta")
     assert [s["name"] for s in list_workspace_summaries()] == ["alpha-renamed"]
+
+
+def test_summaries_shape_cache_many_workspaces(tmp_path, monkeypatch):
+    """Warm once, then many workspaces stay fast; step changes refresh shape."""
+    from dtk_engine import list_workspace_summaries
+    from dtk_engine.sources.dataset import workspace_frame as real_frame
+    from dtk_engine.workspace import shape_cache
+
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    shape_cache.clear()
+    for i in range(12):
+        save_workspace(_workspace(f"ws{i:02d}"))
+
+    first = list_workspace_summaries()
+    assert len(first) == 12
+    assert all(s["train"]["shape"] == [41, 12] for s in first)
+    assert all(s["test"]["shape"] == [20, 11] for s in first)
+
+    calls = {"n": 0}
+
+    def _counting(*_a, **_k):
+        calls["n"] += 1
+        raise AssertionError("workspace_frame must not run when shapes are cached")
+
+    monkeypatch.setattr("dtk_engine.contract.workspace_frame", _counting)
+    monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", _counting)
+    second = list_workspace_summaries()
+    assert calls["n"] == 0
+    assert [s["train"]["shape"] for s in second] == [[41, 12]] * 12
+
+    # Restore frame loader so a step change can recompute.
+    monkeypatch.setattr("dtk_engine.contract.workspace_frame", real_frame)
+    monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", real_frame)
+    save_workspace(
+        _workspace("ws00")
+        | {
+            "steps": [
+                {
+                    "op": "drop_columns",
+                    "target": "both",
+                    "params": {"columns": ["Name"]},
+                }
+            ]
+        }
+    )
+    after = {s["name"]: s for s in list_workspace_summaries()}
+    assert after["ws00"]["train"]["shape"] == [41, 11]
+    assert after["ws00"]["test"]["shape"] == [20, 10]
+    assert after["ws01"]["train"]["shape"] == [41, 12]
+
+    monkeypatch.setattr("dtk_engine.contract.workspace_frame", _counting)
+    monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", _counting)
+    calls["n"] = 0
+    assert {s["name"]: s["train"]["shape"] for s in list_workspace_summaries()}[
+        "ws00"
+    ] == [41, 11]
+    assert calls["n"] == 0
 
 
 def test_rename_duplicate_errors(tmp_path, monkeypatch):

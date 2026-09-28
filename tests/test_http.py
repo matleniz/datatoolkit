@@ -136,7 +136,7 @@ def test_workspace_rename_duplicate_summaries(client):
     assert s["name"] == "w"
     assert s["step_count"] == 1
     assert s["target"] == "Survived"
-    assert s["train"]["shape"] is None  # cheap: no step replay (MAT-200)
+    assert s["train"]["shape"] == [41, 11]
     assert s["train"]["file"]
     assert json.dumps(summaries)
 
