@@ -8,10 +8,106 @@ import pandas as pd
 from pandas.api import types as pdt
 
 from dtk_engine.ops.advisor.common import Rec
+from dtk_engine.ops.consistency import ambiguous_dates, mixed_date_formats, variants
 from dtk_engine.ops.missing import DROP_PCT
 
 # |corr| with the target above this: the column is a near-copy of the label.
 TARGET_CORR = 0.95
+
+# date_format() token -> strptime directive, for the plain numeric patterns
+# (yyyy-mm-dd, dd/mm/yyyy, ...). Month-name patterns and unresolved "nn" (day /
+# month order unknown) are left without a format.
+_STRPTIME = {"yyyy": "%Y", "yy": "%y", "dd": "%d", "mm": "%m"}
+_DATE_TOKEN_RE = re.compile(r"^(yyyy|yy|dd|mm)([-/.])(yyyy|yy|dd|mm)\2(yyyy|yy|dd|mm)$")
+
+
+def _strptime_format(token: str) -> str | None:
+    m = _DATE_TOKEN_RE.match(token)
+    if not m:
+        return None
+    a, sep, b, c = m[1], m[2], m[3], m[4]
+    return f"{_STRPTIME[a]}{sep}{_STRPTIME[b]}{sep}{_STRPTIME[c]}"
+
+
+def _needs_unify_separators(pairs: dict[str, str]) -> bool:
+    """True when some variant only differs from its canonical by separator
+    punctuation (site-a / site_a / site.a), not just case / whitespace."""
+    return any(v.strip().lower() != c.strip().lower() for v, c in pairs.items())
+
+
+def _free_text_variant_rec(col: str, train: pd.DataFrame) -> Rec | None:
+    """standardize_text when the inconsistencies key finds spelling variants in
+    a free-text column, instead of dropping it."""
+    _, mapping = variants(train[[col]], [col])
+    if mapping.empty:
+        return None
+    pairs = {
+        str(r.variant).strip(): str(r.canonical).strip()
+        for r in mapping.itertuples()
+        if str(r.variant).strip() != str(r.canonical).strip()
+    }
+    if not pairs:
+        return None
+    params: dict = {"columns": [col], "strip": True, "lower": True, "mapping": pairs}
+    if _needs_unify_separators(pairs):
+        params["unify_separators"] = True
+    return Rec(
+        col,
+        "consistency",
+        "info",
+        f"free text, but {len(pairs)} spelling variants of the same values "
+        "(the inconsistencies key found a suggested mapping): standardize "
+        "instead of dropping",
+        "standardize_text",
+        "both",
+        params,
+    )
+
+
+def _free_text_date_rec(col: str, train: pd.DataFrame) -> Rec | None:
+    """parse_dates when the inconsistencies key finds mixed / ambiguous date
+    formats in a free-text column, instead of dropping it. The `format` param
+    is set only when the column holds a single, unambiguous format."""
+    frame = train[[col]]
+    formats = mixed_date_formats(frame, [col])
+    if formats.empty:
+        if ambiguous_dates(frame, [col]).empty:
+            return None
+        return Rec(
+            col,
+            "consistency",
+            "info",
+            "free text, but it holds ambiguous dd/mm vs mm/dd dates (the "
+            "inconsistencies key found them): parse dates instead of dropping, "
+            "after picking the right order",
+            "parse_dates",
+            "both",
+            {"columns": [col]},
+        )
+    row = formats.iloc[0]
+    fmt = None
+    # mixed_date_formats only reports a column when there is something to fix
+    # (>= 2 formats, or non-date values); a single resolved format here means
+    # the "something to fix" is the non-date values, not the format itself.
+    if row["n_formats"] == 1:
+        token = str(row["formats"]).split(":")[0].strip()
+        fmt = _strptime_format(token)
+    params: dict = {"columns": [col]}
+    if fmt is not None:
+        params["format"] = fmt
+        advice = (
+            f"free text, but it holds dates in one format ({fmt}, the "
+            "inconsistencies key found it): parse dates instead of dropping"
+        )
+        if row["n_not_date"]:
+            advice += " (turn the non-date values into NaN first, replace_sentinels)"
+    else:
+        advice = (
+            "free text, but it holds dates with mixed / ambiguous formats (the "
+            "inconsistencies key found them): bring them to one format, then "
+            "parse dates instead of dropping"
+        )
+    return Rec(col, "consistency", "info", advice, "parse_dates", "both", params)
 
 
 def drop_columns_rec(column: str, category: str, severity: str, advice: str) -> Rec:
@@ -104,6 +200,9 @@ def column_drop_rec(
             "validation inflate the score)",
         )
     if semantic == "text":
+        override = _free_text_variant_rec(col, train) or _free_text_date_rec(col, train)
+        if override is not None:
+            return override
         return drop_columns_rec(
             col,
             "drop",

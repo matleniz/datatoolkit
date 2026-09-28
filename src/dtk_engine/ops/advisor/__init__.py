@@ -84,7 +84,7 @@ def advise(
             kept.append(col)
         else:
             recs.append(rec)
-            infos[col].action = "drop"
+            infos[col].action = "drop" if rec.op == "drop_columns" else rec.op
     if test is not None:
         for col in (str(c) for c in test.columns if c not in train.columns):
             recs.append(
