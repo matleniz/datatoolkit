@@ -21,9 +21,13 @@ DATE_COLUMNS = ["column", "n_ambiguous", "n_parsed", "examples"]
 EXAMPLES = 3
 
 
+_SEPARATOR_RE = re.compile(r"[-_.]+")
+
+
 def normalize(value: str) -> str:
-    """The merge key: strip, collapse inner whitespace, lower-case."""
-    return " ".join(value.split()).lower()
+    """The merge key: unify -_. separators and whitespace to a single space,
+    strip, lower-case (same rule as standardize_text's unify_separators)."""
+    return " ".join(_SEPARATOR_RE.sub(" ", value).split()).lower()
 
 
 def text_columns(df: pd.DataFrame) -> list[str]:

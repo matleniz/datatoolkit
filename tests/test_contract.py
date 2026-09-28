@@ -66,6 +66,7 @@ STEP_TABLES = {
     "preprocessing_advisor": {"recommendations"},
     "feature_selection": {"suggested_steps"},
     "correlations": {"suggested_steps"},
+    "missing_values": {"suggested_steps"},
 }
 
 
