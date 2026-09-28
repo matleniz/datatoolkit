@@ -21,7 +21,7 @@ from pathlib import Path, PurePath
 from pydantic import TypeAdapter, ValidationError
 
 from . import keys  # noqa: F401  (registers every key)
-from .errors import KeyParamsError
+from .errors import KeyParamsError, SourceError, UnknownTransformError
 from .ops import transforms  # noqa: F401  (registers every transform op)
 from .ops.columns import is_numeric
 from .registry import all_keys, get_key
@@ -32,6 +32,7 @@ from .workspace import JsonWorkspaceStore, Workspace
 from .workspace import inspect as _inspect
 from .workspace.export import export_workspace as _export
 from .workspace.replay import validate_steps
+from .workspace.shape_cache import cached_shape
 
 
 def _iso_mtime(path: Path) -> str:
@@ -58,8 +59,28 @@ def _target_summary(ws: Workspace) -> str | None:
     return None
 
 
+def _role_shape(ws: Workspace, role: str) -> list[int] | None:
+    """``[rows, cols]`` of ``role`` after steps, or null if unloadable / absent.
+
+    Content-addressed via ``shape_cache`` (MAT-204): first call may replay;
+    later summaries with the same content hit the tiny shape tuple and skip
+    ``workspace_frame`` (MAT-200).
+    """
+    if getattr(ws.datasets, role) is None:
+        return None
+
+    def compute() -> list[int] | None:
+        try:
+            df = workspace_frame(ws, role)
+        except (SourceError, KeyParamsError, UnknownTransformError, OSError, ValueError):
+            return None
+        return [int(df.shape[0]), int(df.shape[1])]
+
+    return cached_shape(ws, role, compute)
+
+
 def _workspace_summary(store: JsonWorkspaceStore, name: str) -> dict:
-    """Cheap sidebar row: metadata only — never replay steps for shape (MAT-200)."""
+    """Sidebar row: metadata + cached shape (MAT-171 / MAT-200 / MAT-204)."""
     path = store.path_of(name)
     ws = store.get(name)
     train = ws.datasets.train
@@ -69,10 +90,11 @@ def _workspace_summary(store: JsonWorkspaceStore, name: str) -> dict:
         "mtime": _iso_mtime(path),
         "step_count": len(ws.steps),
         "target": _target_summary(ws),
-        # shape stays null here; fronts show "—" until preview/rows asks for it.
-        "train": {**_file_summary(train.x), "shape": None},
+        "train": {**_file_summary(train.x), "shape": _role_shape(ws, "train")},
         "test": (
-            None if test is None else {**_file_summary(test.x), "shape": None}
+            None
+            if test is None
+            else {**_file_summary(test.x), "shape": _role_shape(ws, "test")}
         ),
     }
 
@@ -156,15 +178,16 @@ def list_workspaces() -> list[dict]:
 
 
 def list_workspace_summaries() -> list[dict]:
-    """Lightweight list for the workspace manager (MAT-171 / MAT-200).
+    """Lightweight list for the workspace manager (MAT-171 / MAT-204).
 
     Each entry: ``name``, ``mtime`` (UTC ISO), ``step_count``, ``target``
     (train ``target_column``, else y basename, else null), ``train`` /
-    ``test`` (``{kind, path, file, shape}``; ``test`` null when absent).
-    ``shape`` is always null here — computing it would replay every workspace's
-    steps (too slow for the Sources sidebar). Use ``preview_workspace`` /
-    ``workspace_rows`` when a shape is needed. Sorted by name. Fronts must not
-    recompute this from full workspace dicts.
+    ``test`` (``{kind, path, file, shape}``; ``test`` null when absent;
+    ``shape`` is ``[rows, cols]`` after steps, or null if unloadable).
+    Shape is content-addressed and cached: the first summaries call for a
+    workspace may replay frames; later calls with unchanged content reuse the
+    cached tuple without loading frames (MAT-200). Sorted by name. Fronts must
+    not recompute this from full workspace dicts.
     """
     store = JsonWorkspaceStore()
     return [_workspace_summary(store, name) for name in store.list()]
