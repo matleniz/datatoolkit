@@ -31,7 +31,12 @@ PREVIEW_BYTES = 120
 HEADER_SCAN = 200
 NUMBER = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
 EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
+PARQUET_SUFFIXES = {".parquet"}
+JSON_SUFFIXES = {".json", ".jsonl", ".ndjson"}
+JSON_LINES_SUFFIXES = {".jsonl", ".ndjson"}
 JSON_MAX_BYTES = 50_000_000  # bigger files are not parsed just to suggest a path
+PARQUET_MAGIC = b"PAR1"
+ZIP_MAGIC = b"PK\x03\x04"
 
 
 class Params(KeyParams):
@@ -45,8 +50,9 @@ class Params(KeyParams):
     description=(
         "Raw file facts: first bytes, BOM, encoding / decimal guesses, line endings, "
         "delimiter, header line (or none), empty `Unnamed:` columns, leading-zero "
-        "columns, first malformed line, size and mtime, and a csv `load_spec` "
-        "applying the guesses; sheets for Excel."
+        "columns, first malformed line, size and mtime, and a `load_spec` applying "
+        "the guesses (csv / parquet / excel / json); sheets for Excel; record paths "
+        "for enveloped JSON."
     ),
 )
 def run(params: Params) -> Result:
@@ -68,14 +74,55 @@ def run(params: Params) -> Result:
             ),
         }
     )
-    if Path(path).suffix.lower() in EXCEL_SUFFIXES or raw[:4] == b"PK\x03\x04":
-        result.add_table("sheets", _excel_sheets(path, params.path))
+    suffix = Path(path).suffix.lower()
+    if suffix in PARQUET_SUFFIXES or raw[:4] == PARQUET_MAGIC:
+        result.metrics["load_spec"] = json.dumps(
+            {"kind": "parquet", "path": params.path}
+        )
+        return result
+    if suffix in EXCEL_SUFFIXES or raw[:4] == ZIP_MAGIC:
+        sheets = _excel_sheets(path, params.path)
+        result.add_table("sheets", sheets)
+        result.metrics["load_spec"] = json.dumps(_excel_load_spec(params.path, sheets))
+        return result
+    if suffix in JSON_SUFFIXES:
+        result.metrics.update(
+            _json_facts(path, params.path, suffix, stat.st_size, result)
+        )
         return result
     result.metrics["first_bytes"] = repr(raw[:PREVIEW_BYTES])
     result.metrics.update(_text_facts(raw, params.path))
-    if Path(path).suffix.lower() == ".json" and stat.st_size <= JSON_MAX_BYTES:
-        _add_record_paths(result, path)
     return result
+
+
+def _excel_load_spec(shown: str, sheets: pd.DataFrame) -> dict:
+    """Default excel load_spec: first sheet + its suggested header row."""
+    if sheets.empty:
+        return {"kind": "excel", "path": shown, "sheet": 0, "header": 0}
+    first = sheets.iloc[0]
+    return {
+        "kind": "excel",
+        "path": shown,
+        "sheet": first["sheet"],
+        "header": int(first["suggested_header"]),
+    }
+
+
+def _json_facts(
+    path: str, shown: str, suffix: str, size: int, result: Result
+) -> dict:
+    """load_spec for JSON / JSONL; optional record_paths table for envelopes."""
+    lines = suffix in JSON_LINES_SUFFIXES
+    spec: dict = {"kind": "json", "path": shown, "lines": lines}
+    facts: dict = {}
+    if not lines and size <= JSON_MAX_BYTES:
+        _add_record_paths(result, path)
+        suggested = result.metrics.pop("suggested_record_path", None)
+        if suggested is not None:
+            facts["suggested_record_path"] = suggested
+            spec["record_path"] = suggested
+    facts["load_spec"] = json.dumps(spec)
+    return facts
 
 
 def _add_record_paths(result: Result, path: str) -> None:

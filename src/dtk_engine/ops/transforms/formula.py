@@ -26,11 +26,13 @@ _VAR_TOKEN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)")
 _DIV_EPS = 1e-12
 
 _ALLOWED_FUNCS = frozenset(
-    {"log", "log1p", "exp", "sqrt", "abs", "round", "min", "max"}
+    {"log", "log1p", "exp", "sqrt", "abs", "round", "min", "max", "sin", "cos"}
 )
+_ALLOWED_CONSTANTS = frozenset({"pi"})
 _BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow)
 _UNARYOPS = (ast.UAdd, ast.USub)
 _STATS = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
+_CONSTANT_VALUES = {"pi": float(np.pi)}
 
 
 class FormulaVariable(TransformParams):
@@ -189,8 +191,9 @@ def _column_names(tree: ast.AST) -> set[str]:
 
     class Visitor(ast.NodeVisitor):
         def visit_Name(self, node: ast.Name) -> None:
-            if not node.id.startswith(_VAR_PREFIX):
-                cols.add(node.id)
+            if node.id.startswith(_VAR_PREFIX) or node.id in _ALLOWED_CONSTANTS:
+                return
+            cols.add(node.id)
 
         def visit_Call(self, node: ast.Call) -> None:
             # Function name is not a column; only walk args.
@@ -247,6 +250,10 @@ def _np_func(name: str, args: list[np.ndarray]) -> np.ndarray:
         return np.sqrt(args[0])
     if name == "abs":
         return np.abs(args[0])
+    if name == "sin":
+        return np.sin(args[0])
+    if name == "cos":
+        return np.cos(args[0])
     if name == "round":
         return np.round(args[0])
     if name == "min":
@@ -309,7 +316,10 @@ def formula(df: pd.DataFrame, params: FormulaParams, state: dict) -> pd.DataFram
     """Add a float column from a safe expression; @variables reuse train values."""
     tree = _check_expr(params.expr, {v.name for v in params.variables})
     n = len(df)
-    env: dict[str, np.ndarray] = {}
+    env: dict[str, np.ndarray] = {
+        name: np.full(n, value, dtype=float)
+        for name, value in _CONSTANT_VALUES.items()
+    }
     for col in _column_names(tree):
         if col not in df.columns:
             raise KeyParamsError(f"formula: unknown column {col!r}")

@@ -55,6 +55,19 @@ def test_functions():
     assert out["y"].iloc[0] == pytest.approx(1.0)
 
 
+def test_sin_cos_and_pi():
+    df = pd.DataFrame({"theta": [0.0, np.pi / 2, np.pi]})
+    out = _run(df, name="y", expr="sin(theta)")
+    assert out["y"].tolist() == pytest.approx([0.0, 1.0, 0.0], abs=1e-10)
+    out = _run(df, name="y", expr="cos(theta)")
+    assert out["y"].tolist() == pytest.approx([1.0, 0.0, -1.0], abs=1e-10)
+    out = _run(df, name="y", expr="sin(pi / 2)")
+    assert out["y"].tolist() == pytest.approx([1.0, 1.0, 1.0], abs=1e-10)
+    # pi is a constant, not a column lookup.
+    out = _run(pd.DataFrame({"a": [1.0]}), name="y", expr="cos(0) + pi - pi")
+    assert out["y"].iloc[0] == pytest.approx(1.0)
+
+
 def test_variables_fitted_on_train_reused_on_test():
     train = pd.DataFrame({"x": [1.0, 3.0, 5.0]})
     test = pd.DataFrame({"x": [100.0, 200.0]})  # different stats must not change value
@@ -112,7 +125,7 @@ def test_refuses_disallowed_constructs(expr):
 
 def test_unknown_function_and_unknown_variable_at_params():
     with pytest.raises(KeyParamsError, match="unknown function"):
-        _parse(name="y", expr="sin(a)")
+        _parse(name="y", expr="tan(a)")
     with pytest.raises(KeyParamsError, match="@variable"):
         _parse(name="y", expr="a + @mu")
 
