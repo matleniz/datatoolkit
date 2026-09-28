@@ -91,6 +91,30 @@ def test_workspace_crud(client):
     assert client.get("/api/workspaces").json() == []
 
 
+def test_workspace_charts_round_trip(client):
+    charts = [
+        {"name": "Fare by Pclass", "params": {"chart": "box", "x": "Pclass", "y": "Fare"}},
+        {"name": "Age hist", "params": {"chart": "histogram", "x": "Age"}},
+    ]
+    r = client.put("/api/workspaces/w", json=_workspace(charts=charts))
+    assert r.status_code == 200
+    assert r.json()["charts"] == charts
+    assert client.get("/api/workspaces/w").json()["charts"] == charts
+
+    r = client.put(
+        "/api/workspaces/w",
+        json=_workspace(
+            charts=[
+                {"name": "dup", "params": {"chart": "box"}},
+                {"name": "dup", "params": {"chart": "bar"}},
+            ]
+        ),
+    )
+    assert r.status_code == 422
+    assert r.json()["type"] == "KeyParamsError"
+    assert "duplicate chart name" in r.json()["message"]
+
+
 def test_workspace_rename_duplicate_summaries(client):
     client.put(
         "/api/workspaces/w",

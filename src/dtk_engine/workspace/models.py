@@ -84,12 +84,20 @@ class VariableSpec(_Strict):
     column: str = Field(min_length=1)
 
 
+class ChartSpec(_Strict):
+    """A named chart saved on the workspace (chart-key params minus source)."""
+
+    name: str = Field(min_length=1)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class Workspace(_Strict):
     name: str = Field(pattern=NAME_PATTERN)
     datasets: Datasets
     label: LabelJoin = Field(default_factory=LabelJoin)
     merges: list[MergeSpec] = Field(default_factory=list)
     variables: list[VariableSpec] = Field(default_factory=list)
+    charts: list[ChartSpec] = Field(default_factory=list)
     steps: list[Step] = Field(default_factory=list)
 
     @field_validator("variables")
@@ -101,6 +109,16 @@ class Workspace(_Strict):
                 raise ValueError(f"duplicate variable name {v.name!r}")
             seen.add(v.name)
         return vars
+
+    @field_validator("charts")
+    @classmethod
+    def _unique_chart_names(cls, charts: list[ChartSpec]) -> list[ChartSpec]:
+        seen = set()
+        for c in charts:
+            if c.name in seen:
+                raise ValueError(f"duplicate chart name {c.name!r}")
+            seen.add(c.name)
+        return charts
 
     @field_validator("merges")
     @classmethod
