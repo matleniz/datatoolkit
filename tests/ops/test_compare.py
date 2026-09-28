@@ -57,13 +57,32 @@ def test_category_shift_compares_as_strings():
     )
     assert shift["n_unseen_categories"] == 2
     assert shift["unseen_categories"] == "1, Q"
+    assert shift["unseen_category_counts"] == "Q (2), 1 (1)"
+    assert shift["_only_in_test"] == [{"value": "Q", "count": 2}, {"value": "1", "count": 1}]
     assert shift["pct_test_rows_unseen"] == 75.0
     assert shift["train_only_categories"] == "C"
+    assert shift["near_match_hint"] is None
     # 1 vs "1" is a dtype issue, not a new category
     assert (
         category_shift(pd.Series([1, 2]), pd.Series(["1", "2"]))["n_unseen_categories"]
         == 0
     )
+
+
+def test_category_shift_near_match_trailing_punctuation():
+    """UCI adult-style labels: test values differ only by a trailing '.'."""
+    train = pd.Series(["<=50K", ">50K", "<=50K", ">50K"])
+    test = pd.Series(["<=50K.", ">50K.", "<=50K.", ">50K.", "<=50K."])
+    shift = category_shift(train, test)
+    assert shift["n_unseen_categories"] == 2
+    assert shift["pct_test_rows_unseen"] == 100.0
+    assert {r["value"] for r in shift["_only_in_test"]} == {"<=50K.", ">50K."}
+    assert shift["_near_matches"] == [
+        {"test": "<=50K.", "train": "<=50K"},
+        {"test": ">50K.", "train": ">50K"},
+    ]
+    assert "standardize_text" in shift["near_match_hint"]
+    assert "<=50K." in shift["near_match_hint"]
 
 
 @pytest.mark.parametrize(

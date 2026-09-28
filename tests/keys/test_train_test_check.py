@@ -75,3 +75,41 @@ def test_missing_test_file_surfaces_source_error(tmp_path):
 def test_bad_id_columns_rejected():
     with pytest.raises(KeyParamsError):
         run_key("train_test_check", {"id_columns": "PassengerId"})
+
+
+def test_adult_like_label_dots_flagged_with_near_match(tmp_path):
+    """UCI adult quirk: test income ends with '.' — issue carries near-match hint."""
+    train, test = tmp_path / "train.csv", tmp_path / "test.csv"
+    train.write_text(
+        "age,workclass,income\n"
+        "25,Private,<=50K\n30,Private,<=50K\n40,Self,>50K\n50,Self,>50K\n"
+        "28,Private,<=50K\n35,Gov,<=50K\n45,Self,>50K\n55,Gov,>50K\n"
+    )
+    test.write_text(
+        "age,workclass,income\n"
+        "22,Private,<=50K.\n33,Self,>50K.\n44,Private,<=50K.\n"
+        "26,Gov,<=50K.\n38,Self,>50K.\n"
+    )
+    res = run_key(
+        "train_test_check",
+        {
+            "train": {"kind": "csv", "path": str(train)},
+            "test": {"kind": "csv", "path": str(test)},
+        },
+    )
+    issues = _by_title(res)["issues"]
+    unseen = [
+        i
+        for i in issues
+        if i["check"] == "categorical" and i["column"] == "income" and i["severity"] == "warning"
+    ]
+    assert len(unseen) == 1
+    msg = unseen[0]["message"]
+    assert "<=50K." in msg and ">50K." in msg
+    assert "100.0%" in msg
+    assert "standardize_text" in msg
+    assert "(" in msg  # counts like <=50K. (3)
+    columns = {c["column"]: c for c in _by_title(res)["columns"]}
+    assert columns["income"]["n_unseen_categories"] == 2
+    assert "<=50K." in columns["income"]["unseen_category_counts"]
+    assert "standardize_text" in columns["income"]["near_match_hint"]

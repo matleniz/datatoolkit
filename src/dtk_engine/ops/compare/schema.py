@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import string
+
 import pandas as pd
 from pandas.api import types as pdt
 
@@ -39,9 +41,11 @@ COLUMN_FIELDS = [
     "mean_test",
     "n_unseen_categories",
     "unseen_categories",
+    "unseen_category_counts",
     "pct_test_rows_unseen",
     "n_train_only_categories",
     "train_only_categories",
+    "near_match_hint",
 ]
 OVERLAP_FIELDS = [
     "kind",
@@ -94,22 +98,64 @@ def numeric_shift(train: pd.Series, test: pd.Series) -> dict:
     }
 
 
+def _value_near_key(value: str) -> str:
+    """Normalise a category for near-match: strip, casefold, trailing punctuation."""
+    return value.strip().casefold().rstrip(string.punctuation).strip()
+
+
+def _near_match_pairs(unseen: set[str], train_cats: set[str]) -> list[dict[str, str]]:
+    """Unseen test values that collapse onto a train value after ``_value_near_key``."""
+    train_by_key: dict[str, str] = {}
+    for t in train_cats:
+        train_by_key.setdefault(_value_near_key(t), t)
+    pairs: list[dict[str, str]] = []
+    for u in sorted(unseen):
+        key = _value_near_key(u)
+        train_hit = train_by_key.get(key)
+        if train_hit is not None and train_hit != u:
+            pairs.append({"test": u, "train": train_hit})
+    return pairs
+
+
+def _near_match_hint(pairs: list[dict[str, str]]) -> str | None:
+    if not pairs:
+        return None
+    mapped = ", ".join(f"{p['test']!r}→{p['train']!r}" for p in pairs)
+    return (
+        f"near-match after strip/casefold/trailing punctuation: {mapped}; "
+        "try standardize_text or map on test"
+    )
+
+
 def category_shift(train: pd.Series, test: pd.Series) -> dict:
     """Categories seen in test but not in train (and the reverse).
 
     Values are compared as strings so a dtype mismatch (1 vs "1") is not
-    counted as a new category.
+    counted as a new category. When unseen test values normalise onto train
+    values (strip, casefold, trailing punctuation), ``near_match_hint``
+    suggests a ``standardize_text`` / map step on test.
     """
     tr = train.dropna().astype(str)
     te = test.dropna().astype(str)
     train_cats, test_cats = set(tr), set(te)
     unseen, train_only = test_cats - train_cats, train_cats - test_cats
+    counts = te[te.isin(unseen)].value_counts()
+    only_in_test = [
+        {"value": str(v), "count": int(c)} for v, c in counts.items()
+    ]
+    counts_str = ", ".join(f"{r['value']} ({r['count']})" for r in only_in_test)
+    near_matches = _near_match_pairs(unseen, train_cats)
     return {
         "n_unseen_categories": len(unseen),
         "unseen_categories": ", ".join(sorted(unseen)),
+        "unseen_category_counts": counts_str,
         "pct_test_rows_unseen": _pct(int(te.isin(unseen).sum()), len(test)),
         "n_train_only_categories": len(train_only),
         "train_only_categories": ", ".join(sorted(train_only)),
+        "near_match_hint": _near_match_hint(near_matches),
+        # Structured form for align_report (not stored on the columns table).
+        "_only_in_test": only_in_test,
+        "_near_matches": near_matches,
     }
 
 

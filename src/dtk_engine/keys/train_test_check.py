@@ -42,7 +42,9 @@ class Params(KeyParams):
     title="Train / test check",
     category="analysis",
     description="Schema, dtype, missing-rate, range and category mismatches between "
-    "a train and a test table, plus row / id overlap (leaks).",
+    "a train and a test table, plus row / id overlap (leaks). Unseen test "
+    "categories include counts and a near-match hint when values only differ "
+    "by strip / casefold / trailing punctuation.",
 )
 def run(params: Params) -> Result:
     return check_result(load(params.train), load(params.test), params.id_columns)
