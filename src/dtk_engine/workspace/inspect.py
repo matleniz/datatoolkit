@@ -428,10 +428,35 @@ def _parse_step(step: dict) -> Step:
         raise key_params_from_validation(exc) from exc
 
 
+def _candidate_mask(bc: pd.Series, ac: pd.Series) -> np.ndarray:
+    """Cells that *may* differ (no false negatives), vectorised.
+
+    A cell is excluded only when both sides are null or compare equal, which
+    implies equal ``_cell_json`` output. Callers confirm candidates exactly.
+    """
+    all_cells = np.ones(len(bc), dtype=bool)
+    if bc.dtype != ac.dtype and not (
+        pdt.is_numeric_dtype(bc.dtype) and pdt.is_numeric_dtype(ac.dtype)
+    ):
+        # e.g. tz-aware vs naive, object vs typed: equality may not match JSON.
+        return all_cells
+    try:
+        differs = bc.ne(ac).fillna(True).to_numpy(dtype=bool)
+    except (TypeError, ValueError):
+        return all_cells
+    return differs & ~(bc.isna() & ac.isna()).to_numpy(dtype=bool)
+
+
 def _diff_cells(
     before: pd.DataFrame, after: pd.DataFrame
 ) -> tuple[list[dict], int, list[int]]:
-    """Changed cells (capped), total count, and removed ``_rid``s."""
+    """Changed cells (capped), total count, and removed ``_rid``s.
+
+    Equality is JSON round-trip equality (``_cell_json``), so int 5 and
+    float 5.0 are the same cell. A vectorised pre-filter narrows the cells
+    to those worth serialising; they are then confirmed with ``_cell_json``
+    in row-major order (rid, then column).
+    """
     before_rids = set(map(int, before.index))
     after_rids = set(map(int, after.index))
     removed = sorted(before_rids - after_rids)
@@ -442,21 +467,26 @@ def _diff_cells(
     if common_rids and common_cols:
         b = before.loc[common_rids, common_cols]
         a = after.loc[common_rids, common_cols]
-        # Align dtypes for comparison via JSON round-trip equality.
-        for rid in common_rids:
-            for col in common_cols:
-                bv, av = b.at[rid, col], a.at[rid, col]
-                if _cell_json(bv) != _cell_json(av):
-                    changed_total += 1
-                    if len(changed) < _CHANGED_CAP:
-                        changed.append(
-                            {
-                                "_rid": int(rid),
-                                "column": str(col),
-                                "before": _cell_json(bv),
-                                "after": _cell_json(av),
-                            }
-                        )
+        mask = np.column_stack(
+            [
+                _candidate_mask(b.iloc[:, j], a.iloc[:, j])
+                for j in range(len(common_cols))
+            ]
+        )
+        for i, j in zip(*np.nonzero(mask), strict=True):
+            bv, av = b.iat[i, j], a.iat[i, j]
+            bj, aj = _cell_json(bv), _cell_json(av)
+            if bj != aj:
+                changed_total += 1
+                if len(changed) < _CHANGED_CAP:
+                    changed.append(
+                        {
+                            "_rid": int(common_rids[i]),
+                            "column": str(common_cols[j]),
+                            "before": bj,
+                            "after": aj,
+                        }
+                    )
     return changed, changed_total, removed
 
 
