@@ -113,6 +113,69 @@ def test_cleaning(frames):
     assert {mapping.get(v, v) for v in ("Male", "MALE", "male")} == {"male"}
 
 
+def test_free_text_variants_standardize_instead_of_drop():
+    """Messy survey site column (site-a / site_a / Site A / SITE A among mostly
+    unique free text): standardize_text, not drop_columns (MAT-165)."""
+    notes = [f"note {i} some unique free text here" for i in range(16)]
+    notes += ["site-a", "site_a", "Site A", "SITE A"]
+    train = pd.DataFrame({"comment": notes, "y": [0, 1] * 10})
+    recs, columns = advise(train, model_family="tree", target="y")
+    ops = _by_column(recs)
+    assert ops["comment"] == ["standardize_text"]
+    rec = _rec(recs, "comment", "standardize_text")
+    params = rec["params"]
+    assert params["columns"] == ["comment"]
+    assert params["strip"] is True
+    assert params["lower"] is True
+    assert params["unify_separators"] is True  # variants differ by -_. punctuation
+    mapping = params["mapping"]
+    assert {mapping.get(v, v) for v in ("site-a", "site_a", "Site A", "SITE A")} == {
+        mapping.get("site-a", "site-a")
+    }
+    assert columns.loc[columns["column"] == "comment", "action"].iloc[0] == (
+        "standardize_text"
+    )
+
+
+def test_free_text_mixed_dates_parse_instead_of_drop():
+    """Free-text column holding dates in >= 2 formats: parse_dates (no single
+    unambiguous format to fill in), not drop_columns (MAT-165)."""
+    iso_dates = [f"2020-01-{d:02d}" for d in range(10, 17)]  # 7 distinct
+    us_dates = [f"{m:02d}/25/2020" for m in range(1, 9)]  # 8 distinct, day=25
+    values = iso_dates + us_dates
+    values += values[:5]  # pad to 20 rows, keep ratio in (0.5, 0.95): "text"
+    train = pd.DataFrame({"signup": values, "y": [0, 1] * 10})
+    recs, columns = advise(train, model_family="tree", target="y")
+    ops = _by_column(recs)
+    assert ops["signup"] == ["parse_dates"]
+    rec = _rec(recs, "signup", "parse_dates")
+    assert rec["params"] == {"columns": ["signup"]}  # mixed formats: no format guess
+    assert columns.loc[columns["column"] == "signup", "action"].iloc[0] == (
+        "parse_dates"
+    )
+
+
+def test_free_text_single_date_format_fills_in_format():
+    """A free-text date column in one consistent format (plus a couple of non-
+    date values, the reason inconsistencies flags it at all) gets `format`
+    filled in (MAT-165: 'the detected format when unambiguous')."""
+    dates = [f"2020-01-{d:02d}" for d in range(10, 23)]  # 13 distinct, ISO
+    values = dates + ["n/a", "n/a"] + dates[:5]  # 20 rows, 14 distinct
+    train = pd.DataFrame({"signup": values, "y": [0, 1] * 10})
+    recs, _ = advise(train, model_family="tree", target="y")
+    rec = _rec(recs, "signup", "parse_dates")
+    assert rec["params"] == {"columns": ["signup"], "format": "%Y-%m-%d"}
+
+
+def test_genuine_free_text_still_drops():
+    """No variants, no dates: the free-text drop stays (MAT-165 boundary)."""
+    notes = [f"note {i} totally unique free text blah blah" for i in range(20)]
+    train = pd.DataFrame({"comment": notes, "y": [0, 1] * 10})
+    recs, _ = advise(train, model_family="tree", target="y")
+    assert _by_column(recs)["comment"] == ["drop_columns"]
+    assert "free text" in _rec(recs, "comment", "drop_columns")["advice"]
+
+
 def test_currency_column_suggests_to_numeric():
     train = pd.DataFrame(
         {
