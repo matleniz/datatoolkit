@@ -80,6 +80,17 @@ def test_regression_binned_mean_and_unlabeled_rows():
     assert binned.loc[binned["column"] == "x", "count"].sum() == 295
     titles = [t.title for t in res.tables]
     assert "target_mean_by_category" in titles and "class_balance" not in titles
+    assert "target_histogram" in titles
+    hist = pd.DataFrame.from_records(
+        next(t.records for t in res.tables if t.title == "target_histogram")
+    )
+    assert len(hist) == res.metrics["target_bins"] == 10
+
+    coarse = api.target_analysis(df, target="price", target_bins=4)
+    coarse_hist = pd.DataFrame.from_records(
+        next(t.records for t in coarse.tables if t.title == "target_histogram")
+    )
+    assert len(coarse_hist) == 4
 
 
 def test_errors():

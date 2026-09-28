@@ -218,11 +218,40 @@ def test_column_profiles_shape_and_helpers(tmp_path):
     assert age["top_values"] is None
     assert age["iqr_bounds"] is not None
     assert age["sentinel_candidates"]
+    assert "suggested_params" in age
+    assert age["suggested_params"]["bins"] >= 2
+    assert "log_scale" in age["suggested_params"]
+    assert "top_k" in age["suggested_params"]
     city = by["city"]
     assert city["kind"] == "text"
     assert city["histogram"] is None
     assert city["top_values"]
     assert city["variants"] == {"raw": 4, "normalized": 2}
+    assert set(city["suggested_params"]) == {"top_k"}
+
+
+def test_column_profiles_suggested_bins_differ_int_vs_continuous(tmp_path):
+    """Acceptance: per-column default bins differ (small-int vs continuous)."""
+    train = tmp_path / "t.csv"
+    test = tmp_path / "e.csv"
+    rng_rows = "\n".join(
+        f"{i % 5},{i * 0.37},0" for i in range(200)
+    )
+    train.write_text(f"grade,score,Survived\n{rng_rows}\n")
+    test.write_text("grade,score\n1,0.1\n")
+    ws = {
+        "name": "w",
+        "datasets": {
+            "train": {
+                "x": {"kind": "csv", "path": str(train)},
+                "target_column": "Survived",
+            },
+            "test": {"x": {"kind": "csv", "path": str(test)}},
+        },
+    }
+    by = {c["name"]: c for c in column_profiles(ws, "train")["columns"]}
+    assert by["grade"]["suggested_params"]["bins"] == 5
+    assert by["score"]["suggested_params"]["bins"] != 5
 
 
 def test_column_profiles_numbers_as_text_and_dates(tmp_path):

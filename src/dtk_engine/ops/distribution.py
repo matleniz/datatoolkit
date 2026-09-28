@@ -16,6 +16,7 @@ import pandas as pd
 
 from dtk_engine.ops.profile import HIST_BINS, MISSING_LABEL
 from dtk_engine.ops.selection import infer_task
+from dtk_engine.ops.suggested import resolve_bin_edges
 
 OTHER_LABEL = "(other)"
 TOP_K = 10
@@ -26,7 +27,17 @@ GROUP = "group"
 SCATTER_MAX = 2000
 VS_BY_FIELDS = ["column", "by", "pearson", "spearman", "n_rows"]
 
-HISTOGRAM_FIELDS = ["column", GROUP, "bin_left", "bin_right", "count", "share"]
+HISTOGRAM_FIELDS = [
+    "column",
+    GROUP,
+    "bin_left",
+    "bin_right",
+    "count",
+    "share",
+    "density",
+    "cumulative_count",
+    "cumulative_share",
+]
 SUMMARY_FIELDS = [
     "column",
     GROUP,
@@ -181,17 +192,50 @@ def natural_key(label: str):
         return (1, 0.0, label)
 
 
+def percentile_bounds(
+    values: np.ndarray, range_min_pct: float = 0.0, range_max_pct: float = 100.0
+) -> tuple[float, float] | None:
+    """``(lo, hi)`` absolute bounds from percentiles of ``values``, or None if empty."""
+    if len(values) == 0:
+        return None
+    lo = float(np.percentile(values, range_min_pct))
+    hi = float(np.percentile(values, range_max_pct))
+    return (hi, lo) if lo > hi else (lo, hi)
+
+
+def clip_to_bounds(values: np.ndarray, bounds: tuple[float, float] | None) -> np.ndarray:
+    """Keep values inside ``bounds``; no-op when bounds is None."""
+    if bounds is None or len(values) == 0:
+        return values
+    lo, hi = bounds
+    return values[(values >= lo) & (values <= hi)]
+
+
 def numeric_distribution(
-    data: pd.DataFrame, column: str, bins: int = HIST_BINS
+    data: pd.DataFrame,
+    column: str,
+    bins: int | str = HIST_BINS,
+    bin_edges: list[float] | None = None,
+    range_min_pct: float = 0.0,
+    range_max_pct: float = 100.0,
+    log_x: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """``(histogram, summary)`` of ``column`` per group, on shared bins.
 
     ``share`` = count / non-missing rows of the group (each group sums to 1).
+    ``density`` = count / (n * bin_width). ``bins="auto"`` uses Freedman–Diaconis
+    / Sturges / integer-aligned edges (see ``ops.suggested``). ``log_x`` bins
+    ``log1p`` of non-negative values (negatives dropped from the histogram).
     """
     values = pd.to_numeric(data[column], errors="coerce")
     groups = group_order(data[GROUP])
     all_values = values.dropna().to_numpy(dtype=float)
-    edges = np.histogram_bin_edges(all_values, bins=bins) if len(all_values) else None
+    if log_x:
+        all_values = all_values[all_values >= 0]
+        all_values = np.log1p(all_values)
+    bounds = percentile_bounds(all_values, range_min_pct, range_max_pct)
+    clipped = clip_to_bounds(all_values, bounds)
+    edges = resolve_bin_edges(clipped, bins, bin_edges)
     hist, summary = [], []
     for group in groups:
         v = values[data[GROUP] == group]
@@ -216,7 +260,19 @@ def numeric_distribution(
         )
         if edges is None:
             continue
-        counts = np.histogram(present.to_numpy(), bins=edges)[0]
+        plotted = present.to_numpy(dtype=float)
+        if log_x:
+            plotted = plotted[plotted >= 0]
+            plotted = np.log1p(plotted)
+        plotted = clip_to_bounds(plotted, bounds)
+        n_plot = len(plotted)
+        counts = np.histogram(plotted, bins=edges)[0]
+        widths = np.diff(edges)
+        density = (
+            counts / (n_plot * widths) if n_plot else np.zeros_like(counts, dtype=float)
+        )
+        density = np.where(widths > 0, density, 0.0)
+        share = counts / n_plot if n_plot else np.zeros_like(counts, dtype=float)
         hist.append(
             pd.DataFrame(
                 {
@@ -225,7 +281,10 @@ def numeric_distribution(
                     "bin_left": edges[:-1],
                     "bin_right": edges[1:],
                     "count": counts,
-                    "share": counts / n if n else 0.0,
+                    "share": share,
+                    "density": density,
+                    "cumulative_count": np.cumsum(counts),
+                    "cumulative_share": np.cumsum(share),
                 }
             )
         )

@@ -167,6 +167,62 @@ def test_bad_params_raise_key_params_error():
         {"columns": ["nope"]},
         {"by": "nope"},
         {"by": "Survived", "by_label": True, "target": "Survived"},
+        {"bins": 1},
+        {"range_min_pct": 80, "range_max_pct": 20},
+        {"bin_edges": [1.0]},
     ):
         with pytest.raises(KeyParamsError):
             run_key("column_distribution", params)
+
+
+def test_auto_bins_differ_small_int_vs_continuous():
+    """Acceptance: default bins differ between a small-int and a continuous column."""
+    rng = np.random.default_rng(2)
+    df = pd.DataFrame(
+        {
+            "grade": rng.integers(1, 6, size=400),
+            "score": rng.normal(size=400),
+        }
+    )
+    int_hist = _table(
+        api.distribution(df, columns=["grade"]).model_dump(mode="json"), "histograms"
+    )
+    cont_hist = _table(
+        api.distribution(df, columns=["score"]).model_dump(mode="json"), "histograms"
+    )
+    n_int = int_hist["bin_left"].nunique()
+    n_cont = cont_hist["bin_left"].nunique()
+    assert n_int == 5
+    assert n_cont != n_int
+
+
+def test_explicit_edges_norm_cumulative_clip():
+    df = pd.DataFrame({"x": [0.0, 1.0, 2.0, 3.0, 4.0, 100.0] * 20})
+    res = api.distribution(
+        df,
+        columns=["x"],
+        bin_edges=[0, 2, 4, 6],
+        range_min_pct=0,
+        range_max_pct=95,
+        norm="count",
+        cumulative=True,
+    )
+    hist = pd.DataFrame.from_records(
+        next(t.records for t in res.tables if t.title == "histograms")
+    )
+    assert list(hist["bin_left"]) == [0.0, 2.0, 4.0]
+    assert hist["cumulative_count"].is_monotonic_increasing
+    assert res.metrics["norm"] == "count"
+    assert res.metrics["cumulative"] == 1
+
+
+def test_bins_number_and_density():
+    df = pd.DataFrame({"x": np.linspace(0, 10, 200)})
+    res = api.distribution(df, columns=["x"], bins=8, norm="density")
+    hist = pd.DataFrame.from_records(
+        next(t.records for t in res.tables if t.title == "histograms")
+    )
+    assert hist["bin_left"].nunique() == 8
+    assert (hist["density"] >= 0).all()
+    assert res.metrics["bins"] == 8
+

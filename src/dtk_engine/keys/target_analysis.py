@@ -2,6 +2,7 @@
 
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -57,6 +58,12 @@ class Params(KeyParams):
         le=50,
         description="Quantile bins of a numeric feature (regression: mean target per bin)",
     )
+    target_bins: int = Field(
+        default=FEATURE_BINS,
+        ge=2,
+        le=50,
+        description="Histogram bins of a numeric (regression) target",
+    )
     random_state: int = Field(default=0, description="Mutual information seed")
 
 
@@ -78,6 +85,7 @@ def run(params: Params) -> Result:
         params.top_k,
         params.bins,
         params.random_state,
+        params.target_bins,
     )
 
 
@@ -89,6 +97,7 @@ def target_result(
     top_k: int = TOP_K,
     bins: int = FEATURE_BINS,
     random_state: int = 0,
+    target_bins: int = FEATURE_BINS,
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.target_analysis``)."""
     op = "target_analysis"
@@ -111,6 +120,8 @@ def target_result(
         "n_features": len(picked),
         "n_columns_capped": n_capped,
         "top_feature": str(ranking["column"].iloc[0]),
+        "bins": bins,
+        "target_bins": target_bins,
     }
     result = Result(metrics=metrics)
     result.add_table("ranking", ranking)
@@ -129,6 +140,17 @@ def target_result(
         y = rows[target].astype(float)
         result.metrics["target_mean"] = float(y.mean())
         result.metrics["target_std"] = float(y.std()) if len(y) > 1 else 0.0
+        target_hist = _target_histogram(y, target, target_bins)
+        result.add_table("target_histogram", target_hist)
+        result.add_figure(
+            f"{target} distribution",
+            px.bar(
+                target_hist,
+                x="bin_left",
+                y="count",
+                labels={"bin_left": target, "count": "count"},
+            ),
+        )
         _regression_details(result, rows, target, picked, kinds, top, top_k, bins)
     if n_capped:
         result.text = (
@@ -136,6 +158,26 @@ def target_result(
             f"{MAX_COLUMNS}); pick columns to see them."
         )
     return result
+
+
+def _target_histogram(y: pd.Series, target: str, bins: int) -> pd.DataFrame:
+    """Simple count histogram of a numeric target (shared edges for the figure)."""
+    values = y.dropna().astype(float).to_numpy()
+    if len(values) == 0:
+        return pd.DataFrame(
+            columns=["column", "bin_left", "bin_right", "count", "share"]
+        )
+    counts, edges = np.histogram(values, bins=bins)
+    n = len(values)
+    return pd.DataFrame(
+        {
+            "column": target,
+            "bin_left": edges[:-1],
+            "bin_right": edges[1:],
+            "count": counts,
+            "share": counts / n if n else 0.0,
+        }
+    )
 
 
 def _classification_details(result, rows, target, picked, kinds, top, top_k):

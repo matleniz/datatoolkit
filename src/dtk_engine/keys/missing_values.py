@@ -1,5 +1,7 @@
 """Missing values: rates, per-row gaps, disguised sentinels, co-occurrence, test spikes."""
 
+from typing import Literal
+
 import pandas as pd
 import plotly.express as px
 from pydantic import Field
@@ -20,6 +22,8 @@ from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
+SortBy = Literal["pct_missing", "n_missing", "column"]
+
 
 class Params(KeyParams):
     source: SourceSpec = CsvSource(path=TRAIN_CSV)
@@ -35,6 +39,16 @@ class Params(KeyParams):
         None,
         "Target column of `source`: counts rows missing it (drop them first)",
     )
+    sort: SortBy = Field(
+        default="pct_missing",
+        description="Sort the missing_rates table by pct_missing | n_missing | column",
+    )
+    threshold: float = Field(
+        default=0.0,
+        ge=0,
+        le=100,
+        description="Only list columns with pct_missing >= this (0 = show all)",
+    )
 
 
 @key(
@@ -47,7 +61,14 @@ class Params(KeyParams):
 )
 def run(params: Params) -> Result:
     test = load(params.test) if params.test is not None else None
-    return missing_result(load(params.source), test, params.target, params.columns)
+    return missing_result(
+        load(params.source),
+        test,
+        params.target,
+        params.columns,
+        params.sort,
+        params.threshold,
+    )
 
 
 def missing_result(
@@ -55,10 +76,18 @@ def missing_result(
     test: pd.DataFrame | None = None,
     target: str | None = None,
     columns: list[str] | None = None,
+    sort: SortBy = "pct_missing",
+    threshold: float = 0.0,
 ) -> Result:
     """The key's Result on DataFrames (shared with ``dtk_engine.api.missing``)."""
     work, test_work = _scoped(df, test, columns)
     rates = missing_rates(work)
+    if threshold > 0:
+        rates = rates[rates["pct_missing"] >= threshold].reset_index(drop=True)
+    ascending = sort == "column"
+    rates = rates.sort_values(sort, ascending=ascending, kind="stable").reset_index(
+        drop=True
+    )
     per_row = missing_per_row(work)
     sentinels = sentinel_counts(work)
     matrix = cooccurrence(work)
@@ -68,16 +97,18 @@ def missing_result(
     metrics: dict = {
         "n_rows": len(work),
         "n_columns": work.shape[1],
-        "n_columns_with_missing": int((rates["n_missing"] > 0).sum()),
+        "n_columns_with_missing": int((work.isna().sum() > 0).sum()),
         "n_columns_drop_candidates": int(
             rates["recommendation"].str.startswith("drop").sum()
-        ),
+        ) if len(rates) else 0,
         "n_rows_with_missing": int((work.isna().any(axis=1)).sum()),
         "n_missing_cells": n_missing_cells,
         "pct_missing_cells": round(100 * n_missing_cells / n_cells, 2) if n_cells else 0.0,
         "n_spike_bins": int(per_row["spike"].sum()),
         "n_sentinel_columns": int(sentinels["column"].nunique()),
         "n_cooccurring_pairs": len(pairs),
+        "threshold": threshold,
+        "sort": sort,
     }
     issues = []
     if target is not None:

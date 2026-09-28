@@ -1,5 +1,7 @@
 """Outliers: per-column IQR / z-score, multivariate IsolationForest, action table."""
 
+from typing import Literal
+
 import pandas as pd
 import plotly.express as px
 from pydantic import Field
@@ -20,6 +22,8 @@ from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
+OutlierMethod = Literal["all", "iqr", "zscore", "isolation_forest"]
+
 
 class Params(KeyParams):
     source: SourceSpec = CsvSource(path=TRAIN_CSV)
@@ -27,6 +31,10 @@ class Params(KeyParams):
         "Numeric columns to screen (empty = every numeric column but ids / "
         "constants)",
         dtype="numeric",
+    )
+    method: OutlierMethod = Field(
+        default="all",
+        description="Which detector(s) to run: all | iqr | zscore | isolation_forest",
     )
     iqr_k: float = Field(
         default=IQR_K, gt=0, description="IQR fence multiplier (1.5 = Tukey)"
@@ -60,6 +68,7 @@ def run(params: Params) -> Result:
         params.contamination,
         params.random_state,
         params.columns,
+        params.method,
     )
 
 
@@ -70,6 +79,7 @@ def outliers_result(
     contamination: float = 0.01,
     random_state: int = 0,
     columns: list[str] | None = None,
+    method: OutlierMethod = "all",
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.outliers``)."""
     if columns:
@@ -82,9 +92,23 @@ def outliers_result(
         )
     else:
         picked = numeric_columns(df)
+    run_iqr = method in ("all", "iqr")
+    run_z = method in ("all", "zscore")
+    run_if = method in ("all", "isolation_forest")
+    # Univariate table always built (empty columns ok); zero out unused detectors.
     table = univariate_outliers(df, picked, iqr_k, z_threshold)
-    scores = isolation_forest(df, picked, contamination, random_state)
-    flagged = flagged_rows(df, scores, picked)
+    if not run_iqr:
+        table = table.assign(n_iqr=0, pct_iqr=0.0, lower_fence=float("nan"), upper_fence=float("nan"))
+    if not run_z:
+        table = table.assign(n_z=0, pct_z=0.0)
+    scores = (
+        isolation_forest(df, picked, contamination, random_state)
+        if run_if
+        else pd.DataFrame({"score": [], "flagged": []}, dtype=float)
+    )
+    flagged = flagged_rows(df, scores, picked) if run_if else pd.DataFrame(
+        columns=["row", "score", *picked]
+    )
     result = Result(
         metrics={
             "n_rows": len(df),
@@ -93,19 +117,20 @@ def outliers_result(
             "n_columns_with_z_outliers": int((table["n_z"] > 0).sum()),
             "n_rows_flagged": int(scores["flagged"].sum()) if len(scores) else 0,
             "contamination": contamination,
+            "method": method,
         },
         text=ACTION_TABLE,
     )
     result.add_table("outliers_per_column", table)
     result.add_table("flagged_rows", flagged)
-    if len(table):
+    if run_iqr and len(table):
         result.add_figure(
             "% outliers per column (IQR)",
             px.bar(
                 table, x="column", y="pct_iqr", labels={"pct_iqr": "% outside fences"}
             ),
         )
-    if len(scores):
+    if run_if and len(scores):
         result.add_figure(
             "IsolationForest scores",
             px.histogram(
