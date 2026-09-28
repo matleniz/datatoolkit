@@ -5,6 +5,7 @@ import plotly.express as px
 from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
+from dtk_engine.ops.columns import is_numeric, pick_columns
 from dtk_engine.ops.outliers import (
     ACTION_TABLE,
     IQR_K,
@@ -14,7 +15,7 @@ from dtk_engine.ops.outliers import (
     numeric_columns,
     univariate_outliers,
 )
-from dtk_engine.params import KeyParams
+from dtk_engine.params import KeyParams, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -22,6 +23,11 @@ from dtk_engine.sources import CsvSource, SourceSpec, load
 
 class Params(KeyParams):
     source: SourceSpec = CsvSource(path=TRAIN_CSV)
+    columns: list[str] = columns_field(
+        "Numeric columns to screen (empty = every numeric column but ids / "
+        "constants)",
+        dtype="numeric",
+    )
     iqr_k: float = Field(
         default=IQR_K, gt=0, description="IQR fence multiplier (1.5 = Tukey)"
     )
@@ -53,6 +59,7 @@ def run(params: Params) -> Result:
         params.z_threshold,
         params.contamination,
         params.random_state,
+        params.columns,
     )
 
 
@@ -62,16 +69,26 @@ def outliers_result(
     z_threshold: float = Z_THRESHOLD,
     contamination: float = 0.01,
     random_state: int = 0,
+    columns: list[str] | None = None,
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.outliers``)."""
-    columns = numeric_columns(df)
-    table = univariate_outliers(df, columns, iqr_k, z_threshold)
-    scores = isolation_forest(df, columns, contamination, random_state)
-    flagged = flagged_rows(df, scores, columns)
+    if columns:
+        picked, _ = pick_columns(
+            df,
+            columns,
+            "outliers",
+            required=is_numeric,
+            requirement="must be numeric",
+        )
+    else:
+        picked = numeric_columns(df)
+    table = univariate_outliers(df, picked, iqr_k, z_threshold)
+    scores = isolation_forest(df, picked, contamination, random_state)
+    flagged = flagged_rows(df, scores, picked)
     result = Result(
         metrics={
             "n_rows": len(df),
-            "n_numeric_columns": len(columns),
+            "n_numeric_columns": len(picked),
             "n_columns_with_iqr_outliers": int((table["n_iqr"] > 0).sum()),
             "n_columns_with_z_outliers": int((table["n_z"] > 0).sum()),
             "n_rows_flagged": int(scores["flagged"].sum()) if len(scores) else 0,

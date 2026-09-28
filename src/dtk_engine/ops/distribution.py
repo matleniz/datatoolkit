@@ -22,6 +22,9 @@ TOP_K = 10
 # A numeric target split by label: this many quantile bins.
 TARGET_BINS = 4
 GROUP = "group"
+# Max points in a numeric-vs-numeric scatter when grouping by a numeric column.
+SCATTER_MAX = 2000
+VS_BY_FIELDS = ["column", "by", "pearson", "spearman", "n_rows"]
 
 HISTOGRAM_FIELDS = ["column", GROUP, "bin_left", "bin_right", "count", "share"]
 SUMMARY_FIELDS = [
@@ -66,6 +69,71 @@ def label_binner(
         return cut.astype(str).where(cut.notna(), MISSING_LABEL)
 
     return binned
+
+
+def by_binner(
+    y: pd.Series, top_k: int = TOP_K, bins: int = TARGET_BINS
+) -> Callable[[pd.Series], pd.Series]:
+    """Map any grouping column to labels: categorical / low-cardinality classes
+    keep their top-k values (rest ``(other)``); a continuous numeric column is
+    split into quantile bins (same open edges as ``label_binner``)."""
+    if infer_task(y) == "classification":
+        labels = y.map(value_label)
+        counts = labels[labels != MISSING_LABEL].value_counts()
+        keep = set(counts.index[:top_k]) | {MISSING_LABEL}
+
+        def binned(s: pd.Series) -> pd.Series:
+            lab = s.map(value_label)
+            return lab.where(lab.isin(keep), OTHER_LABEL)
+
+        return binned
+    return label_binner(y, bins)
+
+
+def pairwise_corr(x: pd.Series, y: pd.Series, method: str) -> float:
+    """Pairwise-complete correlation; 0.0 when undefined."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        value = pd.to_numeric(x, errors="coerce").corr(
+            pd.to_numeric(y, errors="coerce"), method=method
+        )
+    return 0.0 if pd.isna(value) else float(value)
+
+
+def sample_scatter(
+    df: pd.DataFrame,
+    x: str,
+    y: str,
+    n: int = SCATTER_MAX,
+    random_state: int = 0,
+) -> pd.DataFrame:
+    """Up to ``n`` non-null ``(x, y)`` pairs (deterministic sample when longer)."""
+    pair = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(pair) > n:
+        pair = pair.sample(n, random_state=random_state)
+    return pair.reset_index(drop=True)
+
+
+def vs_by_correlations(
+    df: pd.DataFrame, columns: list[str], by: str
+) -> pd.DataFrame:
+    """Pearson / Spearman of each numeric ``column`` against numeric ``by``."""
+    rows = []
+    for col in columns:
+        pair = df[[col, by]].apply(pd.to_numeric, errors="coerce").dropna()
+        rows.append(
+            {
+                "column": col,
+                "by": by,
+                "pearson": pairwise_corr(pair[col], pair[by], "pearson")
+                if len(pair)
+                else 0.0,
+                "spearman": pairwise_corr(pair[col], pair[by], "spearman")
+                if len(pair)
+                else 0.0,
+                "n_rows": len(pair),
+            }
+        )
+    return pd.DataFrame(rows, columns=VS_BY_FIELDS)
 
 
 def grouped_frame(

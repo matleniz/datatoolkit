@@ -130,10 +130,13 @@ def inconsistencies(df: pd.DataFrame, columns: list[str] | None = None) -> Resul
 
 
 def missing(
-    df: pd.DataFrame, test: pd.DataFrame | None = None, target: str | None = None
+    df: pd.DataFrame,
+    test: pd.DataFrame | None = None,
+    target: str | None = None,
+    columns: list[str] | None = None,
 ) -> Result:
     """``missing_values`` on a DataFrame (and an optional test frame)."""
-    return missing_result(df, test, target)
+    return missing_result(df, test, target, columns)
 
 
 def outliers(
@@ -142,9 +145,12 @@ def outliers(
     z_threshold: float = 3.0,
     contamination: float = 0.01,
     random_state: int = 0,
+    columns: list[str] | None = None,
 ) -> Result:
     """``outliers`` on a DataFrame."""
-    return outliers_result(df, iqr_k, z_threshold, contamination, random_state)
+    return outliers_result(
+        df, iqr_k, z_threshold, contamination, random_state, columns
+    )
 
 
 def advise(
@@ -185,10 +191,15 @@ def distribution(
     by_label: bool = False,
     bins: int = 30,
     top_k: int = 10,
+    target_bins: int = 4,
+    by: str | None = None,
 ) -> Result:
     """``column_distribution`` on a DataFrame (``test`` given: train vs test
-    overlay; ``by_label``: split by the classes of ``target``)."""
-    return distribution_result(df, test, columns, target, by_label, bins, top_k)
+    overlay; ``by_label``: split by the classes of ``target``; ``by``: split by
+    any column)."""
+    return distribution_result(
+        df, test, columns, target, by_label, bins, top_k, target_bins, by
+    )
 
 
 def target_analysis(
