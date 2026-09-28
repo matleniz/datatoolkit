@@ -133,3 +133,71 @@ def test_dataset_spec_strict():
         )
     with pytest.raises(KeyParamsError):
         run_key("dataset_overview", {"source": {"kind": "dataset", "role": "valid"}})
+
+
+def test_version_none_replays_every_step(files, monkeypatch):
+    monkeypatch.setattr(registry, "_TRANSFORMS", {})
+
+    def fit(df, params):
+        return {"mean": float(df["f"].mean())}
+
+    @transform("center_f", params_model=TransformParams, fit=fit)
+    def center_f(df, params, state):
+        return df.assign(f=df["f"] - state["mean"])
+
+    _save(files, steps=[{"op": "center_f", "target": "both"}])
+    assert load(DatasetSource(workspace="w"))["f"].tolist() == [-1.0, 0.0, 1.0]
+    assert load(DatasetSource(workspace="w", version=None))["f"].tolist() == [
+        -1.0,
+        0.0,
+        1.0,
+    ]
+
+
+def test_version_replays_only_first_n_steps(files, monkeypatch):
+    monkeypatch.setattr(registry, "_TRANSFORMS", {})
+
+    def fit(df, params):
+        return {"mean": float(df["f"].mean())}
+
+    @transform("center_f", params_model=TransformParams, fit=fit)
+    def center_f(df, params, state):
+        return df.assign(f=df["f"] - state["mean"])
+
+    @transform("double_f", params_model=TransformParams)
+    def double_f(df, params, state):
+        return df.assign(f=df["f"] * 2)
+
+    _save(
+        files,
+        steps=[
+            {"op": "center_f", "target": "both"},
+            {"op": "double_f", "target": "both"},
+        ],
+    )
+    assert load(DatasetSource(workspace="w", version=0))["f"].tolist() == [1, 2, 3]
+    assert load(DatasetSource(workspace="w", version=1))["f"].tolist() == [
+        -1.0,
+        0.0,
+        1.0,
+    ]
+    assert load(DatasetSource(workspace="w", version=2))["f"].tolist() == [
+        -2.0,
+        0.0,
+        2.0,
+    ]
+
+
+def test_version_beyond_step_count_raises(files):
+    _save(
+        files,
+        steps=[{"op": "drop_columns", "target": "both", "params": {"columns": ["id"]}}],
+    )
+    with pytest.raises(KeyParamsError, match="version 2 exceeds workspace step count"):
+        load(DatasetSource(workspace="w", version=2))
+
+
+def test_version_negative_raises(files):
+    _save(files)
+    with pytest.raises(KeyParamsError, match="version must be a non-negative int"):
+        load(DatasetSource(workspace="w", version=-1))

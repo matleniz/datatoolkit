@@ -34,6 +34,23 @@ def needs_train(steps: Iterable[Step]) -> bool:
     return any(s.target == "both" for s in steps)
 
 
+def resolve_version(n_steps: int, version: int | None) -> int:
+    """``version`` (None = every step) -> number of steps to replay.
+
+    Invalid type / negative -> ``KeyParamsError``; ``version`` beyond the
+    workspace's step count -> ``KeyParamsError`` naming the count.
+    """
+    if version is None:
+        return n_steps
+    if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+        raise KeyParamsError(f"version must be a non-negative int or None, got {version!r}")
+    if version > n_steps:
+        raise KeyParamsError(
+            f"version {version} exceeds workspace step count ({n_steps})"
+        )
+    return version
+
+
 def _resolve(steps: list[Step]):
     transforms = [get_transform(s.op) for s in steps]
     return [(s, t, t.parse(s.params)) for s, t in zip(steps, transforms, strict=True)]
