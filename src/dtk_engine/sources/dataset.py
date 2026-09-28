@@ -77,12 +77,17 @@ def workspace_frame(
     semantics as ``workspace.inspect._frame_at``.
     """
     from dtk_engine.workspace.replay import needs_train, replay, resolve_version
+    from dtk_engine.workspace.replay_cache import cached_frame
 
     n = resolve_version(len(ws.steps), version)
     steps = ws.steps[:n]
-    frame = raw_workspace_frame(ws, role, labeled)
-    train = None
-    if role == "test" and needs_train(steps):
-        train = raw_workspace_frame(ws, "train", labeled)
-    return replay(steps, role, frame, train)
+
+    def compute() -> pd.DataFrame:
+        frame = raw_workspace_frame(ws, role, labeled)
+        train = None
+        if role == "test" and needs_train(steps):
+            train = raw_workspace_frame(ws, "train", labeled)
+        return replay(steps, role, frame, train)
+
+    return cached_frame(ws, "replay", role, steps, labeled, compute)
 
