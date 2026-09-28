@@ -130,6 +130,16 @@ def test_to_numeric_currency_and_percent():
         ("$1,250.00", {"thousands": ","}, 1250.0),
         ("12,5 %", {"decimal": ",", "percent": True}, 0.125),
         ("1 250,00 EUR", {"decimal": ",", "thousands": " "}, 1250.0),
+        # MAT-168: thousands commas, percent without symbol, EU space thousands,
+        # NBSP/narrow-NBSP thousands, whole-unit ',-' / '.-' notation.
+        ("$1,029.55", {"thousands": ","}, 1029.55),
+        ("$34,484.45", {"thousands": ","}, 34484.45),
+        ("65.9567%", {"percent": True}, 0.659567),
+        ("1 200,50", {"decimal": ",", "thousands": " "}, 1200.50),
+        ("1 200,50", {"decimal": ",", "thousands": " "}, 1200.50),
+        ("1 200,50", {"decimal": ",", "thousands": " "}, 1200.50),
+        ("990,-", {"decimal": ","}, 990.0),
+        ("990.-", {}, 990.0),
     ]
     for raw, extra, expected in cases:
         p = {"columns": ["v"], **extra}

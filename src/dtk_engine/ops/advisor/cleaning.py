@@ -14,7 +14,7 @@ from dtk_engine.ops.missing import (
     STRING_SENTINELS,
     sentinel_counts,
 )
-from dtk_engine.ops.profile import currency_format, pct_numeric_parsable
+from dtk_engine.ops.profile import numeric_text_format, pct_numeric_parsable
 
 # Hits of the "implausible 0" sentinel heuristic are only reported, not replaced.
 UNSAFE_SENTINELS = frozenset({"0"})
@@ -104,14 +104,14 @@ def type_rec(col: str, frames: list[pd.DataFrame]) -> Rec | None:
     if not any(s.notna().any() for s in present):
         return None
     for s in present:
-        fmt = currency_format(s) if s.notna().any() else None
+        fmt = numeric_text_format(s) if s.notna().any() else None
         if fmt is not None:
             return Rec(
                 col,
                 "type",
                 "warning",
-                "numbers stored as text with a currency symbol / thousands "
-                f"separator: parse to float ({fmt})",
+                "numbers stored as text with a currency symbol, percent sign, "
+                f"or thousands separator: parse to float ({fmt})",
                 "to_numeric",
                 "both",
                 {"columns": [col], **fmt},

@@ -172,6 +172,11 @@ def standardize_text(
 
 # Currency symbol or ISO code (stripped unconditionally, wherever it sits).
 _CURRENCY_TOKEN_RE = re.compile(r"(?i)[$€£]|USD|EUR|GBP")
+# Whitespace-like thousands separators (regular space, NBSP, narrow NBSP): a
+# `thousands=" "` param strips all three, not just the plain space.
+_THOUSANDS_WS_RE = re.compile(r"[   ]")
+# Trailing whole-unit notation ('990,-' / '990.-'): no cents, drop the marker.
+_WHOLE_UNIT_RE = re.compile(r"[.,]-$")
 
 
 class ToNumericParams(TransformParams):
@@ -210,7 +215,10 @@ def _parse_numeric_cell(
     has_percent = "%" in s
     s = s.replace("%", "")
     s = _CURRENCY_TOKEN_RE.sub("", s).strip()
-    if params.thousands:
+    s = _WHOLE_UNIT_RE.sub("", s).strip()
+    if params.thousands == " ":
+        s = _THOUSANDS_WS_RE.sub("", s)
+    elif params.thousands:
         s = s.replace(params.thousands, "")
     if params.decimal != ".":
         s = s.replace(params.decimal, ".")
@@ -223,8 +231,9 @@ def _parse_numeric_cell(
 
 @transform("to_numeric", params_model=ToNumericParams, title="Parse numeric text")
 def to_numeric(df: pd.DataFrame, params: ToNumericParams, state: dict) -> pd.DataFrame:
-    """Parse text numbers (currency symbols, thousands / decimal separators,
-    percent signs) to float; `errors` controls unparseable values."""
+    """Parse text numbers (currency symbols, thousands / decimal separators
+    including NBSP-style spaces, percent signs, trailing ',-' / '.-' whole-unit
+    notation) to float; `errors` controls unparseable values."""
     out = df.copy()
     for col in params.columns:
 
