@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -121,6 +122,81 @@ def test_workspace_crud(tmp_path, monkeypatch):
     assert list_workspaces() == []
     with pytest.raises(WorkspaceNotFoundError):
         get_workspace("w")
+
+
+def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
+    from dtk_engine import (
+        duplicate_workspace,
+        list_workspace_summaries,
+        rename_workspace,
+    )
+
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    save_workspace(
+        _workspace("alpha")
+        | {
+            "steps": [
+                {
+                    "op": "drop_columns",
+                    "target": "both",
+                    "params": {"columns": ["Name"]},
+                }
+            ]
+        }
+    )
+    save_workspace(_workspace("beta"))
+
+    summaries = list_workspace_summaries()
+    assert json.dumps(summaries)
+    assert [s["name"] for s in summaries] == ["alpha", "beta"]
+    alpha = summaries[0]
+    assert alpha["step_count"] == 1
+    assert alpha["target"] == "Survived"
+    assert "+00:00" in alpha["mtime"] or alpha["mtime"].endswith("Z")
+    assert alpha["train"]["file"] == Path(TRAIN_CSV).name
+    assert alpha["train"]["shape"] == [41, 11]  # Name dropped
+    assert alpha["test"]["file"] == Path(TEST_CSV).name
+    assert alpha["test"]["shape"] == [20, 10]
+
+    dup = duplicate_workspace("alpha", "alpha-copy")
+    assert dup["name"] == "alpha-copy"
+    assert dup["steps"] == get_workspace("alpha")["steps"]
+    assert (
+        dup["datasets"]["train"]["x"]["path"]
+        == get_workspace("alpha")["datasets"]["train"]["x"]["path"]
+    )
+
+    renamed = rename_workspace("alpha-copy", "alpha-renamed")
+    assert renamed["name"] == "alpha-renamed"
+    with pytest.raises(WorkspaceNotFoundError):
+        get_workspace("alpha-copy")
+    assert [s["name"] for s in list_workspace_summaries()] == [
+        "alpha",
+        "alpha-renamed",
+        "beta",
+    ]
+
+    delete_workspace("alpha")
+    delete_workspace("beta")
+    assert [s["name"] for s in list_workspace_summaries()] == ["alpha-renamed"]
+
+
+def test_rename_duplicate_errors(tmp_path, monkeypatch):
+    from dtk_engine import duplicate_workspace, rename_workspace
+
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    save_workspace(_workspace("a"))
+    save_workspace(_workspace("b"))
+    with pytest.raises(KeyParamsError, match="already exists"):
+        rename_workspace("a", "b")
+    with pytest.raises(KeyParamsError, match="already exists"):
+        duplicate_workspace("a", "b")
+    with pytest.raises(WorkspaceNotFoundError):
+        rename_workspace("missing", "x")
+    with pytest.raises(WorkspaceNotFoundError):
+        duplicate_workspace("missing", "x")
+    with pytest.raises(KeyParamsError, match="invalid"):
+        rename_workspace("a", "../x")
 
 
 def test_save_invalid_workspace_raises(tmp_path, monkeypatch):
