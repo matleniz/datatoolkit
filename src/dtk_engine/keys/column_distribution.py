@@ -1,5 +1,5 @@
 """Column distribution: histograms / value counts of picked columns, optionally
-train vs test and split by label."""
+train vs test and split by label or by any column."""
 
 from typing import Literal
 
@@ -11,16 +11,19 @@ from pydantic import Field
 
 from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
 from dtk_engine.errors import KeyParamsError
-from dtk_engine.ops.columns import pick_columns, value_kind
+from dtk_engine.ops.columns import is_numeric, pick_columns, value_kind
 from dtk_engine.ops.distribution import (
     GROUP,
     TARGET_BINS,
     TOP_K,
+    by_binner,
     categorical_distribution,
     group_order,
     grouped_frame,
     label_binner,
     numeric_distribution,
+    sample_scatter,
+    vs_by_correlations,
 )
 from dtk_engine.ops.profile import HIST_BINS
 from dtk_engine.params import KeyParams, column_field, columns_field
@@ -46,6 +49,12 @@ class Params(KeyParams):
         default=CsvSource(path=TEST_CSV),
         description="Test source (read only when compare = train_vs_test)",
     )
+    by: str | None = column_field(
+        None,
+        "Split each column by the classes of this column (top-k + (other) for "
+        "categorical / low-cardinality; quantile bins for continuous numeric); "
+        "independent from `target` / `by_label`",
+    )
     by_label: bool = Field(
         default=False,
         description="Split each column by the classes of `target` (quantile bins "
@@ -65,7 +74,7 @@ class Params(KeyParams):
         default=TARGET_BINS,
         ge=2,
         le=20,
-        description="Quantile bins of a numeric target when by_label",
+        description="Quantile bins of a numeric target / by column when continuous",
     )
 
 
@@ -75,7 +84,7 @@ class Params(KeyParams):
     category="analysis",
     description="Per picked column: histogram on shared bins + summary (numeric) or "
     "top-k value counts (categorical), side by side per group: train vs test "
-    "and / or per label class.",
+    "and / or per label class / any `by` column.",
 )
 def run(params: Params) -> Result:
     test = load(params.test) if params.compare == "train_vs_test" else None
@@ -88,6 +97,7 @@ def run(params: Params) -> Result:
         params.bins,
         params.top_k,
         params.target_bins,
+        params.by,
     )
 
 
@@ -100,24 +110,38 @@ def distribution_result(
     bins: int = HIST_BINS,
     top_k: int = TOP_K,
     target_bins: int = TARGET_BINS,
+    by: str | None = None,
 ) -> Result:
     """The key's Result on DataFrames (shared with ``dtk_engine.api.distribution``).
 
     ``target`` is only read with ``by_label`` (then it is not a described column).
+    ``by`` splits by any column (top-k + other or quantile bins), independent of
+    ``target``; mutually exclusive with ``by_label``.
     """
     op = "column_distribution"
+    if by is not None and by_label:
+        raise KeyParamsError(f"{op}: pass by or by_label, not both")
+    if by is not None and by not in df.columns:
+        raise KeyParamsError(f"{op}: by {by!r} not in the frame")
     if by_label:
         if target is None:
             raise KeyParamsError(f"{op}: by_label needs a target column")
         if target not in df.columns:
             raise KeyParamsError(f"{op}: target {target!r} not in the frame")
+    exclude = [c for c in (by, target if by_label else None) if c is not None]
     picked, n_capped = pick_columns(
-        df, columns or [], op, exclude=[target] if by_label else [], cap=MAX_COLUMNS
+        df, columns or [], op, exclude=exclude, cap=MAX_COLUMNS
     )
     frames = {"train": df, "test": test} if test is not None else {"all": df}
-    binner = label_binner(df[target], target_bins) if by_label else None
-    data = grouped_frame(frames, picked, target, binner)
+    if by is not None:
+        group_col, binner = by, by_binner(df[by], top_k, target_bins)
+    elif by_label:
+        group_col, binner = target, label_binner(df[target], target_bins)
+    else:
+        group_col, binner = None, None
+    data = grouped_frame(frames, picked, group_col, binner)
     kinds = {c: value_kind(df[c]) for c in picked}
+    by_numeric = by is not None and is_numeric(df[by])
 
     hists, summaries, counts, figures = [], [], [], []
     for col in picked:
@@ -142,6 +166,7 @@ def distribution_result(
             "n_groups": len(groups),
             "compare": "train_vs_test" if test is not None else "none",
             "by_label": target if by_label else "none",
+            "by": by if by is not None else "none",
             "n_missing_in_test": len(absent),
         },
         text=_text(n_capped, absent),
@@ -165,6 +190,29 @@ def distribution_result(
         )
     for col, group, fig in figures:
         result.add_figure(col, fig, group)
+    if by_numeric:
+        numeric_cols = [c for c in picked if kinds[c] == "numeric"]
+        if numeric_cols:
+            corr = vs_by_correlations(df, numeric_cols, by)
+            result.add_table("vs_by", corr, "numeric")
+            if len(corr) == 1:
+                result.metrics["pearson"] = float(corr["pearson"].iloc[0])
+                result.metrics["spearman"] = float(corr["spearman"].iloc[0])
+            for col in numeric_cols:
+                sample = sample_scatter(df, col, by)
+                if sample.empty:
+                    continue
+                result.add_figure(
+                    f"{col} vs {by}",
+                    px.scatter(
+                        sample,
+                        x=by,
+                        y=col,
+                        labels={by: by, col: col},
+                        opacity=0.55,
+                    ),
+                    "numeric",
+                )
     return result
 
 

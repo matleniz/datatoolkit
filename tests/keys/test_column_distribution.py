@@ -18,6 +18,7 @@ def test_defaults_on_demo_data():
     res = run_key("column_distribution", {})
     m = res["metrics"]
     assert m["n_groups"] == 1 and m["compare"] == "none"
+    assert m["by"] == "none"
     assert m["n_numeric"] >= 2 and m["n_categorical"] >= 1
     columns = _table(res, "columns")
     assert "Name" not in set(columns["column"])  # free text: not auto-picked
@@ -48,6 +49,63 @@ def test_train_vs_test_by_label_shared_bins():
         assert part["pct"].sum() == pytest.approx(100, abs=0.1)
 
 
+def test_by_age_survived_titanic():
+    """Titanic: Age by Survived — two class groups, shared histogram bins."""
+    res = run_key(
+        "column_distribution",
+        {"columns": ["Age"], "by": "Survived"},
+    )
+    assert res["metrics"]["by"] == "Survived"
+    assert res["metrics"]["by_label"] == "none"
+    groups = list(_table(res, "groups")["group"])
+    assert groups == ["0", "1"]
+    hist = _table(res, "histograms")
+    assert set(hist["group"]) == {"0", "1"}
+    assert hist.groupby("group")["bin_left"].apply(tuple).nunique() == 1
+
+
+def test_by_sex_survived_titanic():
+    """Titanic: Sex by Survived — value counts per class."""
+    res = run_key(
+        "column_distribution",
+        {"columns": ["Sex"], "by": "Survived"},
+    )
+    counts = _table(res, "value_counts")
+    assert set(counts["group"]) == {"0", "1"}
+    assert set(counts["value"]) == {"male", "female"}
+    for _, part in counts.groupby("group"):
+        assert part["pct"].sum() == pytest.approx(100, abs=0.1)
+
+
+def test_by_fare_pclass_titanic():
+    """Titanic: Fare by Pclass — one group per class (1/2/3)."""
+    res = run_key(
+        "column_distribution",
+        {"columns": ["Fare"], "by": "Pclass"},
+    )
+    groups = list(_table(res, "groups")["group"])
+    assert groups == ["1", "2", "3"]
+    assert res["metrics"]["n_groups"] == 3
+
+
+def test_by_age_vs_fare_scatter_and_corr():
+    """Titanic: Age vs Fare — sampled scatter + pearson / spearman (MAT-159)."""
+    res = run_key(
+        "column_distribution",
+        {"columns": ["Age"], "by": "Fare"},
+    )
+    assert "pearson" in res["metrics"] and "spearman" in res["metrics"]
+    vs = _table(res, "vs_by")
+    assert list(vs["column"]) == ["Age"] and list(vs["by"]) == ["Fare"]
+    assert vs["n_rows"].iloc[0] > 0
+    titles = [f["title"] for f in res["figures"]]
+    assert "Age vs Fare" in titles
+    scatter = next(f for f in res["figures"] if f["title"] == "Age vs Fare")
+    # Plotly scatter data length capped at 2000.
+    n_points = len(scatter["plotly"]["data"][0]["x"])
+    assert 0 < n_points <= 2000
+
+
 def test_top_k_other_missing_and_numeric_target_bins():
     rng = np.random.default_rng(0)
     n = 400
@@ -70,6 +128,21 @@ def test_top_k_other_missing_and_numeric_target_bins():
     assert len(groups) == 4 and groups[0].startswith("(-inf") and "inf]" in groups[-1]
 
 
+def test_by_categorical_topk_other():
+    rng = np.random.default_rng(1)
+    n = 200
+    df = pd.DataFrame(
+        {
+            "city": rng.choice(list("abcdefghij"), size=n).astype(object),
+            "x": rng.normal(size=n),
+        }
+    )
+    res = api.distribution(df, columns=["x"], by="city", top_k=3)
+    groups = list(_table(res.model_dump(mode="json"), "groups")["group"])
+    assert OTHER_LABEL in groups
+    assert len(groups) == 4  # top-3 + (other)
+
+
 def test_errors():
     with pytest.raises(ValueError, match="by_label needs a target"):
         api.distribution(pd.DataFrame({"a": [1, 2]}), by_label=True)
@@ -78,11 +151,13 @@ def test_errors():
     df = pd.DataFrame({"a": [1.5, 2.5, 3.5], "y": [0, 1, 0]})
     with pytest.raises(ValueError, match="target"):
         api.distribution(df, columns=["y"], target="y", by_label=True)
+    with pytest.raises(ValueError, match="by or by_label"):
+        api.distribution(df, columns=["a"], by="y", by_label=True, target="y")
+    with pytest.raises(ValueError, match="by"):
+        api.distribution(df, columns=["a"], by="nope")
 
 
 def test_bad_params_raise_key_params_error():
-    import pytest
-
     from dtk_engine import run_key
     from dtk_engine.errors import KeyParamsError
 
@@ -90,6 +165,8 @@ def test_bad_params_raise_key_params_error():
         {"by_label": True},
         {"by_label": True, "target": "nope"},
         {"columns": ["nope"]},
+        {"by": "nope"},
+        {"by": "Survived", "by_label": True, "target": "Survived"},
     ):
         with pytest.raises(KeyParamsError):
             run_key("column_distribution", params)

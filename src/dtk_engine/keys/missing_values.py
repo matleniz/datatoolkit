@@ -14,7 +14,7 @@ from dtk_engine.ops.missing import (
     sentinel_counts,
     value_spikes_vs_train,
 )
-from dtk_engine.params import KeyParams, column_field
+from dtk_engine.params import KeyParams, column_field, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -22,6 +22,10 @@ from dtk_engine.sources import CsvSource, SourceSpec, load
 
 class Params(KeyParams):
     source: SourceSpec = CsvSource(path=TRAIN_CSV)
+    columns: list[str] = columns_field(
+        "Columns to check (empty = every column); rates, sentinels, co-occurrence "
+        "and per-row counts are restricted to this pick"
+    )
     test: SourceSpec | None = Field(
         default=None,
         description="Optional test source: enables the imputation-spike check",
@@ -42,26 +46,30 @@ class Params(KeyParams):
 )
 def run(params: Params) -> Result:
     test = load(params.test) if params.test is not None else None
-    return missing_result(load(params.source), test, params.target)
+    return missing_result(load(params.source), test, params.target, params.columns)
 
 
 def missing_result(
-    df: pd.DataFrame, test: pd.DataFrame | None = None, target: str | None = None
+    df: pd.DataFrame,
+    test: pd.DataFrame | None = None,
+    target: str | None = None,
+    columns: list[str] | None = None,
 ) -> Result:
     """The key's Result on DataFrames (shared with ``dtk_engine.api.missing``)."""
-    rates = missing_rates(df)
-    per_row = missing_per_row(df)
-    sentinels = sentinel_counts(df)
-    matrix = cooccurrence(df)
+    work, test_work = _scoped(df, test, columns)
+    rates = missing_rates(work)
+    per_row = missing_per_row(work)
+    sentinels = sentinel_counts(work)
+    matrix = cooccurrence(work)
     pairs = cooccurrence_pairs(matrix)
     metrics: dict = {
-        "n_rows": len(df),
-        "n_columns": df.shape[1],
+        "n_rows": len(work),
+        "n_columns": work.shape[1],
         "n_columns_with_missing": int((rates["n_missing"] > 0).sum()),
         "n_columns_drop_candidates": int(
             rates["recommendation"].str.startswith("drop").sum()
         ),
-        "n_rows_with_missing": int((df.isna().any(axis=1)).sum()),
+        "n_rows_with_missing": int((work.isna().any(axis=1)).sum()),
         "n_spike_bins": int(per_row["spike"].sum()),
         "n_sentinel_columns": int(sentinels["column"].nunique()),
         "n_cooccurring_pairs": len(pairs),
@@ -83,8 +91,9 @@ def missing_result(
             f"spike in missing fields per row at k={ks}: a block of rows misses the "
             "same fields (failed batch or unjoined source?)"
         )
-    if test is not None:
-        spikes = value_spikes_vs_train(df, test)
+    spikes = None
+    if test_work is not None:
+        spikes = value_spikes_vs_train(work, test_work)
         metrics["n_test_spikes"] = len(spikes)
         for s in spikes.itertuples():
             issues.append(
@@ -97,7 +106,7 @@ def missing_result(
     result.add_table("missing_per_row", per_row)
     result.add_table("sentinels", sentinels)
     result.add_table("cooccurrence_pairs", pairs)
-    if test is not None:
+    if spikes is not None:
         result.add_table("test_value_spikes", spikes)
     result.add_figure(
         "% missing per column",
@@ -124,3 +133,19 @@ def missing_result(
             px.imshow(matrix, zmin=0, zmax=1, aspect="auto"),
         )
     return result
+
+
+def _scoped(
+    df: pd.DataFrame, test: pd.DataFrame | None, columns: list[str] | None
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Restrict the analysis frame (and test) to ``columns`` when given."""
+    if not columns:
+        return df, test
+    absent = [c for c in columns if c not in df.columns]
+    if absent:
+        raise KeyParamsError(f"missing_values: columns not in the frame {absent}")
+    work = df[list(dict.fromkeys(columns))]
+    if test is None:
+        return work, None
+    shared = [c for c in work.columns if c in test.columns]
+    return work, test[shared]
