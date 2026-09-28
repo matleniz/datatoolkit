@@ -207,23 +207,47 @@ def _column_meta(df: pd.DataFrame) -> list[dict]:
     ]
 
 
+def _resolve_columns(
+    df: pd.DataFrame, columns: list[str] | None, op: str
+) -> list[str] | None:
+    """Non-empty ``columns`` → names in that order; unknown → KeyParamsError.
+
+    ``None`` / empty list → ``None`` (caller keeps all-columns behaviour).
+    """
+    if not columns:
+        return None
+    if not isinstance(columns, list) or any(not isinstance(c, str) for c in columns):
+        raise KeyParamsError(f"{op}: columns must be a list of strings, got {columns!r}")
+    absent = [c for c in columns if c not in df.columns]
+    if absent:
+        raise KeyParamsError(f"{op}: columns not in the frame {absent}")
+    return list(dict.fromkeys(columns))
+
+
 def workspace_rows(
     ws: Workspace,
     role: str,
     version: int | None = None,
     offset: int = 0,
     limit: int = 500,
+    columns: list[str] | None = None,
 ) -> dict:
-    """Paged rows for ``role`` at ``version`` (None = all steps replayed)."""
+    """Paged rows for ``role`` at ``version`` (None = all steps replayed).
+
+    Optional ``columns`` (non-empty) restricts the page and column meta to those
+    names in that order; unknown names raise ``KeyParamsError``.
+    """
     _check_role(role)
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
         raise KeyParamsError(f"offset must be a non-negative int, got {offset!r}")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise KeyParamsError(f"limit must be a positive int, got {limit!r}")
     df, n = _frame_at(ws, role, version)
-    page = df.iloc[offset : offset + limit]
+    picked = _resolve_columns(df, columns, "workspace_rows")
+    view = df[picked] if picked is not None else df
+    page = view.iloc[offset : offset + limit]
     return {
-        "columns": _column_meta(df),
+        "columns": _column_meta(view),
         "rows": _records(page),
         "total": len(df),
         "version": n,
@@ -360,13 +384,22 @@ def _profile_one(name: str, series: pd.Series) -> dict:
 
 
 def column_profiles(
-    ws: Workspace, role: str, version: int | None = None
+    ws: Workspace,
+    role: str,
+    version: int | None = None,
+    columns: list[str] | None = None,
 ) -> dict:
-    """Per-column profile for ``role`` at ``version`` (None = all steps)."""
+    """Per-column profile for ``role`` at ``version`` (None = all steps).
+
+    Optional ``columns`` (non-empty) profiles only those names in that order;
+    unknown names raise ``KeyParamsError``. ``None`` / empty = every column.
+    """
     _check_role(role)
     df, n = _frame_at(ws, role, version)
+    picked = _resolve_columns(df, columns, "column_profiles")
+    names = picked if picked is not None else [str(c) for c in df.columns]
     return {
-        "columns": [_profile_one(str(c), df[c]) for c in df.columns],
+        "columns": [_profile_one(name, df[name]) for name in names],
         "version": n,
     }
 

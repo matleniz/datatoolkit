@@ -152,6 +152,35 @@ def test_workspace_preview_rows_profiles_align(client):
     profiles = r.json()
     assert profiles and json.dumps(profiles)
 
+    r = client.post(
+        "/api/workspace/rows",
+        json={
+            "workspace": ws,
+            "role": "train",
+            "offset": 0,
+            "limit": 5,
+            "columns": ["Survived", "Age"],
+        },
+    )
+    assert r.status_code == 200
+    scoped_rows = r.json()
+    assert [c["name"] for c in scoped_rows["columns"]] == ["Survived", "Age"]
+    assert set(scoped_rows["rows"][0]) == {"Survived", "Age", "_rid"}
+
+    r = client.post(
+        "/api/workspace/profiles",
+        json={"workspace": ws, "role": "train", "columns": ["Age", "Survived"]},
+    )
+    assert r.status_code == 200
+    scoped = r.json()
+    assert [c["name"] for c in scoped["columns"]] == ["Age", "Survived"]
+
+    r = client.post(
+        "/api/workspace/profiles",
+        json={"workspace": ws, "role": "train", "columns": ["Age", "no_such"]},
+    )
+    assert r.status_code == 422
+
     r = client.post("/api/workspace/align", json={"workspace": ws})
     assert r.status_code == 200
     align = r.json()
