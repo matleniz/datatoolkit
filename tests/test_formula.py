@@ -109,18 +109,63 @@ def test_nan_propagation_and_divide_by_zero():
         "(lambda x: x)(a)",
         "round(a, ndigits=1)",
         '"hello"',
-        "a > 1",
         "__import__('os')",
         "eval(a)",
         "[a]",
         "a if a else b",
         "a and b",
         "a ^ b",
+        "a is b",
+        "a in b",
     ],
 )
 def test_refuses_disallowed_constructs(expr):
     with pytest.raises(KeyParamsError, match="formula"):
         _parse(name="y", expr=expr)
+
+
+def test_comparisons_and_where():
+    df = pd.DataFrame({"Age": [10.0, 18.0, 25.0, np.nan]})
+    out = _run(df, name="is_child", expr="where(Age < 18, 1, 0)")
+    assert out["is_child"].tolist()[:3] == pytest.approx([1.0, 0.0, 0.0])
+    assert np.isnan(out["is_child"].iloc[3])
+    # Bare comparison -> 0/1.
+    out = _run(df, name="adult", expr="Age >= 18")
+    assert out["adult"].tolist()[:3] == pytest.approx([0.0, 1.0, 1.0])
+    assert np.isnan(out["adult"].iloc[3])
+    out = _run(df, name="mid", expr="10 < Age < 20")
+    assert out["mid"].tolist()[:3] == pytest.approx([0.0, 1.0, 0.0])
+
+
+def test_new_math_functions():
+    df = pd.DataFrame({"x": [-1.5, 0.0, 4.0, np.nan]})
+    out = _run(df, name="y", expr="floor(x)")
+    assert out["y"].iloc[0] == -2.0 and out["y"].iloc[2] == 4.0
+    assert np.isnan(out["y"].iloc[3])
+    out = _run(df, name="y", expr="ceil(x)")
+    assert out["y"].iloc[0] == -1.0 and out["y"].iloc[1] == 0.0
+    out = _run(df, name="y", expr="sign(x)")
+    assert out["y"].tolist()[:3] == pytest.approx([-1.0, 0.0, 1.0])
+    out = _run(df, name="y", expr="square(x)")
+    assert out["y"].tolist()[:3] == pytest.approx([2.25, 0.0, 16.0])
+    out = _run(df, name="y", expr="clip(x, 0, 2)")
+    assert out["y"].tolist()[:3] == pytest.approx([0.0, 0.0, 2.0])
+    out = _run(df, name="y", expr="isnull(x)")
+    assert out["y"].tolist() == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    out = _run(pd.DataFrame({"x": [1.0, 4.0]}), name="y", expr="log2(x) + log10(x)")
+    assert out["y"].iloc[0] == pytest.approx(np.log2(1.0) + np.log10(1.0))
+    assert out["y"].iloc[1] == pytest.approx(np.log2(4.0) + np.log10(4.0))
+    out = _run(pd.DataFrame({"x": [0.0]}), name="y", expr="tanh(x)")
+    assert out["y"].iloc[0] == pytest.approx(0.0)
+
+
+def test_new_functions_arity():
+    with pytest.raises(KeyParamsError, match="where\\(\\) takes 3"):
+        _parse(name="y", expr="where(a)")
+    with pytest.raises(KeyParamsError, match="clip\\(\\) takes 3"):
+        _parse(name="y", expr="clip(a, 0)")
+    with pytest.raises(KeyParamsError, match="square\\(\\) takes 1"):
+        _parse(name="y", expr="square(a, b)")
 
 
 def test_unknown_function_and_unknown_variable_at_params():

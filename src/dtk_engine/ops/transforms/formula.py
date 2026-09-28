@@ -26,13 +26,55 @@ _VAR_TOKEN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)")
 _DIV_EPS = 1e-12
 
 _ALLOWED_FUNCS = frozenset(
-    {"log", "log1p", "exp", "sqrt", "abs", "round", "min", "max", "sin", "cos"}
+    {
+        "log",
+        "log1p",
+        "log2",
+        "log10",
+        "exp",
+        "sqrt",
+        "abs",
+        "round",
+        "min",
+        "max",
+        "sin",
+        "cos",
+        "tanh",
+        "floor",
+        "ceil",
+        "sign",
+        "square",
+        "clip",
+        "where",
+        "isnull",
+    }
 )
 _ALLOWED_CONSTANTS = frozenset({"pi"})
 _BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow)
 _UNARYOPS = (ast.UAdd, ast.USub)
+_CMPOPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)
 _STATS = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
 _CONSTANT_VALUES = {"pi": float(np.pi)}
+# Exact arity for functions that are not min/max/round (those keep flexible rules).
+_FUNC_ARITY: dict[str, int] = {
+    "log": 1,
+    "log1p": 1,
+    "log2": 1,
+    "log10": 1,
+    "exp": 1,
+    "sqrt": 1,
+    "abs": 1,
+    "sin": 1,
+    "cos": 1,
+    "tanh": 1,
+    "floor": 1,
+    "ceil": 1,
+    "sign": 1,
+    "square": 1,
+    "isnull": 1,
+    "clip": 3,
+    "where": 3,
+}
 
 
 class FormulaVariable(TransformParams):
@@ -123,6 +165,14 @@ def _check_expr(expr: str, declared_vars: set[str]) -> ast.Expression:
             walk(node.left)
             walk(node.right)
             return
+        if isinstance(node, ast.Compare):
+            for op in node.ops:
+                if not isinstance(op, _CMPOPS):
+                    _refuse("Compare", type(op).__name__)
+            walk(node.left)
+            for comparator in node.comparators:
+                walk(comparator)
+            return
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):
                 _refuse("Call", "function must be a bare name")
@@ -135,17 +185,28 @@ def _check_expr(expr: str, declared_vars: set[str]) -> ast.Expression:
                 )
             if not node.args:
                 _refuse("Call", f"{node.func.id}() needs at least one argument")
-            if node.func.id == "round" and len(node.args) >= 2:
+            if node.func.id == "round":
                 if len(node.args) > 2:
                     _refuse("Call", "round() takes at most 2 arguments")
-                dec = node.args[1]
-                if (
-                    not isinstance(dec, ast.Constant)
-                    or type(dec.value) is not int
-                ):
+                if len(node.args) == 2:
+                    dec = node.args[1]
+                    if (
+                        not isinstance(dec, ast.Constant)
+                        or type(dec.value) is not int
+                    ):
+                        _refuse(
+                            "Call",
+                            "round() second argument must be an integer constant",
+                        )
+            elif node.func.id in ("min", "max"):
+                pass  # one or more args
+            else:
+                expected = _FUNC_ARITY[node.func.id]
+                if len(node.args) != expected:
                     _refuse(
                         "Call",
-                        "round() second argument must be an integer constant",
+                        f"{node.func.id}() takes {expected} argument"
+                        f"{'' if expected == 1 else 's'}, got {len(node.args)}",
                     )
             for arg in node.args:
                 walk(arg)
@@ -159,7 +220,6 @@ def _check_expr(expr: str, declared_vars: set[str]) -> ast.Expression:
             (ast.Tuple, "Tuple"),
             (ast.Dict, "Dict"),
             (ast.Set, "Set"),
-            (ast.Compare, "Compare"),
             (ast.BoolOp, "BoolOp"),
             (ast.IfExp, "IfExp"),
             (ast.ListComp, "ListComp"),
@@ -244,6 +304,10 @@ def _np_func(name: str, args: list[np.ndarray]) -> np.ndarray:
         return np.log(args[0])
     if name == "log1p":
         return np.log1p(args[0])
+    if name == "log2":
+        return np.log2(args[0])
+    if name == "log10":
+        return np.log10(args[0])
     if name == "exp":
         return np.exp(args[0])
     if name == "sqrt":
@@ -254,11 +318,64 @@ def _np_func(name: str, args: list[np.ndarray]) -> np.ndarray:
         return np.sin(args[0])
     if name == "cos":
         return np.cos(args[0])
+    if name == "tanh":
+        return np.tanh(args[0])
+    if name == "floor":
+        return np.floor(args[0])
+    if name == "ceil":
+        return np.ceil(args[0])
+    if name == "sign":
+        return np.sign(args[0])
+    if name == "square":
+        return np.square(args[0])
+    if name == "isnull":
+        return np.isnan(args[0]).astype(float)
+    if name == "clip":
+        return np.clip(args[0], args[1], args[2])
+    if name == "where":
+        cond, a, b = args
+        out = np.where(cond != 0, a, b).astype(float, copy=False)
+        out = np.asarray(out, dtype=float)
+        out[np.isnan(cond)] = np.nan
+        return out
     if name == "round":
         return np.round(args[0])
     if name == "min":
         return np.minimum.reduce(args)
     return np.maximum.reduce(args)  # max
+
+
+def _cmp(op: ast.cmpop, left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    if isinstance(op, ast.Eq):
+        return left == right
+    if isinstance(op, ast.NotEq):
+        return left != right
+    if isinstance(op, ast.Lt):
+        return left < right
+    if isinstance(op, ast.LtE):
+        return left <= right
+    if isinstance(op, ast.Gt):
+        return left > right
+    return left >= right  # GtE
+
+
+def _eval_compare(node: ast.Compare, env: dict[str, np.ndarray], n: int) -> np.ndarray:
+    """Comparisons evaluate to 0/1; any NaN operand yields NaN (missing in → out)."""
+    left = _eval_node(node.left, env, n)
+    values = [left]
+    mask = np.ones(n, dtype=bool)
+    current = left
+    for op, comparator in zip(node.ops, node.comparators, strict=True):
+        right = _eval_node(comparator, env, n)
+        values.append(right)
+        mask &= _cmp(op, current, right)
+        current = right
+    out = np.where(mask, 1.0, 0.0)
+    nan = np.zeros(n, dtype=bool)
+    for v in values:
+        nan |= np.isnan(v)
+    out[nan] = np.nan
+    return out
 
 
 def _eval_node(node: ast.AST, env: dict[str, np.ndarray], n: int) -> np.ndarray:
@@ -287,6 +404,8 @@ def _eval_node(node: ast.AST, env: dict[str, np.ndarray], n: int) -> np.ndarray:
             return out
         with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
             return np.power(a, b)
+    if isinstance(node, ast.Compare):
+        return _eval_compare(node, env, n)
     if isinstance(node, ast.Call):
         assert isinstance(node.func, ast.Name)
         # round(x, ndigits): ndigits is an int constant (checked in _check_expr).
@@ -309,7 +428,8 @@ def _eval_node(node: ast.AST, env: dict[str, np.ndarray], n: int) -> np.ndarray:
     title="Formula",
     description=(
         "Add a float column from a whitelisted expression over columns, "
-        "numbers, functions and train-fitted @variables."
+        "numbers, functions (incl. where/clip/comparisons) and train-fitted "
+        "@variables."
     ),
 )
 def formula(df: pd.DataFrame, params: FormulaParams, state: dict) -> pd.DataFrame:

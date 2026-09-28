@@ -157,3 +157,131 @@ def test_sklearn_door_group_agg():
     tr = DtkTransformer("group_agg", group="g", value="v", aggs=["mean"]).fit(train)
     out = tr.transform(pd.DataFrame({"g": ["b", "c"]}))
     assert out["v_mean_by_g"].isna().tolist() == [False, True]
+
+
+def test_polynomial_degree2_readable_names():
+    train = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0], "z": ["x", "y", "z"]})
+    test = pd.DataFrame({"a": [10.0], "b": [2.0], "z": ["t"]})
+    out = fit_then_apply(
+        "polynomial", train, test, columns=["a", "b"], degree=2, include_bias=False
+    )
+    assert out.columns.tolist() == ["a", "b", "a^2", "a*b", "b^2", "z"]
+    assert out["a^2"].tolist() == [100.0]
+    assert out["a*b"].tolist() == [20.0]
+    assert out["b^2"].tolist() == [4.0]
+    # Train side mirrors sklearn.
+    train_out = run("polynomial", train, columns=["a", "b"], degree=2)
+    assert train_out.columns.tolist() == ["a", "b", "a^2", "a*b", "b^2", "z"]
+    assert train_out["a*b"].tolist() == [4.0, 10.0, 18.0]
+
+
+def test_polynomial_matches_sklearn_and_caps():
+    from sklearn.preprocessing import PolynomialFeatures
+
+    df = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
+    out = run("polynomial", df, columns=["a", "b"], degree=2, interaction_only=True)
+    ref = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+    expected = ref.fit_transform(df[["a", "b"]])
+    assert np.allclose(out[["a", "b", "a*b"]].to_numpy(), expected)
+
+    t = get_transform("polynomial")
+    p = t.parse({"columns": ["a", "b"], "degree": 2, "max_output_columns": 3})
+    with pytest.raises(ValueError, match="cap is 3"):
+        t.fit(df, p)
+
+
+def test_power_transform_fitted_on_train_only():
+    from sklearn.preprocessing import PowerTransformer
+
+    rng = np.random.default_rng(0)
+    train = pd.DataFrame({"x": rng.normal(size=80) + 3, "y": rng.normal(size=80) + 5})
+    test = pd.DataFrame({"x": [100.0], "y": [200.0]})
+    t = get_transform("power_transform")
+    p = t.parse({"columns": ["x", "y"], "method": "yeo-johnson", "standardize": True})
+    state = t.fit(train, p)
+    assert "lambdas" in state and "mean" in state and "scale" in state
+    import json
+
+    json.dumps(state)
+    out = t.apply(test, p, state)
+    ref = PowerTransformer(method="yeo-johnson", standardize=True).fit(train)
+    assert np.allclose(out.to_numpy(), ref.transform(test))
+    # Refitting on test would give different lambdas; frozen state wins.
+    assert not np.allclose(t.fit(test, p)["lambdas"], state["lambdas"])
+
+
+def test_power_transform_box_cox_and_no_standardize():
+    train = pd.DataFrame({"x": [1.0, 2.0, 4.0, 8.0]})
+    out = run(
+        "power_transform",
+        train,
+        columns=["x"],
+        method="box-cox",
+        standardize=False,
+    )
+    from sklearn.preprocessing import PowerTransformer
+
+    ref = PowerTransformer(method="box-cox", standardize=False).fit_transform(
+        train[["x"]]
+    )
+    assert np.allclose(out[["x"]].to_numpy(), ref)
+
+
+def test_quantile_transform_fitted_on_train():
+    from sklearn.preprocessing import QuantileTransformer
+
+    rng = np.random.default_rng(1)
+    train = pd.DataFrame({"a": rng.normal(size=100), "b": rng.uniform(size=100)})
+    test = pd.DataFrame({"a": [-10.0, 0.0, 10.0], "b": [0.0, 0.5, 1.0]})
+    t = get_transform("quantile_transform")
+    p = t.parse(
+        {
+            "columns": ["a", "b"],
+            "output_distribution": "normal",
+            "n_quantiles": 50,
+        }
+    )
+    state = t.fit(train, p)
+    out = t.apply(test, p, state)
+    ref = QuantileTransformer(
+        n_quantiles=50,
+        output_distribution="normal",
+        random_state=0,
+        subsample=int(1e9),
+    ).fit(train)
+    assert np.allclose(out.to_numpy(), ref.transform(test))
+    assert len(state["quantiles"]) == state["n_quantiles"]
+
+
+def test_spline_fitted_on_train_and_readable_names():
+    from sklearn.preprocessing import SplineTransformer
+
+    rng = np.random.default_rng(2)
+    train = pd.DataFrame({"a": rng.uniform(0, 10, 60), "keep": np.arange(60)})
+    test = pd.DataFrame({"a": [0.0, 5.0, 10.0], "keep": [0, 1, 2]})
+    t = get_transform("spline")
+    p = t.parse({"columns": ["a"], "n_knots": 4, "degree": 2})
+    state = t.fit(train, p)
+    out = t.apply(test, p, state)
+    assert "keep" in out.columns
+    assert all(c.startswith("a_sp_") for c in out.columns if c != "keep")
+    ref = SplineTransformer(n_knots=4, degree=2, knots="quantile", include_bias=True)
+    ref.fit(train[["a"]])
+    assert np.allclose(
+        out.drop(columns=["keep"]).to_numpy(), ref.transform(test[["a"]])
+    )
+    # Cap
+    p_cap = t.parse({"columns": ["a"], "n_knots": 4, "degree": 2, "max_output_columns": 2})
+    with pytest.raises(ValueError, match="cap is 2"):
+        t.fit(train, p_cap)
+
+
+def test_new_feature_ops_dtk_transformer():
+    train = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [2.0, 3.0, 4.0, 5.0]})
+    test = pd.DataFrame({"a": [5.0], "b": [6.0]})
+    tr = DtkTransformer("polynomial", columns=["a", "b"], degree=2).fit(train)
+    assert tr.transform(test).columns.tolist() == ["a", "b", "a^2", "a*b", "b^2"]
+    tr = DtkTransformer("power_transform", columns=["a"]).fit(train)
+    assert "lambdas" in tr.state_
+    out = tr.transform(test)
+    assert list(out.columns) == ["a", "b"]
