@@ -21,7 +21,7 @@ from pathlib import Path, PurePath
 from pydantic import TypeAdapter, ValidationError
 
 from . import keys  # noqa: F401  (registers every key)
-from .errors import KeyParamsError, SourceError, UnknownTransformError
+from .errors import KeyParamsError
 from .ops import transforms  # noqa: F401  (registers every transform op)
 from .ops.columns import is_numeric
 from .registry import all_keys, get_key
@@ -58,18 +58,8 @@ def _target_summary(ws: Workspace) -> str | None:
     return None
 
 
-def _role_shape(ws: Workspace, role: str) -> list[int] | None:
-    """``[rows, cols]`` of ``role`` after steps, or null if unloadable / absent."""
-    if getattr(ws.datasets, role) is None:
-        return None
-    try:
-        df = workspace_frame(ws, role)
-    except (SourceError, KeyParamsError, UnknownTransformError, OSError, ValueError):
-        return None
-    return [int(df.shape[0]), int(df.shape[1])]
-
-
 def _workspace_summary(store: JsonWorkspaceStore, name: str) -> dict:
+    """Cheap sidebar row: metadata only — never replay steps for shape (MAT-200)."""
     path = store.path_of(name)
     ws = store.get(name)
     train = ws.datasets.train
@@ -79,11 +69,10 @@ def _workspace_summary(store: JsonWorkspaceStore, name: str) -> dict:
         "mtime": _iso_mtime(path),
         "step_count": len(ws.steps),
         "target": _target_summary(ws),
-        "train": {**_file_summary(train.x), "shape": _role_shape(ws, "train")},
+        # shape stays null here; fronts show "—" until preview/rows asks for it.
+        "train": {**_file_summary(train.x), "shape": None},
         "test": (
-            None
-            if test is None
-            else {**_file_summary(test.x), "shape": _role_shape(ws, "test")}
+            None if test is None else {**_file_summary(test.x), "shape": None}
         ),
     }
 
@@ -167,13 +156,15 @@ def list_workspaces() -> list[dict]:
 
 
 def list_workspace_summaries() -> list[dict]:
-    """Lightweight list for the workspace manager (MAT-171).
+    """Lightweight list for the workspace manager (MAT-171 / MAT-200).
 
     Each entry: ``name``, ``mtime`` (UTC ISO), ``step_count``, ``target``
     (train ``target_column``, else y basename, else null), ``train`` /
-    ``test`` (``{kind, path, file, shape}``; ``test`` null when absent;
-    ``shape`` is ``[rows, cols]`` after steps, or null if unloadable).
-    Sorted by name. Fronts must not recompute this from full workspace dicts.
+    ``test`` (``{kind, path, file, shape}``; ``test`` null when absent).
+    ``shape`` is always null here — computing it would replay every workspace's
+    steps (too slow for the Sources sidebar). Use ``preview_workspace`` /
+    ``workspace_rows`` when a shape is needed. Sorted by name. Fronts must not
+    recompute this from full workspace dicts.
     """
     store = JsonWorkspaceStore()
     return [_workspace_summary(store, name) for name in store.list()]
