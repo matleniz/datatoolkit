@@ -136,6 +136,50 @@ def test_workspace_rows_errors():
         workspace_rows(_workspace(), "train", offset=-1)
 
 
+def test_workspace_rows_columns_filter():
+    """Non-empty columns → only those names (order preserved); unknown → 422."""
+    out = workspace_rows(
+        _workspace(), "train", limit=3, columns=["Survived", "Age", "Name"]
+    )
+    assert [c["name"] for c in out["columns"]] == ["Survived", "Age", "Name"]
+    assert set(out["rows"][0]) == {"Survived", "Age", "Name", "_rid"}
+    assert out["total"] == 41
+    # None / empty keep all-columns behaviour
+    all_cols = workspace_rows(_workspace(), "train", limit=1)
+    assert workspace_rows(_workspace(), "train", limit=1, columns=None)["columns"] == (
+        all_cols["columns"]
+    )
+    assert workspace_rows(_workspace(), "train", limit=1, columns=[])["columns"] == (
+        all_cols["columns"]
+    )
+    with pytest.raises(KeyParamsError, match="not in the frame"):
+        workspace_rows(_workspace(), "train", columns=["Age", "nope"])
+
+
+def test_column_profiles_columns_filter(tmp_path):
+    """Non-empty columns → only those profiles in order; unknown → KeyParamsError."""
+    train = tmp_path / "t.csv"
+    test = tmp_path / "e.csv"
+    train.write_text("a,b,c,Survived\n1,x,9,0\n2,y,8,1\n")
+    test.write_text("a,b,c\n1,x,9\n")
+    ws = {
+        "name": "w",
+        "datasets": {
+            "train": {
+                "x": {"kind": "csv", "path": str(train)},
+                "target_column": "Survived",
+            },
+            "test": {"x": {"kind": "csv", "path": str(test)}},
+        },
+    }
+    out = column_profiles(ws, "train", columns=["c", "a"])
+    assert [c["name"] for c in out["columns"]] == ["c", "a"]
+    assert column_profiles(ws, "train", columns=None)["columns"]
+    assert len(column_profiles(ws, "train", columns=[])["columns"]) == 4
+    with pytest.raises(KeyParamsError, match="not in the frame"):
+        column_profiles(ws, "train", columns=["a", "missing"])
+
+
 def test_column_profiles_shape_and_helpers(tmp_path):
     train = tmp_path / "t.csv"
     test = tmp_path / "e.csv"

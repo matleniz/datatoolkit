@@ -198,6 +198,7 @@ def create_app() -> FastAPI:
             version=body.get("version"),
             offset=int(body.get("offset", 0)),
             limit=int(body.get("limit", 500)),
+            columns=body.get("columns"),
         )
 
     @api.post("/workspace/profiles")
@@ -209,6 +210,7 @@ def create_app() -> FastAPI:
             body["workspace"],
             body.get("role", "train"),
             version=body.get("version"),
+            columns=body.get("columns"),
         )
 
     @api.post("/workspace/preview-step")

@@ -178,6 +178,7 @@ def workspace_rows(
     version: int | None = None,
     offset: int = 0,
     limit: int = 500,
+    columns: list[str] | None = None,
 ) -> dict:
     """Paged rows for ``role`` at ``version`` (None = all steps).
 
@@ -186,16 +187,35 @@ def workspace_rows(
     ``ops.profile.semantic_type``, plus an ``*_id`` / ``Id`` name heuristic for
     high-distinctness text). ``_rid`` is the row's position in the raw
     frame, preserved through row-dropping steps. NaN -> null, datetimes -> ISO.
+
+    Optional ``columns`` (non-empty list) restricts column meta and row cells
+    to those names in that order; unknown names raise ``KeyParamsError``.
     """
     return _inspect.workspace_rows(
-        _parse_workspace(ws), role, version=version, offset=offset, limit=limit
+        _parse_workspace(ws),
+        role,
+        version=version,
+        offset=offset,
+        limit=limit,
+        columns=columns,
     )
 
 
-def column_profiles(ws: dict, role: str, version: int | None = None) -> dict:
+def column_profiles(
+    ws: dict,
+    role: str,
+    version: int | None = None,
+    columns: list[str] | None = None,
+) -> dict:
     """Per-column profile for ``role`` at ``version`` (histograms, sentinels,
-    IQR bounds, variants, dates-/numbers-as-text, skew)."""
-    return _inspect.column_profiles(_parse_workspace(ws), role, version=version)
+    IQR bounds, variants, dates-/numbers-as-text, skew).
+
+    Optional ``columns`` (non-empty list) profiles only those names in that
+    order; unknown names raise ``KeyParamsError``. ``None`` / empty = all.
+    """
+    return _inspect.column_profiles(
+        _parse_workspace(ws), role, version=version, columns=columns
+    )
 
 
 def preview_step(ws: dict, step: dict, role: str) -> dict:
