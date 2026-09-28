@@ -144,6 +144,11 @@ def create_app() -> FastAPI:
     def get_workspaces() -> list[dict]:
         return contract.list_workspaces()
 
+    @api.get("/workspaces/summaries")
+    def get_workspace_summaries() -> list[dict]:
+        # Registered before /workspaces/{name} so "summaries" is not a name.
+        return contract.list_workspace_summaries()
+
     @api.get("/workspaces/{name}")
     def get_one_workspace(name: str) -> dict:
         return contract.get_workspace(name)
@@ -159,6 +164,20 @@ def create_app() -> FastAPI:
     def delete_one_workspace(name: str) -> Response:
         contract.delete_workspace(name)
         return Response(status_code=204)
+
+    @api.post("/workspaces/{name}/rename")
+    async def post_rename(name: str, request: Request) -> dict:
+        body = await request.json()
+        if not isinstance(body, dict) or "new_name" not in body:
+            raise KeyParamsError("body must be {new_name: ...}")
+        return contract.rename_workspace(name, body["new_name"])
+
+    @api.post("/workspaces/{name}/duplicate")
+    async def post_duplicate(name: str, request: Request) -> dict:
+        body = await request.json()
+        if not isinstance(body, dict) or "new_name" not in body:
+            raise KeyParamsError("body must be {new_name: ...}")
+        return contract.duplicate_workspace(name, body["new_name"])
 
     @api.post("/workspaces/{name}/export")
     async def post_export(name: str, request: Request) -> dict:

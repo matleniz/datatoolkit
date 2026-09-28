@@ -3,7 +3,8 @@
 Contract surface (fronts call these; inputs/outputs are plain JSON)::
 
     list_keys / key_schema / run_key
-    list_workspaces / get_workspace / save_workspace / delete_workspace
+    list_workspaces / list_workspace_summaries / get_workspace /
+        save_workspace / delete_workspace / rename_workspace / duplicate_workspace
     source_columns
     list_transforms / transform_schema
     preview_workspace
@@ -14,11 +15,13 @@ Contract surface (fronts call these; inputs/outputs are plain JSON)::
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from pathlib import Path, PurePath
 
 from pydantic import TypeAdapter, ValidationError
 
 from . import keys  # noqa: F401  (registers every key)
-from .errors import KeyParamsError
+from .errors import KeyParamsError, SourceError, UnknownTransformError
 from .ops import transforms  # noqa: F401  (registers every transform op)
 from .ops.columns import is_numeric
 from .registry import all_keys, get_key
@@ -29,6 +32,60 @@ from .workspace import JsonWorkspaceStore, Workspace
 from .workspace import inspect as _inspect
 from .workspace.export import export_workspace as _export
 from .workspace.replay import validate_steps
+
+
+def _iso_mtime(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+
+
+def _file_summary(spec) -> dict:
+    """Train/test file summary for the workspace manager (kind + basename + path)."""
+    path = getattr(spec, "path", None)
+    return {
+        "kind": getattr(spec, "kind", None),
+        "path": path,
+        "file": PurePath(path.replace("\\", "/")).name if path else None,
+    }
+
+
+def _target_summary(ws: Workspace) -> str | None:
+    train = ws.datasets.train
+    if train.target_column is not None:
+        return train.target_column
+    if train.y is not None:
+        y_path = getattr(train.y, "path", None)
+        return PurePath(y_path.replace("\\", "/")).name if y_path else None
+    return None
+
+
+def _role_shape(ws: Workspace, role: str) -> list[int] | None:
+    """``[rows, cols]`` of ``role`` after steps, or null if unloadable / absent."""
+    if getattr(ws.datasets, role) is None:
+        return None
+    try:
+        df = workspace_frame(ws, role)
+    except (SourceError, KeyParamsError, UnknownTransformError, OSError, ValueError):
+        return None
+    return [int(df.shape[0]), int(df.shape[1])]
+
+
+def _workspace_summary(store: JsonWorkspaceStore, name: str) -> dict:
+    path = store.path_of(name)
+    ws = store.get(name)
+    train = ws.datasets.train
+    test = ws.datasets.test
+    return {
+        "name": name,
+        "mtime": _iso_mtime(path),
+        "step_count": len(ws.steps),
+        "target": _target_summary(ws),
+        "train": {**_file_summary(train.x), "shape": _role_shape(ws, "train")},
+        "test": (
+            None
+            if test is None
+            else {**_file_summary(test.x), "shape": _role_shape(ws, "test")}
+        ),
+    }
 
 
 def list_keys() -> list[dict]:
@@ -109,6 +166,19 @@ def list_workspaces() -> list[dict]:
     return [store.get(name).model_dump(mode="json") for name in store.list()]
 
 
+def list_workspace_summaries() -> list[dict]:
+    """Lightweight list for the workspace manager (MAT-171).
+
+    Each entry: ``name``, ``mtime`` (UTC ISO), ``step_count``, ``target``
+    (train ``target_column``, else y basename, else null), ``train`` /
+    ``test`` (``{kind, path, file, shape}``; ``test`` null when absent;
+    ``shape`` is ``[rows, cols]`` after steps, or null if unloadable).
+    Sorted by name. Fronts must not recompute this from full workspace dicts.
+    """
+    store = JsonWorkspaceStore()
+    return [_workspace_summary(store, name) for name in store.list()]
+
+
 def get_workspace(name: str) -> dict:
     """The workspace dict; unknown name -> raises WorkspaceNotFoundError."""
     return JsonWorkspaceStore().get(name).model_dump(mode="json")
@@ -155,6 +225,26 @@ def preview_workspace(ws: dict, role: str, head_rows: int = 5) -> dict:
 
 def delete_workspace(name: str) -> None:
     JsonWorkspaceStore().delete(name)
+
+
+def rename_workspace(name: str, new_name: str) -> dict:
+    """Rename a stored workspace; returns the normalized dict under ``new_name``.
+
+    Unknown ``name`` -> WorkspaceNotFoundError; invalid / taken ``new_name`` ->
+    KeyParamsError. Source paths and uploaded content-addressed files stay
+    shared (not moved). Serialized with save/delete under the store lock.
+    """
+    return JsonWorkspaceStore().rename(name, new_name).model_dump(mode="json")
+
+
+def duplicate_workspace(name: str, new_name: str) -> dict:
+    """Copy a workspace under ``new_name`` (steps, variables, merges, sources).
+
+    Source file refs stay shared (content-addressed uploads are not copied).
+    Unknown ``name`` -> WorkspaceNotFoundError; invalid / taken ``new_name`` ->
+    KeyParamsError.
+    """
+    return JsonWorkspaceStore().duplicate(name, new_name).model_dump(mode="json")
 
 
 def export_workspace(name: str, out_dir: str, overwrite: bool = False) -> dict:

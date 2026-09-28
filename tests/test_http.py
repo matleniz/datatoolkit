@@ -91,6 +91,52 @@ def test_workspace_crud(client):
     assert client.get("/api/workspaces").json() == []
 
 
+def test_workspace_rename_duplicate_summaries(client):
+    client.put(
+        "/api/workspaces/w",
+        json=_workspace(
+            steps=[
+                {
+                    "op": "drop_columns",
+                    "target": "both",
+                    "params": {"columns": ["Name"]},
+                }
+            ]
+        ),
+    )
+    r = client.get("/api/workspaces/summaries")
+    assert r.status_code == 200
+    summaries = r.json()
+    assert len(summaries) == 1
+    s = summaries[0]
+    assert s["name"] == "w"
+    assert s["step_count"] == 1
+    assert s["target"] == "Survived"
+    assert s["train"]["shape"] == [41, 11]
+    assert json.dumps(summaries)
+
+    r = client.post("/api/workspaces/w/duplicate", json={"new_name": "w-copy"})
+    assert r.status_code == 200
+    assert r.json()["name"] == "w-copy"
+    assert client.get("/api/workspaces/w-copy").json()["steps"] == client.get(
+        "/api/workspaces/w"
+    ).json()["steps"]
+
+    r = client.post("/api/workspaces/w-copy/rename", json={"new_name": "w-renamed"})
+    assert r.status_code == 200
+    assert r.json()["name"] == "w-renamed"
+    assert client.get("/api/workspaces/w-copy").status_code == 404
+    names = [x["name"] for x in client.get("/api/workspaces/summaries").json()]
+    assert names == ["w", "w-renamed"]
+
+    r = client.post("/api/workspaces/w/rename", json={"new_name": "w-renamed"})
+    assert r.status_code == 422
+    assert r.json()["type"] == "KeyParamsError"
+
+    r = client.post("/api/workspaces/missing/duplicate", json={"new_name": "x"})
+    assert r.status_code == 404
+
+
 def test_workspace_export(client, tmp_path):
     client.put("/api/workspaces/w", json=_workspace())
     out = tmp_path / "export"
