@@ -8,8 +8,9 @@ Each step names a registered transform (``dtk_engine.transform_registry``,
 - target "both": fit on train as it was right before this step (earlier train /
   both steps already replayed), apply that state to train and to test.
 
-``replay`` (one role) and ``replay_fitted`` (both roles + fitted states, for
-export) share one loop, ``_run``.
+``replay`` (one role), ``replay_fitted`` (both roles + fitted states, for
+export) and ``replay_step`` (one more step on frames already replayed, for the
+Studio preview) share one loop, ``_run``.
 
 Errors, all raised before any work: an unknown op -> UnknownTransformError,
 invalid params -> KeyParamsError (``validate_steps`` runs the same check at
@@ -78,6 +79,7 @@ def _run(
     train: pd.DataFrame | None,
     test: pd.DataFrame | None,
     train_until: int,
+    start: int = 0,
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None, list[dict]]:
     """The one replay loop: steps in order over the train and test frames.
 
@@ -86,10 +88,13 @@ def _run(
     it. Train is only replayed through step ``train_until``: fitted up to and
     including it, applied strictly before it (later train steps are skipped).
     Returns (train, test, fitted) with per step ``{"fitted_on", "state"}``
-    (``None`` / ``{}`` for a skipped step).
+    (``None`` / ``{}`` for a skipped step). ``start`` is the log index of
+    ``steps[0]`` when the frames already went through the earlier steps
+    (indices, including ``train_until``, are log indices).
     """
     fitted = []
-    for i, (step, t, params) in enumerate(_resolve(steps)):  # fails before any work
+    resolved = _resolve(steps)  # fails before any work
+    for i, (step, t, params) in enumerate(resolved, start=start):
         fitted_on = "test" if step.target == "test" else "train"
         fit_frame = test if fitted_on == "test" else train
         if fit_frame is None or (fitted_on == "train" and i > train_until):
@@ -137,3 +142,20 @@ def replay_fitted(
     ``None`` / ``{}`` for a "test" step without a test frame).
     """
     return _run(steps, train, test, len(steps))
+
+
+def replay_step(
+    step: Step,
+    index: int,
+    train: pd.DataFrame | None,
+    test: pd.DataFrame | None,
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, dict]:
+    """Fit and apply ``step`` (log position ``index``) on frames already replayed
+    through the ``index`` earlier steps.
+
+    Same result as the last step of ``replay_fitted`` on the whole log, without
+    replaying the prefix: callers pass cached prefix frames. A ``None`` frame is
+    left alone (and a step fitted on it is skipped). Returns (train, test, fitted).
+    """
+    train, test, fitted = _run([step], train, test, index + 1, start=index)
+    return train, test, fitted[0]

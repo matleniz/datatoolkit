@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
+from dtk_engine.ops._memo import memo_frame
 from dtk_engine.ops._util import pct as _pct
 from dtk_engine.ops.profile import columns_of_type
 
@@ -77,7 +78,24 @@ def isolation_forest(
     """Multivariate anomaly scores: a frame indexed like ``df`` with ``score``
     (lower = more anomalous) and ``flagged`` (the ``contamination`` share of
     rows). Missing values are median-filled; returns an empty frame if there is
-    nothing to fit."""
+    nothing to fit. Memoized on the content of ``df[columns]`` and the params."""
+    return memo_frame(
+        "isolation_forest",
+        df[list(columns)],
+        (list(columns), contamination, random_state, n_estimators),
+        lambda: _isolation_forest(
+            df, columns, contamination, random_state, n_estimators
+        ),
+    )
+
+
+def _isolation_forest(
+    df: pd.DataFrame,
+    columns: list[str],
+    contamination: float,
+    random_state: int,
+    n_estimators: int,
+) -> pd.DataFrame:
     cols = [c for c in columns if df[c].notna().any()]
     if not cols or len(df) < 2:
         return pd.DataFrame({"score": [], "flagged": []}, dtype=float)

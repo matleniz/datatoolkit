@@ -45,7 +45,7 @@ from dtk_engine.workspace.models import Step, Workspace
 from dtk_engine.workspace.replay import (
     needs_train,
     replay,
-    replay_fitted,
+    replay_step,
     resolve_version,
     validate_steps,
 )
@@ -457,37 +457,44 @@ def _diff_cells(
     to those worth serialising; they are then confirmed with ``_cell_json``
     in row-major order (rid, then column).
     """
-    before_rids = set(map(int, before.index))
-    after_rids = set(map(int, after.index))
-    removed = sorted(before_rids - after_rids)
-    common_rids = sorted(before_rids & after_rids)
     common_cols = [c for c in before.columns if c in after.columns]
-    changed: list[dict] = []
-    changed_total = 0
-    if common_rids and common_cols:
+    if before.index.equals(after.index) and before.index.is_monotonic_increasing:
+        # Common case (no row dropped): skip the set algebra and the reindex.
+        removed: list[int] = []
+        common_rids = before.index.to_numpy()
+        b, a = before[common_cols], after[common_cols]
+    else:
+        before_rids = set(map(int, before.index))
+        after_rids = set(map(int, after.index))
+        removed = sorted(before_rids - after_rids)
+        common_rids = sorted(before_rids & after_rids)
         b = before.loc[common_rids, common_cols]
         a = after.loc[common_rids, common_cols]
-        mask = np.column_stack(
-            [
-                _candidate_mask(b.iloc[:, j], a.iloc[:, j])
-                for j in range(len(common_cols))
-            ]
-        )
-        for i, j in zip(*np.nonzero(mask), strict=True):
-            bv, av = b.iat[i, j], a.iat[i, j]
-            bj, aj = _cell_json(bv), _cell_json(av)
-            if bj != aj:
-                changed_total += 1
-                if len(changed) < _CHANGED_CAP:
-                    changed.append(
-                        {
-                            "_rid": int(common_rids[i]),
-                            "column": str(common_cols[j]),
-                            "before": bj,
-                            "after": aj,
-                        }
-                    )
-    return changed, changed_total, removed
+    # (row position, column position, before, after) of each confirmed cell.
+    # Column-wise: one array per column, not a boxed ``.iat`` per cell (MAT-212).
+    found: list[tuple[int, int, Any, Any]] = []
+    if len(common_rids) and common_cols:
+        for j in range(len(common_cols)):
+            bc, ac = b.iloc[:, j], a.iloc[:, j]
+            rows = np.flatnonzero(_candidate_mask(bc, ac))
+            if not len(rows):
+                continue
+            bvals, avals = bc.array.take(rows), ac.array.take(rows)
+            for i, bv, av in zip(rows.tolist(), bvals, avals, strict=True):
+                bj, aj = _cell_json(bv), _cell_json(av)
+                if bj != aj:
+                    found.append((i, j, bj, aj))
+    found.sort(key=lambda cell: (cell[0], cell[1]))  # row-major: rid, then column
+    changed = [
+        {
+            "_rid": int(common_rids[i]),
+            "column": str(common_cols[j]),
+            "before": bj,
+            "after": aj,
+        }
+        for i, j, bj, aj in found[:_CHANGED_CAP]
+    ]
+    return changed, len(found), removed
 
 
 def preview_step(ws: Workspace, step: dict | Step, role: str) -> dict:
@@ -499,20 +506,27 @@ def preview_step(ws: Workspace, step: dict | Step, role: str) -> dict:
     """
     _check_role(role)
     parsed_step = step if isinstance(step, Step) else _parse_step(step)
-    steps = [*ws.steps, parsed_step]
-    validate_steps(steps)
+    validate_steps([*ws.steps, parsed_step])
 
+    # Only the pending step is fitted here: the frames after the saved steps come
+    # from the replay-result cache, so a keystroke costs one step, not N (MAT-212).
     before = _replay_role(ws, role, ws.steps)
-    train_raw = _raw_role(ws, "train")
-    test_raw = None
-    if ws.datasets.test is not None:
-        test_raw = _raw_role(ws, "test")
-    train_after, test_after, fitted = replay_fitted(steps, train_raw, test_raw)
+    # Shallow copy: copy-on-write keeps ``before`` intact whatever the op does.
+    prefix = before.copy(deep=False)
+    target = parsed_step.target
+    train = None
+    if target != "test" or role == "train":
+        train = prefix if role == "train" else _replay_role(ws, "train", ws.steps)
+    test = None
+    if ws.datasets.test is not None and (target != "train" or role == "test"):
+        test = prefix if role == "test" else _replay_role(ws, "test", ws.steps)
+    train_after, test_after, last = replay_step(
+        parsed_step, len(ws.steps), train, test
+    )
     after = train_after if role == "train" else test_after
     if after is None:
         raise SourceError(f"workspace {ws.name!r} has no {role} dataset")
 
-    last = fitted[-1]
     state = last["state"]
     # Ensure state is plain JSON (numpy scalars etc.).
     state_json = json.loads(json.dumps(state, default=str))
