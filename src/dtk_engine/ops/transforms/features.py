@@ -8,12 +8,42 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
+from sklearn.preprocessing import (
+    PolynomialFeatures,
+    PowerTransformer,
+    QuantileTransformer,
+    SplineTransformer,
+    StandardScaler,
+)
 
 from dtk_engine.ops._util import json_scalar as _py
+from dtk_engine.ops.selection import feature_matrix
 from dtk_engine.params import column_field, columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 MAX_INTERACTION_COLUMNS = 10
+MAX_POLYNOMIAL_OUTPUT = 100
+MAX_SPLINE_OUTPUT = 100
+
+
+def _replace_columns(
+    df: pd.DataFrame, columns: list[str], new: dict[str, np.ndarray], op: str
+) -> pd.DataFrame:
+    """Drop ``columns`` and insert ``new`` at the position of the first dropped one."""
+    clash = [n for n in new if n in df.columns and n not in columns]
+    if clash:
+        raise ValueError(f"{op}: output columns already exist {clash}")
+    rest = df.drop(columns=columns)
+    pos = sum(1 for c in df.columns[: df.columns.get_loc(columns[0])] if c in rest)
+    out = rest.copy()
+    for i, (name, values) in enumerate(new.items()):
+        out.insert(pos + i, name, values)
+    return out
+
+
+def _poly_feature_names(raw: np.ndarray) -> list[str]:
+    """sklearn uses a space for products (``a b``); we prefer ``a*b`` like interactions."""
+    return [str(n).replace(" ", "*") for n in raw]
 
 
 # --- derive ---------------------------------------------------------------
@@ -268,3 +298,303 @@ def interactions(
         combinations if params.interaction_only else combinations_with_replacement
     )(params.columns, 2)
     return df.assign(**{f"{a}*{b}": df[a] * df[b] for a, b in pairs})
+
+
+# --- polynomial -------------------------------------------------------------
+
+
+class PolynomialParams(TransformParams):
+    columns: list[str] = columns_field(
+        "Numeric columns to expand",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
+        max_length=MAX_INTERACTION_COLUMNS,
+    )
+    degree: int = Field(default=2, ge=1, le=5, description="Polynomial degree")
+    interaction_only: bool = Field(
+        default=False,
+        description="Only cross-products of distinct columns (no powers)",
+    )
+    include_bias: bool = Field(
+        default=False, description="Add a constant column of ones"
+    )
+    max_output_columns: int = Field(
+        default=MAX_POLYNOMIAL_OUTPUT,
+        ge=1,
+        description="Refuse if the expansion would produce more columns than this",
+    )
+
+
+def _fit_polynomial(df: pd.DataFrame, params: PolynomialParams) -> dict:
+    feature_matrix(df, params.columns, "polynomial")  # missing -> clear error
+    pf = PolynomialFeatures(
+        degree=params.degree,
+        interaction_only=params.interaction_only,
+        include_bias=params.include_bias,
+    )
+    pf.fit(np.zeros((1, len(params.columns))))
+    names = _poly_feature_names(pf.get_feature_names_out(params.columns))
+    if len(names) > params.max_output_columns:
+        raise ValueError(
+            f"polynomial: expansion of {len(params.columns)} columns at degree "
+            f"{params.degree} would produce {len(names)} columns "
+            f"(cap is {params.max_output_columns}); lower degree, use "
+            "interaction_only, or raise max_output_columns"
+        )
+    return {"columns": list(params.columns), "names": names}
+
+
+@transform(
+    "polynomial",
+    params_model=PolynomialParams,
+    fit=_fit_polynomial,
+    title="Polynomial features",
+    description=(
+        "Replace numeric columns by their polynomial expansion "
+        "(readable names like a^2, a*b; output capped)."
+    ),
+)
+def polynomial(
+    df: pd.DataFrame, params: PolynomialParams, state: dict
+) -> pd.DataFrame:
+    """Replace columns by PolynomialFeatures terms with readable names."""
+    columns = state["columns"]
+    X = feature_matrix(df, columns, "polynomial")
+    pf = PolynomialFeatures(
+        degree=params.degree,
+        interaction_only=params.interaction_only,
+        include_bias=params.include_bias,
+    )
+    pf.fit(X)
+    names = state["names"]
+    Y = pf.transform(X)
+    return _replace_columns(df, columns, dict(zip(names, Y.T, strict=True)), "polynomial")
+
+
+# --- power_transform --------------------------------------------------------
+
+
+class PowerTransformParams(TransformParams):
+    columns: list[str] = columns_field(
+        "Numeric columns to transform in place",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
+    )
+    method: Literal["yeo-johnson", "box-cox"] = Field(
+        default="yeo-johnson",
+        description="yeo-johnson: any real values; box-cox: strictly positive only",
+    )
+    standardize: bool = Field(
+        default=True, description="Zero-mean / unit-variance after the power map"
+    )
+
+
+def _fit_power_transform(df: pd.DataFrame, params: PowerTransformParams) -> dict:
+    X = feature_matrix(df, params.columns, "power_transform")
+    pt = PowerTransformer(method=params.method, standardize=params.standardize)
+    pt.fit(X)
+    state: dict = {
+        "columns": list(params.columns),
+        "lambdas": [float(v) for v in pt.lambdas_],
+    }
+    scaler = getattr(pt, "_scaler", None)
+    if params.standardize and scaler is not None:
+        state["mean"] = [float(v) for v in scaler.mean_]
+        state["scale"] = [float(v) for v in scaler.scale_]
+    return state
+
+
+def _power_transformer(params: PowerTransformParams, state: dict) -> PowerTransformer:
+    pt = PowerTransformer(method=params.method, standardize=params.standardize)
+    # Dummy fit so sklearn sets n_features_in_ / optional _scaler skeleton.
+    n = len(state["columns"])
+    if params.method == "box-cox":
+        dummy = np.arange(1, 1 + 2 * n, dtype=float).reshape(2, n)
+    else:
+        dummy = np.arange(2 * n, dtype=float).reshape(2, n)
+    pt.fit(dummy)
+    pt.lambdas_ = np.asarray(state["lambdas"], dtype=float)
+    if params.standardize and "mean" in state:
+        scaler = StandardScaler(copy=False)
+        scaler.fit(dummy)
+        scaler.mean_ = np.asarray(state["mean"], dtype=float)
+        scaler.scale_ = np.asarray(state["scale"], dtype=float)
+        scaler.var_ = scaler.scale_**2
+        scaler.n_features_in_ = n
+        pt._scaler = scaler
+    return pt
+
+
+@transform(
+    "power_transform",
+    params_model=PowerTransformParams,
+    fit=_fit_power_transform,
+    title="Power transform",
+    description="Power-map numeric columns (Yeo-Johnson / Box-Cox), fitted on train.",
+)
+def power_transform(
+    df: pd.DataFrame, params: PowerTransformParams, state: dict
+) -> pd.DataFrame:
+    """Transform columns with a PowerTransformer fitted on train."""
+    columns = state["columns"]
+    X = feature_matrix(df, columns, "power_transform")
+    Y = _power_transformer(params, state).transform(X)
+    out = df.copy()
+    out[columns] = Y
+    return out
+
+
+# --- quantile_transform -----------------------------------------------------
+
+
+class QuantileTransformParams(TransformParams):
+    columns: list[str] = columns_field(
+        "Numeric columns to transform in place",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
+    )
+    output_distribution: Literal["uniform", "normal"] = Field(
+        default="uniform", description="Map train quantiles to this distribution"
+    )
+    n_quantiles: int = Field(
+        default=1000, ge=2, description="Number of quantiles learned on train"
+    )
+    random_state: int = Field(default=0, description="Seed for subsampled quantiles")
+
+
+def _fit_quantile_transform(df: pd.DataFrame, params: QuantileTransformParams) -> dict:
+    X = feature_matrix(df, params.columns, "quantile_transform")
+    qt = QuantileTransformer(
+        n_quantiles=params.n_quantiles,
+        output_distribution=params.output_distribution,
+        random_state=params.random_state,
+        subsample=int(1e9),  # never subsample: state must match full train
+    )
+    qt.fit(X)
+    return {
+        "columns": list(params.columns),
+        "n_quantiles": int(qt.n_quantiles_),
+        "quantiles": [[float(v) for v in row] for row in qt.quantiles_],
+        "references": [float(v) for v in qt.references_],
+    }
+
+
+def _quantile_transformer(
+    params: QuantileTransformParams, state: dict
+) -> QuantileTransformer:
+    qt = QuantileTransformer(
+        n_quantiles=state["n_quantiles"],
+        output_distribution=params.output_distribution,
+        random_state=params.random_state,
+        subsample=int(1e9),
+    )
+    n = len(state["columns"])
+    qt.fit(np.zeros((state["n_quantiles"], n)))
+    qt.quantiles_ = np.asarray(state["quantiles"], dtype=float)
+    qt.references_ = np.asarray(state["references"], dtype=float)
+    qt.n_quantiles_ = state["n_quantiles"]
+    return qt
+
+
+@transform(
+    "quantile_transform",
+    params_model=QuantileTransformParams,
+    fit=_fit_quantile_transform,
+    title="Quantile transform",
+    description="Map columns to a uniform/normal distribution via train quantiles.",
+)
+def quantile_transform(
+    df: pd.DataFrame, params: QuantileTransformParams, state: dict
+) -> pd.DataFrame:
+    """Transform columns with a QuantileTransformer fitted on train."""
+    columns = state["columns"]
+    X = feature_matrix(df, columns, "quantile_transform")
+    Y = _quantile_transformer(params, state).transform(X)
+    out = df.copy()
+    out[columns] = Y
+    return out
+
+
+# --- spline -----------------------------------------------------------------
+
+
+class SplineParams(TransformParams):
+    columns: list[str] = columns_field(
+        "Numeric columns to expand into spline bases",
+        source="step",
+        dtype="numeric",
+        required=True,
+        min_length=1,
+        max_length=MAX_INTERACTION_COLUMNS,
+    )
+    n_knots: int = Field(default=5, ge=2, description="Number of knots per column")
+    degree: int = Field(default=3, ge=0, le=5, description="B-spline degree")
+    knots: Literal["uniform", "quantile"] = Field(
+        default="quantile",
+        description="Place knots evenly or on train quantiles",
+    )
+    include_bias: bool = Field(
+        default=True, description="Keep the constant basis function per column"
+    )
+    max_output_columns: int = Field(
+        default=MAX_SPLINE_OUTPUT,
+        ge=1,
+        description="Refuse if the expansion would produce more columns than this",
+    )
+
+
+def _fit_spline(df: pd.DataFrame, params: SplineParams) -> dict:
+    X = feature_matrix(df, params.columns, "spline")
+    st = SplineTransformer(
+        n_knots=params.n_knots,
+        degree=params.degree,
+        knots=params.knots,
+        include_bias=params.include_bias,
+    )
+    st.fit(X)
+    names = [str(n) for n in st.get_feature_names_out(params.columns)]
+    if len(names) > params.max_output_columns:
+        raise ValueError(
+            f"spline: expansion of {len(params.columns)} columns "
+            f"(n_knots={params.n_knots}, degree={params.degree}) would produce "
+            f"{len(names)} columns (cap is {params.max_output_columns}); "
+            "lower n_knots/degree or raise max_output_columns"
+        )
+    # Base knot positions (without degree padding) — enough to rebuild at apply.
+    base_knots = [
+        [float(v) for v in b.t[params.degree : params.degree + params.n_knots]]
+        for b in st.bsplines_
+    ]
+    return {
+        "columns": list(params.columns),
+        "names": names,
+        "knots": list(map(list, zip(*base_knots, strict=True))),  # (n_knots, n_features)
+    }
+
+
+@transform(
+    "spline",
+    params_model=SplineParams,
+    fit=_fit_spline,
+    title="Spline features",
+    description="Replace numeric columns by B-spline bases fitted on train knots.",
+)
+def spline(df: pd.DataFrame, params: SplineParams, state: dict) -> pd.DataFrame:
+    """Replace columns by SplineTransformer bases using train knot positions."""
+    columns = state["columns"]
+    X = feature_matrix(df, columns, "spline")
+    st = SplineTransformer(
+        degree=params.degree,
+        knots=np.asarray(state["knots"], dtype=float),
+        include_bias=params.include_bias,
+    )
+    st.fit(X)
+    Y = st.transform(X)
+    names = state["names"]
+    return _replace_columns(df, columns, dict(zip(names, Y.T, strict=True)), "spline")
