@@ -36,10 +36,13 @@ ID_RANGE_DENSITY = 0.95
 # group_id = entity key repeated over rows (e.g. `patient_id`): at least
 # GROUP_MIN_UNIQUE distinct values with a distinct/non-null ratio in
 # [GROUP_MIN_RATIO, ID_UNIQUE_RATIO). Strings must be whitespace-free; integers must
-# fill at least GROUP_RANGE_DENSITY of their range (else they are a numeric feature).
+# fill nearly their whole [min, max] range (same bar as id_like) — a measured
+# feature like Pima `Glucose` (136 ints over 0..199) must stay numeric.
 GROUP_MIN_UNIQUE = 100
 GROUP_MIN_RATIO = 0.01
-GROUP_RANGE_DENSITY = 0.5
+GROUP_RANGE_DENSITY = 0.95
+# Object columns that are mostly numeric (with a few sentinel tokens) are not ids.
+NUMERIC_AS_TEXT_RATIO = 0.8
 N_SAMPLES = 3
 # Longer sample values (a WKB geometry, a big JSON list) are cut to this many chars.
 SAMPLE_MAX_CHARS = 60
@@ -143,11 +146,15 @@ def semantic_type(series: pd.Series) -> str:
     strings = values.astype(str)
     if _parses_as_datetime(strings):
         return "datetime"
+    # Numbers stored as text (possibly polluted by "?", "N/A", ...): not an id.
+    parsed = pd.to_numeric(strings.str.strip(), errors="coerce")
+    mostly_numeric = float(parsed.notna().mean()) >= NUMERIC_AS_TEXT_RATIO
     spaceless = not strings.str.contains(r"\s").any()
-    if enough and ratio >= ID_UNIQUE_RATIO and spaceless:
-        return "id_like"
-    if spaceless and _group_band(n_unique, ratio):
-        return "group_id"
+    if not mostly_numeric:
+        if enough and ratio >= ID_UNIQUE_RATIO and spaceless:
+            return "id_like"
+        if spaceless and _group_band(n_unique, ratio):
+            return "group_id"
     if ratio > TEXT_UNIQUE_RATIO:
         return "text"
     return "categorical"

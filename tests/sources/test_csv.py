@@ -226,3 +226,21 @@ def test_bad_line_after_title_rows_counts_from_header(tmp_path):
 
 def test_sniff_sep_on_two_line_file():
     assert sniff_sep("foo;bar;baz\n1;2\n") == ";"
+
+
+def test_store_b_title_line_does_not_decide_delimiter():
+    """Course store_b.csv: title line + ';' + decimal ',' → 3×4 numeric prices."""
+    from pathlib import Path
+
+    from dtk_engine import api, run_key
+
+    path = Path(__file__).resolve().parent.parent / "fixtures" / "store_b.csv"
+    text = path.read_text()
+    assert sniff_sep(text) == ";"
+    m = run_key("file_inspect", {"path": str(path)})["metrics"]
+    spec = __import__("json").loads(m["load_spec"])
+    assert spec["sep"] == ";" and spec["decimal"] == "," and spec["header"] == 1
+    df = api.load(spec)
+    assert df.shape == (3, 4)
+    assert list(df.columns) == ["id", "product", "price", "qty"]
+    assert df["price"].tolist() == [1.5, 0.95, 3.2]

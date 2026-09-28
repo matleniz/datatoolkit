@@ -44,28 +44,66 @@ def test_excel_lists_sheets(tmp_path):
     result = run_key("file_inspect", {"path": str(path)})
     assert result["tables"][0]["title"] == "sheets"
     assert len(result["tables"][0]["records"]) == 1
+    spec = json.loads(result["metrics"]["load_spec"])
+    assert spec == {
+        "kind": "excel",
+        "path": str(path),
+        "sheet": "s1",
+        "header": 0,
+    }
+    assert list(api.load(spec).columns) == ["a"]
 
 
-def test_missing_file(tmp_path):
-    with pytest.raises(SourceError):
-        run_key("file_inspect", {"path": str(tmp_path / "nope.csv")})
+def test_parquet_load_spec(tmp_path):
+    path = tmp_path / "t.parquet"
+    pd.DataFrame({"a": [1, 2], "b": ["x", "y"]}).to_parquet(path)
+    m = run_key("file_inspect", {"path": str(path)})["metrics"]
+    spec = json.loads(m["load_spec"])
+    assert spec == {"kind": "parquet", "path": str(path)}
+    assert "first_bytes" not in m
+    df = api.load(spec)
+    assert list(df.columns) == ["a", "b"] and len(df) == 2
 
 
-def test_json_suggests_record_path(tmp_path):
+def test_jsonl_load_spec(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"event_id": "e0", "n": 1}\n{"event_id": "e1", "n": 2}\n')
+    m = run_key("file_inspect", {"path": str(path)})["metrics"]
+    spec = json.loads(m["load_spec"])
+    assert spec == {"kind": "json", "path": str(path), "lines": True}
+    df = api.load(spec)
+    assert list(df.columns) == ["event_id", "n"] and len(df) == 2
+
+
+def test_json_load_spec_keeps_record_paths(tmp_path):
     path = tmp_path / "api.json"
     path.write_text(
         '{"meta": {"page": 1}, "data": {"items": [{"id": 1}, {"id": 2}], "x": [{"k": 1}]}}'
     )
     result = run_key("file_inspect", {"path": str(path)})
+    spec = json.loads(result["metrics"]["load_spec"])
+    assert spec["kind"] == "json" and spec["lines"] is False
+    assert spec["record_path"] == "data.items"
     assert result["metrics"]["suggested_record_path"] == "data.items"
-    records = result["tables"][-1]["records"]
-    assert [r["record_path"] for r in records] == ["data.items", "data.x"]
+    assert [r["record_path"] for r in result["tables"][-1]["records"]] == [
+        "data.items",
+        "data.x",
+    ]
+    assert list(api.load(spec).columns) == ["id"]
     flat = tmp_path / "flat.json"
     flat.write_text('[{"a": 1}]')
-    assert (
-        "suggested_record_path"
-        not in run_key("file_inspect", {"path": str(flat)})["metrics"]
-    )
+    flat_m = run_key("file_inspect", {"path": str(flat)})["metrics"]
+    assert "suggested_record_path" not in flat_m
+    assert json.loads(flat_m["load_spec"]) == {
+        "kind": "json",
+        "path": str(flat),
+        "lines": False,
+    }
+
+
+def test_missing_file(tmp_path):
+    with pytest.raises(SourceError):
+        run_key("file_inspect", {"path": str(tmp_path / "nope.csv")})
 
 
 def test_excel_suggests_header_row(tmp_path):

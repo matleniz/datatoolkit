@@ -58,20 +58,50 @@ def resolve_path(
 
 
 def sniff_sep(sample: str) -> str | None:
-    """Delimiter detected by csv.Sniffer on a text sample, None if it cannot tell."""
+    """Delimiter guessed from a text sample, None if it cannot tell.
+
+    Scores each candidate by how many non-empty rows share the modal field count
+    (must be ≥ 2). A leading title line — even one that contains a comma — must
+    not outvote a consistent multi-field body (course ``store_b.csv``: title,
+    ``sep=';'``, decimal commas in prices).
+    """
     sample = _drop_cut_line(sample)
-    try:
-        return csv.Sniffer().sniff(sample, delimiters=SNIFF_DELIMITERS).delimiter
-    except csv.Error:
-        pass
-    # No candidate on the header line: a single-column file. Say so explicitly,
+    if not sample.strip():
+        return None
+    scored = _score_sep(sample)
+    if scored is not None:
+        return scored
+    # No candidate yields ≥ 2 fields: a single-column file. Say so explicitly,
     # else pandas' python-engine sniffing may pick a letter as the separator.
     header = sample.split("\n", 1)[0]
     present = [d for d in SNIFF_DELIMITERS if d in header]
-    if sample and not present:
+    if not present:
         return ","
-    # Too few rows for the Sniffer: one candidate on the header line is enough.
     return present[0] if len(present) == 1 else None
+
+
+def _score_sep(sample: str) -> str | None:
+    """Best delimiter: most rows sharing a modal field count of at least 2."""
+    lines = [ln for ln in sample.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    best: str | None = None
+    best_score = (-1, -1)  # (consistent rows, modal fields)
+    for sep in SNIFF_DELIMITERS:
+        try:
+            counts = [len(row) for row in csv.reader(lines, delimiter=sep) if row]
+        except csv.Error:
+            continue
+        if not counts:
+            continue
+        modal = max(set(counts), key=counts.count)
+        if modal < 2:
+            continue
+        consistent = sum(1 for c in counts if c == modal)
+        score = (consistent, modal)
+        if score > best_score:
+            best_score, best = score, sep
+    return best
 
 
 def guess_encoding(raw: bytes, *, complete: bool = True) -> str:

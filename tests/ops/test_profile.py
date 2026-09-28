@@ -45,13 +45,24 @@ N = ID_MIN_NON_NULL
         # Entity key repeated over rows (e.g. patient_id).
         ([f"P{i % 150:04d}" for i in range(1500)], "group_id"),
         ([i % 150 for i in range(1500)], "group_id"),
+        # Measured ints with holes in their range stay numeric (Pima Glucose).
+        (
+            [0, 199, *list(range(1, 135))]
+            + [v % 136 for v in range(136, 768)],
+            "numeric",
+        ),
         # Few categories stay categorical; sparse spread integers stay numeric.
         ([f"c{i % 20}" for i in range(1500)], "categorical"),
         ([(i % 150) * 1000 for i in range(1500)], "numeric"),
         # Year strings are not dates.
         (["2024", "2023", "2024", "2022", "2023", "2024"], "categorical"),
-        # Numbers polluted by a token stay text-like.
+        # Numbers polluted by a token stay text-like (not an identifier).
         (["12", "unknown", "31", "45", "7"], "text"),
+        # Mostly-numeric text with sentinel tokens is not a group_id.
+        (
+            [str(i % 200) if i % 17 else "?" for i in range(1500)],
+            "categorical",
+        ),
         (["x", "x", None], "constant"),
         ([None, None], "constant"),
     ],
@@ -59,6 +70,14 @@ N = ID_MIN_NON_NULL
 def test_semantic_type(values, expected):
     assert semantic_type(pd.Series(values)) == expected
     assert expected in SEMANTIC_TYPES
+
+
+def test_pima_glucose_is_numeric_not_identifier():
+    """Pima Glucose: 136 distinct ints over 768 rows spanning 0..199 → numeric."""
+    unique = [int(i * 199 / 135) for i in range(136)]
+    values = (unique * (768 // len(unique) + 1))[:768]
+    s = pd.Series(values)
+    assert semantic_type(s) == "numeric"
 
 
 def test_column_profile():

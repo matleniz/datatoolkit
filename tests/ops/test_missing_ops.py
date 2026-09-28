@@ -49,6 +49,32 @@ def test_sentinels():
     assert got[("when", "1900-01-01")] == 3
 
 
+def test_question_mark_sentinel_in_numeric_as_text():
+    """UCI-style '?': detected in profile / missing_values / advisor suggestion."""
+    from dtk_engine.ops.advisor import advise
+    from dtk_engine.ops.advisor.cleaning import sentinel_rec
+    from dtk_engine.workspace.inspect import _sentinel_candidates, column_kind
+
+    df = pd.DataFrame(
+        {
+            "age": ["25", "30", "?", "40", "?", "55", "60", "22", "33", "44"] * 3,
+            "hours": ["40", "?", "35", "40", "20"] * 6,
+            "label": ["a", "b"] * 15,
+        }
+    )
+    hits = sentinel_counts(df)
+    assert set(hits["sentinel"]) >= {"?"}
+    assert set(hits["column"]) >= {"age", "hours"}
+    assert column_kind(df["age"], "age") == "text"
+    assert any(c["value"] == "?" for c in _sentinel_candidates(df["age"]))
+    rec = sentinel_rec("age", [df])
+    assert rec is not None and rec.op == "replace_sentinels"
+    assert "?" in rec.params["sentinels"]["age"]
+    recs, _ = advise(df, target="label")
+    age_sent = recs[(recs.column == "age") & (recs.op == "replace_sentinels")]
+    assert not age_sent.empty
+
+
 def test_zero_only_when_dominant_in_continuous_column():
     rng = np.random.default_rng(1)
     vals = np.concatenate([np.zeros(50), rng.uniform(1, 100, 50)])
