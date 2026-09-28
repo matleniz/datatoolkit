@@ -164,6 +164,76 @@ def test_to_numeric_params_strict():
         t.parse({"columns": ["v"], "decimal": ",", "thousands": ","})
 
 
+_ALTITUDE_PATTERN = r"(?P<low>\d+)\s*-\s*(?P<high>\d+)"
+_HARVEST_PATTERN = r"(?P<start>\d{4})\s*/\s*(?P<end>\d{4})"
+
+
+def test_extract_altitude_range_numeric():
+    df = pd.DataFrame(
+        {"altitude": ["1950-2200", "1600 - 1800 m", None, "2100-2100"]}
+    )
+    p = {"column": "altitude", "pattern": _ALTITUDE_PATTERN}
+    out = DtkTransformer("extract", **p).fit_transform(df)
+    assert out["altitude_low"].tolist()[:2] == [1950.0, 1600.0]
+    assert out["altitude_high"].tolist()[:2] == [2200.0, 1800.0]
+    assert pd.isna(out["altitude_low"][2]) and pd.isna(out["altitude_high"][2])
+    assert out["altitude_low"].dtype == np.float64
+    # mean via the two extracted columns (exercise outcome)
+    mean = (out["altitude_low"] + out["altitude_high"]) / 2
+    assert mean.iloc[0] == pytest.approx(2075.0)
+    replayed = _both("extract", p, df, df)
+    assert replayed["altitude_low"].tolist()[:2] == [1950.0, 1600.0]
+
+
+def test_extract_harvest_year():
+    df = pd.DataFrame({"harvest_year": ["2013/2014", "2015 / 2016"]})
+    p = {"column": "harvest_year", "pattern": _HARVEST_PATTERN, "prefix": "hy"}
+    out = DtkTransformer("extract", **p).fit_transform(df)
+    assert out.columns.tolist() == ["harvest_year", "hy_start", "hy_end"]
+    assert out["hy_start"].tolist() == [2013.0, 2015.0]
+    assert out["hy_end"].tolist() == [2014.0, 2016.0]
+
+
+def test_extract_no_match_raise_and_coerce():
+    df = pd.DataFrame({"altitude": ["1950-2200", "unknown"]})
+    p = {"column": "altitude", "pattern": _ALTITUDE_PATTERN}
+    with pytest.raises(ValueError, match="no match"):
+        DtkTransformer("extract", **p).fit_transform(df)
+    out = DtkTransformer("extract", errors="coerce", **p).fit_transform(df)
+    assert out["altitude_low"].tolist()[0] == 1950.0
+    assert pd.isna(out["altitude_low"][1]) and pd.isna(out["altitude_high"][1])
+
+
+def test_extract_invalid_pattern_and_limits():
+    t = get_transform("extract")
+    with pytest.raises(KeyParamsError, match="named group"):
+        t.parse({"column": "c", "pattern": r"(\d+)-(\d+)"})
+    with pytest.raises(KeyParamsError, match="invalid pattern"):
+        t.parse({"column": "c", "pattern": r"(?P<low>[)"})
+    from dtk_engine.ops.transforms.cleaning import MAX_EXTRACT_PATTERN_LENGTH
+
+    too_long = "(?P<a>a)" + "a" * MAX_EXTRACT_PATTERN_LENGTH
+    with pytest.raises(KeyParamsError):
+        t.parse({"column": "c", "pattern": too_long})
+    with pytest.raises(KeyParamsError):
+        t.parse({"column": "c", "pattern": _ALTITUDE_PATTERN, "extra": True})
+
+
+def test_extract_keeps_text_groups_and_rejects_clash():
+    df = pd.DataFrame({"raw": ["id:abc", "id:xyz"]})
+    p = {"column": "raw", "pattern": r"id:(?P<code>[a-z]+)"}
+    out = DtkTransformer("extract", **p).fit_transform(df)
+    assert out["raw_code"].tolist() == ["abc", "xyz"]
+    assert out["raw_code"].dtype == object
+    clash = pd.DataFrame({"raw": ["id:a"], "raw_code": ["x"]})
+    with pytest.raises(ValueError, match="already exist"):
+        DtkTransformer("extract", **p).fit_transform(clash)
+    with pytest.raises(KeyError, match="not in the frame"):
+        DtkTransformer("extract", column="missing", pattern=p["pattern"]).fit_transform(
+            df
+        )
+
+
 def test_drop_high_missing():
     train = pd.DataFrame(
         {

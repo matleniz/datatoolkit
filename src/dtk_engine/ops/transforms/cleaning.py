@@ -271,6 +271,126 @@ def parse_dates(
     return out
 
 
+# Cap user-supplied patterns so a catastrophic-backtracking regex cannot hang
+# the engine (stdlib ``re`` has no match timeout). Documented on the param.
+MAX_EXTRACT_PATTERN_LENGTH = 256
+
+_NUMERIC_GROUP_RE = re.compile(
+    r"""
+    ^\s*
+    [+-]?
+    (?:
+        \d+(?:[._]\d+)?   # 1950, 2013.5, 1_000
+        |\.\d+            # .5
+    )
+    \s*$
+    """,
+    re.VERBOSE,
+)
+
+
+def _compile_extract_pattern(pattern: str) -> re.Pattern[str]:
+    """Compile ``pattern``; refuse invalid regex or patterns without named groups."""
+    if len(pattern) > MAX_EXTRACT_PATTERN_LENGTH:
+        raise ValueError(
+            f"extract: pattern longer than {MAX_EXTRACT_PATTERN_LENGTH} characters "
+            "(ReDoS guard; shorten the pattern)"
+        )
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"extract: invalid pattern ({exc})") from exc
+    if not compiled.groupindex:
+        raise ValueError(
+            "extract: pattern must include at least one named group "
+            "(?P<name>...)"
+        )
+    return compiled
+
+
+def _group_looks_numeric(values: pd.Series) -> bool:
+    """True when every non-null capture looks like a number (altitude, year…)."""
+    non_null = values.dropna()
+    if non_null.empty:
+        return False
+    return all(_NUMERIC_GROUP_RE.match(str(v)) is not None for v in non_null)
+
+
+class ExtractParams(TransformParams):
+    column: str = column_field(
+        ..., "Text column to match against the pattern", source="step"
+    )
+    pattern: str = Field(
+        min_length=1,
+        max_length=MAX_EXTRACT_PATTERN_LENGTH,
+        description=(
+            "Python regex with named capture groups (?P<name>...); each group "
+            "becomes a column '<prefix>_<name>' (or '<column>_<name>'). "
+            f"At most {MAX_EXTRACT_PATTERN_LENGTH} characters (stdlib re has no "
+            "match timeout; the length cap is the ReDoS guard). "
+            "Groups whose captures all look numeric are cast to float."
+        ),
+    )
+    prefix: str | None = Field(
+        default=None,
+        description="Prefix for output columns (default: the source column name)",
+    )
+    errors: Literal["raise", "coerce"] = Field(
+        default="raise",
+        description="Non-null cell with no match: raise, or fill group columns with NaN",
+    )
+
+    @field_validator("pattern")
+    @classmethod
+    def _valid_pattern(cls, value: str) -> str:
+        _compile_extract_pattern(value)
+        return value
+
+
+@transform("extract", params_model=ExtractParams, title="Extract by regex")
+def extract(df: pd.DataFrame, params: ExtractParams, state: dict) -> pd.DataFrame:
+    """Pull named regex groups from a text column into new typed columns.
+
+    Numeric-looking groups (e.g. altitude low/high, harvest years) are cast to
+    float. Pattern length is capped at ``MAX_EXTRACT_PATTERN_LENGTH`` (stdlib
+    ``re`` has no match timeout).
+    """
+    if params.column not in df.columns:
+        raise KeyError(f"extract: column {params.column!r} not in the frame")
+    compiled = _compile_extract_pattern(params.pattern)
+    group_names = list(compiled.groupindex)
+    prefix = params.prefix if params.prefix is not None else params.column
+    out_names = [f"{prefix}_{g}" for g in group_names]
+    clash = [n for n in out_names if n in df.columns]
+    if clash:
+        raise ValueError(f"extract: output columns already exist {clash}")
+
+    source = df[params.column]
+    # StringDtype keeps NA (avoids matching the literals "nan" / "None").
+    text = source.astype("string")
+    captured = text.str.extract(compiled, expand=True)
+    # pandas names columns from groupindex; enforce our declared order.
+    captured = captured.reindex(columns=group_names)
+    captured.columns = out_names
+
+    unmatched = text.notna() & captured.isna().all(axis=1)
+    if unmatched.any() and params.errors == "raise":
+        first = source[unmatched].iloc[0]
+        raise ValueError(
+            f"extract: no match for {first!r} in column {params.column!r} "
+            f"with pattern {params.pattern!r}"
+        )
+
+    out = df.copy()
+    for name in out_names:
+        col = captured[name]
+        if _group_looks_numeric(col):
+            out[name] = pd.to_numeric(col, errors="coerce").astype(float)
+        else:
+            out[name] = col.astype(object).where(col.notna(), other=np.nan)
+    return out
+
+
 Scalar = str | int | float | bool
 
 
