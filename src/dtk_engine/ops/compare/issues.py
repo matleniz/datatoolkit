@@ -113,14 +113,19 @@ def find_issues(
                 f"[{r.min_train:g}, {r.max_train:g}]",
             )
         if pd.notna(r.n_unseen_categories) and r.n_unseen_categories > 0:
-            add(
-                "warning",
-                "categorical",
-                r.column,
-                f"{int(r.n_unseen_categories)} categories unseen in train "
-                f"({r.unseen_categories}) on "
-                f"{r.pct_test_rows_unseen}% of test rows",
+            counts = (
+                f" [{r.unseen_category_counts}]"
+                if pd.notna(r.unseen_category_counts) and r.unseen_category_counts
+                else ""
             )
+            msg = (
+                f"{int(r.n_unseen_categories)} categories unseen in train "
+                f"({r.unseen_categories}){counts} on "
+                f"{r.pct_test_rows_unseen}% of test rows"
+            )
+            if pd.notna(r.near_match_hint) and r.near_match_hint:
+                msg = f"{msg}; {r.near_match_hint}"
+            add("warning", "categorical", r.column, msg)
         if pd.notna(r.n_train_only_categories) and r.n_train_only_categories > 0:
             add(
                 "info",

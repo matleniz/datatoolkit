@@ -212,7 +212,11 @@ def align_report(ws: dict) -> dict:
     """Train / test column alignment after the workspace's steps.
 
     Per column: train/test ``{name, kind, samples}``, status
-    (match|type_mismatch|missing_in_test|extra_in_test|label), means,
-    ``numbers_as_text``, and ``similar`` test-only names (difflib).
+    (match|type_mismatch|value_mismatch|missing_in_test|extra_in_test|label),
+    means, ``numbers_as_text``, and ``similar`` test-only names (difflib).
+    On ``value_mismatch`` (categorical / label column with test-only values):
+    ``only_in_test`` (``[{value, count}, ...]``), ``pct_test_rows_unseen``,
+    ``near_match_hint``, and ``near_matches`` (``[{test, train}, ...]``).
+    Those four fields are ``null`` / ``[]`` on other statuses.
     """
     return _inspect.align_report(_parse_workspace(ws))

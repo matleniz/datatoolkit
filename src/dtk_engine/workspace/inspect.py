@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from dtk_engine.errors import KeyParamsError, SourceError, key_params_from_validation
 from dtk_engine.ops._util import json_scalar, py
 from dtk_engine.ops.compare import schema_diff
+from dtk_engine.ops.compare.schema import CATEGORY_TYPES, category_shift
 from dtk_engine.ops.consistency import DATE_LIKE_MIN_SHARE, date_format
 from dtk_engine.ops.consistency import normalize as _normalize_text
 from dtk_engine.ops.join import label_columns
@@ -515,7 +516,11 @@ def align_report(ws: Workspace) -> dict:
 
     The front typically sends only alignment steps; we replay whatever is in
     ``ws.steps``. Per column: train/test side info, status, means, similar
-    names for missing-in-test rows. No test dataset -> ``SourceError``.
+    names for missing-in-test rows. Categorical / label columns present on
+    both sides with test-only values get status ``value_mismatch`` plus
+    ``only_in_test`` (value+count), ``pct_test_rows_unseen``, and optional
+    ``near_match_hint`` / ``near_matches`` (strip / casefold / trailing
+    punctuation). No test dataset -> ``SourceError``.
     """
     if ws.datasets.test is None:
         raise SourceError(f"workspace {ws.name!r} has no test dataset")
@@ -532,6 +537,7 @@ def align_report(ws: Workspace) -> dict:
         *,
         status: str,
         similar: list[str] | None = None,
+        value_set: dict | None = None,
     ) -> dict:
         t_info = _side_info(train, name)
         e_info = _side_info(test, name)
@@ -542,7 +548,7 @@ def align_report(ws: Workspace) -> dict:
             numbers_as_text = numbers_as_text or _numbers_as_text(train_col)
         if test_col is not None:
             numbers_as_text = numbers_as_text or _numbers_as_text(test_col)
-        return {
+        out = {
             "train": t_info,
             "test": e_info,
             "status": status,
@@ -550,6 +556,25 @@ def align_report(ws: Workspace) -> dict:
             "train_mean": _mean(train_col) if train_col is not None else None,
             "test_mean": _mean(test_col) if test_col is not None else None,
             "similar": similar if similar is not None else [],
+            "only_in_test": None,
+            "pct_test_rows_unseen": None,
+            "near_match_hint": None,
+            "near_matches": [],
+        }
+        if value_set is not None:
+            out.update(value_set)
+        return out
+
+    def _value_set_fields(train_col: pd.Series, test_col: pd.Series) -> dict | None:
+        """Flag when a categorical / label column has test-only values."""
+        shift = category_shift(train_col, test_col)
+        if shift["n_unseen_categories"] == 0:
+            return None
+        return {
+            "only_in_test": shift["_only_in_test"],
+            "pct_test_rows_unseen": shift["pct_test_rows_unseen"],
+            "near_match_hint": shift["near_match_hint"],
+            "near_matches": shift["_near_matches"],
         }
 
     for name in map(str, train.columns):
@@ -557,7 +582,19 @@ def align_report(ws: Workspace) -> dict:
             tk = column_kind(train[name], name)
             ek = column_kind(test[name], name)
             status = "match" if _kinds_match(tk, ek) else "type_mismatch"
-            rows.append(_row(name, status=status))
+            value_set = None
+            if status == "match":
+                sem_train = semantic_type(train[name])
+                sem_test = semantic_type(test[name])
+                check_values = (
+                    name == label
+                    or {sem_train, sem_test} & set(CATEGORY_TYPES)
+                )
+                if check_values:
+                    value_set = _value_set_fields(train[name], test[name])
+                    if value_set is not None:
+                        status = "value_mismatch"
+            rows.append(_row(name, status=status, value_set=value_set))
         elif name == label:
             rows.append(_row(name, status="label"))
         else:

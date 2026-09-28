@@ -468,6 +468,47 @@ def test_align_report_after_rename_step(tmp_path):
     assert by["support_calls"]["status"] == "match"
 
 
+def test_align_report_value_mismatch_adult_like_labels(tmp_path):
+    """Train labels without trailing '.' vs test with '.' → value_mismatch + hint."""
+    train = tmp_path / "adult_train.csv"
+    test = tmp_path / "adult_test.csv"
+    train.write_text(
+        "age,income\n"
+        "25,<=50K\n30,<=50K\n40,>50K\n50,>50K\n"
+        "28,<=50K\n35,<=50K\n45,>50K\n55,>50K\n"
+    )
+    test.write_text(
+        "age,income\n"
+        "22,<=50K.\n33,>50K.\n44,<=50K.\n"
+        "26,<=50K.\n38,>50K.\n"
+    )
+    ws = {
+        "name": "adult",
+        "datasets": {
+            "train": {
+                "x": {"kind": "csv", "path": str(train)},
+                "target_column": "income",
+            },
+            "test": {"x": {"kind": "csv", "path": str(test)}},
+        },
+    }
+    out = align_report(ws)
+    assert json.dumps(out)
+    by = {r["train"]["name"]: r for r in out["columns"] if r["train"]}
+    assert by["age"]["status"] == "match"
+    assert by["age"]["only_in_test"] is None
+    income = by["income"]
+    assert income["status"] == "value_mismatch"
+    assert income["pct_test_rows_unseen"] == 100.0
+    assert {r["value"] for r in income["only_in_test"]} == {"<=50K.", ">50K."}
+    assert sum(r["count"] for r in income["only_in_test"]) == 5
+    assert income["near_matches"] == [
+        {"test": "<=50K.", "train": "<=50K"},
+        {"test": ">50K.", "train": ">50K"},
+    ]
+    assert "standardize_text" in income["near_match_hint"]
+
+
 def test_column_kind_mapping():
     assert column_kind(pd.Series([1.0, 2.0, 3.0])) == "number"
     assert column_kind(pd.Series([0, 1, 0, 1])) == "bool"
