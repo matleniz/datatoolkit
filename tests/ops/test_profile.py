@@ -14,6 +14,7 @@ from dtk_engine.ops.profile import (
     id_stats,
     numeric_histograms,
     numeric_stats,
+    numeric_text_format,
     pct_numeric_parsable,
     semantic_type,
     semantic_types,
@@ -70,6 +71,47 @@ N = ID_MIN_NON_NULL
 def test_semantic_type(values, expected):
     assert semantic_type(pd.Series(values)) == expected
     assert expected in SEMANTIC_TYPES
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        # MAT-168: high-cardinality currency / percent / EU-amount text must not
+        # be sniffed as an identifier (LaunchCode transaction_total, TT Steam
+        # avg_peak_perc, EU montant columns).
+        ([f"${1000 + i:,}.{i % 100:02d}" for i in range(N)], "text"),
+        ([f"{i % 100}.{i:04d}%" for i in range(N)], "text"),
+        ([f"1 {200 + i},50" for i in range(N)], "text"),
+        # Plain leading-zero ids / zip codes: no comma/percent/currency/
+        # thousands marker, so numbers-as-text detection stays out of the way
+        # (already parsed by plain pd.to_numeric -> not id_like, unaffected).
+        ([f"{i:05d}" for i in range(N)], "text"),
+    ],
+)
+def test_semantic_type_numeric_text_not_identifier(values, expected):
+    assert semantic_type(pd.Series(values)) == expected
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        (["$1,029.55", "$34,484.45", "$50.00"], {"decimal": ".", "thousands": ",", "percent": False}),
+        (["65.9567%", "12.5%", "3.0%"], {"decimal": ".", "thousands": None, "percent": True}),
+        (["1 200,50", "3 400,00"], {"decimal": ",", "thousands": " ", "percent": False}),
+        (["1 200,50", "3 400,00"], {"decimal": ",", "thousands": " ", "percent": False}),
+        (["990,-", "1 200,50"], {"decimal": ",", "thousands": " ", "percent": False}),
+        (["$2.39 ", "$1,250.00", "$50.00", "$3.10"], {"decimal": ".", "thousands": ",", "percent": False}),
+        (["12,5 %", "3,0 %"], {"decimal": ",", "thousands": None, "percent": True}),
+        (["1 250,00 EUR", "50,00 EUR"], {"decimal": ",", "thousands": " ", "percent": False}),
+        # Plain numbers-as-text with only a '.' decimal: not a "marker" case,
+        # leave it to plain pd.to_numeric / the cast advisor path.
+        (["35.0", "-999.0", "12.0"], None),
+        # Plain digit ids: no separators/symbols at all.
+        (["00123", "00456"], None),
+    ],
+)
+def test_numeric_text_format(values, expected):
+    assert numeric_text_format(pd.Series(values)) == expected
 
 
 def test_pima_glucose_is_numeric_not_identifier():

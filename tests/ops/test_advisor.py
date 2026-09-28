@@ -191,6 +191,29 @@ def test_currency_column_suggests_to_numeric():
     get_transform("to_numeric").parse(rec["params"])
 
 
+@pytest.mark.parametrize(
+    ("values", "params"),
+    [
+        # MAT-168: thousands commas (LaunchCode transaction_total).
+        (["$1,029.55", "$34,484.45", "$50.00", "$3.10"] * 5, {"decimal": ".", "thousands": ","}),
+        # Percent with no currency symbol (TT Steam avg_peak_perc).
+        (["65.9567%", "12.5%", "3.0%", "99.9%"] * 5, {"decimal": ".", "percent": True}),
+        # EU space-thousands, comma-decimal amount with no currency code.
+        (["1 200,50", "3 400,00", "50,00", "999,99"] * 5, {"decimal": ",", "thousands": " "}),
+        # Whole-unit ',-' notation mixed with regular EU amounts.
+        (["990,-", "1 200,50", "50,00", "3 400,-"] * 5, {"decimal": ",", "thousands": " "}),
+    ],
+)
+def test_numeric_text_column_suggests_to_numeric(values, params):
+    train = pd.DataFrame({"amount": values, "y": [0, 1] * 10})
+    recs, _ = advise(train, model_family="tree", target="y")
+    rec = _rec(recs, "amount", "to_numeric")
+    assert rec["params"]["columns"] == ["amount"]
+    for k, v in params.items():
+        assert rec["params"][k] == v
+    get_transform("to_numeric").parse(rec["params"])
+
+
 def test_missing_skew_scaling(frames):
     train, test = frames
     recs, columns = advise(train, test, "linear", target="y")

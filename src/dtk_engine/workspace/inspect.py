@@ -29,8 +29,8 @@ from dtk_engine.ops.missing import sentinel_counts
 from dtk_engine.ops.outliers import univariate_outliers
 from dtk_engine.ops.profile import (
     HIST_BINS,
-    currency_format,
     hashable,
+    numeric_text_format,
     object_kind,
     semantic_type,
 )
@@ -341,11 +341,15 @@ def _numbers_as_text(series: pd.Series) -> bool:
 
 
 def _currency_as_text(series: pd.Series) -> dict | None:
-    """``{decimal, thousands, percent}`` when the column is mostly money-as-text
-    ('$2.39', '1 250,00 EUR'), else None (see ``ops.profile.currency_format``)."""
+    """``{decimal, thousands, percent}`` when the column is mostly numbers-as-text
+    with a currency / percent / thousands marker ('$2.39', '65.9567%',
+    '1 200,50', '990,-'), else None (see ``ops.profile.numeric_text_format``).
+
+    Field kept as ``currency_as_text`` (MAT-168 widened detection beyond
+    currency; fronts still key off this name)."""
     if pdt.is_datetime64_any_dtype(series) or object_kind(series.dropna()):
         return None
-    return currency_format(series)
+    return numeric_text_format(series)
 
 
 def _skewed(series: pd.Series) -> bool:

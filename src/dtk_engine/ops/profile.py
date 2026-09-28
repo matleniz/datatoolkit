@@ -151,6 +151,11 @@ def semantic_type(series: pd.Series) -> str:
     # Numbers stored as text (possibly polluted by "?", "N/A", ...): not an id.
     parsed = pd.to_numeric(strings.str.strip(), errors="coerce")
     mostly_numeric = float(parsed.notna().mean()) >= NUMERIC_AS_TEXT_RATIO
+    # Currency / percent / EU-formatted numbers ("$1,029.55", "65.9567%") don't
+    # parse with plain pd.to_numeric either, but they are numbers-as-text too,
+    # not identifiers (MAT-168).
+    if not mostly_numeric:
+        mostly_numeric = numeric_text_format(series) is not None
     spaceless = not strings.str.contains(r"\s").any()
     if not mostly_numeric:
         if enough and ratio >= ID_UNIQUE_RATIO and spaceless:
@@ -179,22 +184,32 @@ def pct_numeric_parsable(series: pd.Series) -> float:
     return round(100 * float(parsed.notna().mean()), 2)
 
 
-# Currency symbol / ISO code, an optional sign, digits grouped by '.', ',' or ' '
-# (thousands), an optional differently-punctuated decimal part, an optional '%'.
+# Currency symbol / ISO code, an optional sign, digits grouped by '.', ',' or a
+# whitespace-like thousands separator (space, NBSP, narrow NBSP), an optional
+# differently-punctuated decimal part, an optional '%'.
 _CURRENCY_TOKEN_RE = re.compile(r"(?i)[$€£]|USD|EUR|GBP")
-_CURRENCY_NUMBER_RE = re.compile(r"^[+-]?\d{1,3}(?:[,. ]\d{3})*(?:[.,]\d+)?%?$")
-# Share of non-null values that must carry a currency symbol / code to call a
-# text column "currency as text" (mirrors NUMERIC_AS_TEXT_RATIO's tolerance).
-CURRENCY_AS_TEXT_RATIO = 0.8
+_THOUSANDS_WS = "   "  # space, no-break space, narrow no-break space
+_NUMERIC_TEXT_RE = re.compile(
+    rf"^[+-]?\d{{1,3}}(?:[,.{_THOUSANDS_WS}]\d{{3}})*(?:[.,]\d+)?%?$"
+)
+# Trailing whole-unit notation ('990,-' / '990.-'): no cents, drop the marker.
+_WHOLE_UNIT_RE = re.compile(r"[.,]-$")
+# Share of non-null values that must match the numeric-text shape to call a
+# text column "numbers as text" (mirrors NUMERIC_AS_TEXT_RATIO's tolerance).
+NUMERIC_TEXT_RATIO = 0.8
+CURRENCY_AS_TEXT_RATIO = NUMERIC_TEXT_RATIO  # back-compat alias
 
 
-def currency_format(series: pd.Series) -> dict | None:
-    """Best-effort ``{decimal, thousands, percent}`` for a text column of money
-    strings (``'$1,250.00'``, ``'12,5 %'``, ``'1 250,00 EUR'``), else ``None``.
+def numeric_text_format(series: pd.Series) -> dict | None:
+    """Best-effort ``{decimal, thousands, percent}`` for a text column of
+    numbers-as-text (``'$1,250.00'``, ``'12,5 %'``, ``'1 250,00 EUR'``,
+    ``'65.9567%'``, ``'990,-'``), else ``None``.
 
-    ``decimal`` / ``thousands`` are guessed from the separators seen once the
-    currency symbol / code and the '%' sign are stripped (comma decimal wins
-    when both '.' and ',' are absent from a value with a space group).
+    A currency symbol / ISO code is optional (percents and EU amounts have
+    none). ``decimal`` / ``thousands`` are guessed from the separators seen
+    once the currency symbol / code, '%' sign and whole-unit marker (',-' /
+    '.-') are stripped (comma decimal wins when both '.' and ',' are absent
+    from a value with a thousands group).
     """
     if pdt.is_numeric_dtype(series) or pdt.is_bool_dtype(series) or object_kind(series):
         return None
@@ -202,24 +217,41 @@ def currency_format(series: pd.Series) -> dict | None:
     values = values[values.map(lambda v: isinstance(v, str))]
     if values.empty:
         return None
-    has_symbol = values.str.contains(_CURRENCY_TOKEN_RE, regex=True)
-    if has_symbol.mean() < CURRENCY_AS_TEXT_RATIO:
-        return None
-    stripped = values.str.replace(_CURRENCY_TOKEN_RE, "", regex=True).str.strip()
-    percent = bool(stripped.str.contains("%").any())
+    stripped = values.str.strip()
+    with_symbol = stripped.str.contains(_CURRENCY_TOKEN_RE, regex=True)
+    stripped = stripped.str.replace(_CURRENCY_TOKEN_RE, "", regex=True).str.strip()
+    percent = stripped.str.contains("%")
     stripped = stripped.str.replace("%", "", regex=False).str.strip()
-    if not stripped.map(lambda v: bool(_CURRENCY_NUMBER_RE.fullmatch(v))).all():
+    with_whole_unit = stripped.str.contains(_WHOLE_UNIT_RE, regex=True)
+    stripped = stripped.str.replace(_WHOLE_UNIT_RE, "", regex=True)
+    matches = stripped.map(lambda v: bool(_NUMERIC_TEXT_RE.fullmatch(v)))
+    if matches.mean() < NUMERIC_TEXT_RATIO:
         return None
-    has_comma = stripped.str.contains(",").any()
-    has_dot = stripped.str.contains(r"\.").any()
-    has_space = stripped.str.contains(" ").any()
+    matched = stripped[matches]
+    has_comma = matched.str.contains(",").any()
+    has_dot = matched.str.contains(r"\.").any()
+    has_space = matched.str.contains(f"[{_THOUSANDS_WS}]", regex=True).any()
+    # Plain digits with a single '.' decimal ("35.0") already parse fine with
+    # plain pd.to_numeric: only claim "numbers as text" when a value carries a
+    # marker that would trip up the plain parse (currency, '%', ',-'/'.-', a
+    # comma, or a thousands separator).
+    has_marker = bool(
+        with_symbol.any() or percent.any() or with_whole_unit.any() or has_comma or has_space
+    )
+    if not has_marker:
+        return None
     if has_comma and has_dot:
         decimal, thousands = ".", ","
     elif has_comma:
         decimal, thousands = ",", (" " if has_space else None)
     else:
         decimal, thousands = ".", (" " if has_space else None)
-    return {"decimal": decimal, "thousands": thousands, "percent": percent}
+    return {"decimal": decimal, "thousands": thousands, "percent": bool(percent.any())}
+
+
+# Back-compat alias: MAT-168 renamed currency_format -> numeric_text_format
+# (broader than currency: also matches percents and EU amounts with no symbol).
+currency_format = numeric_text_format
 
 
 def _short(value: object) -> str:
