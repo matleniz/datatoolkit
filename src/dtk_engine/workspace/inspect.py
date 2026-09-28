@@ -41,6 +41,7 @@ from dtk_engine.workspace.replay import (
     needs_train,
     replay,
     replay_fitted,
+    resolve_version,
     validate_steps,
 )
 
@@ -132,18 +133,6 @@ def _check_role(role: str) -> None:
         raise KeyParamsError(f"role must be 'train' or 'test', got {role!r}")
 
 
-def _resolve_version(n_steps: int, version: int | None) -> int:
-    if version is None:
-        return n_steps
-    if not isinstance(version, int) or isinstance(version, bool) or version < 0:
-        raise KeyParamsError(f"version must be a non-negative int or None, got {version!r}")
-    if version > n_steps:
-        raise KeyParamsError(
-            f"version {version} exceeds workspace step count ({n_steps})"
-        )
-    return version
-
-
 def _with_rids(frame: pd.DataFrame) -> pd.DataFrame:
     """Copy of ``frame`` indexed by stable raw-row positions 0..n-1."""
     out = frame.copy()
@@ -169,7 +158,7 @@ def _replay_role(
 def _frame_at(
     ws: Workspace, role: str, version: int | None, labeled: bool = True
 ) -> tuple[pd.DataFrame, int]:
-    n = _resolve_version(len(ws.steps), version)
+    n = resolve_version(len(ws.steps), version)
     return _replay_role(ws, role, ws.steps[:n], labeled), n
 
 

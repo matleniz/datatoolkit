@@ -56,7 +56,7 @@ def read_dataset(spec: DatasetSource, store=None) -> pd.DataFrame:
         ws = store.get(spec.workspace)
     except WorkspaceNotFoundError:
         raise SourceError(f"workspace not found: {spec.workspace!r}") from None
-    return workspace_frame(ws, spec.role, spec.labeled)
+    return workspace_frame(ws, spec.role, spec.labeled, version=spec.version)
 
 
 def raw_workspace_frame(ws, role: str, labeled: bool = True) -> pd.DataFrame:
@@ -68,13 +68,21 @@ def raw_workspace_frame(ws, role: str, labeled: bool = True) -> pd.DataFrame:
     return labeled_frame(dataset, ws.label, labeled, merges=merges, role=role)
 
 
-def workspace_frame(ws, role: str, labeled: bool = True) -> pd.DataFrame:
-    """Current state of ``role`` for a Workspace object (no store access)."""
-    from dtk_engine.workspace.replay import needs_train, replay
+def workspace_frame(
+    ws, role: str, labeled: bool = True, version: int | None = None
+) -> pd.DataFrame:
+    """State of ``role`` for a Workspace object at ``version`` (no store access).
 
+    ``version`` (None = every saved step) replays only the first N steps, same
+    semantics as ``workspace.inspect._frame_at``.
+    """
+    from dtk_engine.workspace.replay import needs_train, replay, resolve_version
+
+    n = resolve_version(len(ws.steps), version)
+    steps = ws.steps[:n]
     frame = raw_workspace_frame(ws, role, labeled)
     train = None
-    if role == "test" and needs_train(ws.steps):
+    if role == "test" and needs_train(steps):
         train = raw_workspace_frame(ws, "train", labeled)
-    return replay(ws.steps, role, frame, train)
+    return replay(steps, role, frame, train)
 

@@ -57,6 +57,12 @@ class DatasetSource(BaseModel):
     labeled: bool = Field(
         default=True, description="Join / keep the labels (y) when the role has some"
     )
+    version: int | None = Field(
+        default=None,
+        description="Replay only the first N saved steps; null replays every "
+        "step (the workspace's current state). N beyond the step count is a "
+        "KeyParamsError",
+    )
 
 
 class ParquetSource(BaseModel):
