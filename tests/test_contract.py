@@ -154,9 +154,19 @@ def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
     assert alpha["target"] == "Survived"
     assert "+00:00" in alpha["mtime"] or alpha["mtime"].endswith("Z")
     assert alpha["train"]["file"] == Path(TRAIN_CSV).name
-    assert alpha["train"]["shape"] == [41, 11]  # Name dropped
+    assert alpha["train"]["shape"] is None  # cheap: no step replay (MAT-200)
     assert alpha["test"]["file"] == Path(TEST_CSV).name
-    assert alpha["test"]["shape"] == [20, 10]
+    assert alpha["test"]["shape"] is None
+
+    # Summaries must not load/replay frames (MAT-200).
+    def _boom(*_a, **_k):
+        raise AssertionError("workspace_frame must not run during summaries")
+
+    monkeypatch.setattr("dtk_engine.contract.workspace_frame", _boom)
+    monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", _boom)
+    again = list_workspace_summaries()
+    assert again[0]["train"]["shape"] is None
+    assert again[0]["test"]["shape"] is None
 
     dup = duplicate_workspace("alpha", "alpha-copy")
     assert dup["name"] == "alpha-copy"

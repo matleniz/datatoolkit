@@ -197,7 +197,6 @@ _WHOLE_UNIT_RE = re.compile(r"[.,]-$")
 # Share of non-null values that must match the numeric-text shape to call a
 # text column "numbers as text" (mirrors NUMERIC_AS_TEXT_RATIO's tolerance).
 NUMERIC_TEXT_RATIO = 0.8
-CURRENCY_AS_TEXT_RATIO = NUMERIC_TEXT_RATIO  # back-compat alias
 
 
 def numeric_text_format(series: pd.Series) -> dict | None:

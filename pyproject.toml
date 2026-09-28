@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2",
     "pandas",
+    "numpy",
     "plotly",
     "scikit-learn>=1.9.1",
     "pyarrow>=25.0.1",
