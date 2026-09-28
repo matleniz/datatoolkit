@@ -102,9 +102,11 @@ api = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastapi" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -123,9 +125,11 @@ provides-extras = ["api"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastapi" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "uvicorn" },
 ]
 
 [[package]]

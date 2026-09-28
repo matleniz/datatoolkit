@@ -234,6 +234,8 @@ def test_key_params_error_422(client):
     assert r.status_code == 422
     body = r.json()
     assert body["type"] == "KeyParamsError" and "message" in body
+    assert "details" in body
+    assert "For further information visit" not in body["message"]
 
 
 def test_source_error_422(client):

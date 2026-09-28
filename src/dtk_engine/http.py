@@ -17,6 +17,7 @@ from pathlib import Path, PurePath
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError
 
 from dtk_engine import contract
 from dtk_engine.errors import (
@@ -24,6 +25,8 @@ from dtk_engine.errors import (
     SourceError,
     UnknownKeyError,
     UnknownTransformError,
+    message_from_validation_details,
+    validation_error_details,
 )
 from dtk_engine.workspace import WorkspaceNotFoundError
 
@@ -66,7 +69,23 @@ def _save_upload(name: str, data: bytes, root: Path | None = None) -> Path:
     return path.resolve()
 
 
-def _error_body(exc: BaseException) -> dict[str, str]:
+def _error_body(exc: BaseException) -> dict:
+    """JSON error payload: ``{type, message}`` plus ``details`` for validation.
+
+    When the failure is a pydantic ``ValidationError`` (as ``exc.details`` or
+    ``exc.__cause__``), ``message`` is the concise joined inner issues — never
+    the full pydantic dump — and ``details`` is ``[{loc, msg, type}, ...]``.
+    """
+    details = getattr(exc, "details", None)
+    cause = exc.__cause__
+    if details is None and isinstance(cause, ValidationError):
+        details = validation_error_details(cause)
+    if details is not None:
+        return {
+            "type": type(exc).__name__,
+            "message": message_from_validation_details(details),
+            "details": details,
+        }
     return {"type": type(exc).__name__, "message": str(exc)}
 
 
