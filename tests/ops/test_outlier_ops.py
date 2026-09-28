@@ -56,3 +56,24 @@ def test_numeric_columns_skip_ids_and_text():
         }
     )
     assert numeric_columns(df) == ["v"]
+
+
+def test_isolation_forest_memoized_on_content(monkeypatch):
+    from dtk_engine.ops import _memo, outliers
+
+    _memo._CACHE.clear()
+    calls = []
+    real = outliers._isolation_forest
+    monkeypatch.setattr(
+        outliers, "_isolation_forest", lambda *a: calls.append(1) or real(*a)
+    )
+    df = pd.DataFrame({"x": np.arange(50.0), "y": np.arange(50.0) % 7, "t": ["a"] * 50})
+    a = isolation_forest(df, ["x", "y"], 0.1, 0)
+    a["score"] = 0.0  # a caller mutating its result must not corrupt the memo
+    b = isolation_forest(df.assign(t="b"), ["x", "y"], 0.1, 0)  # unread column
+    assert len(calls) == 1 and (b["score"] != 0).any()
+    isolation_forest(df, ["x", "y"], 0.1, 1)  # other params
+    isolation_forest(df.assign(x=df["x"] + 1), ["x", "y"], 0.1, 0)  # other data
+    isolation_forest(df.set_axis(df.index + 1), ["x", "y"], 0.1, 0)  # other index
+    assert len(calls) == 4
+    _memo._CACHE.clear()

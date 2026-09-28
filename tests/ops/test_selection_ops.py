@@ -72,3 +72,25 @@ def test_pca_variance_components():
     # a ~ dup: 3 real dimensions carry (almost) all the variance.
     assert needed["pca_components_99pct"] == 3
     assert needed["pca_components_90pct"] <= needed["pca_components_95pct"] <= 3
+
+
+def test_feature_scores_memoized_on_content(monkeypatch):
+    from dtk_engine.ops import _memo, selection
+
+    _memo._CACHE.clear()
+    calls = []
+    real = selection._feature_scores
+    monkeypatch.setattr(
+        selection, "_feature_scores", lambda *a: calls.append(1) or real(*a)
+    )
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({"a": rng.normal(size=60), "b": rng.normal(size=60)})
+    df["y"] = (df["a"] > 0).astype(int)
+    first = feature_scores(df, "y", "classification", ["a", "b"])
+    again = feature_scores(df.assign(z=1), "y", "classification", ["a", "b"])
+    pd.testing.assert_frame_equal(first, again)
+    assert len(calls) == 1
+    feature_scores(df, "y", "classification", ["a", "b"], random_state=1)
+    feature_scores(df.assign(y=1 - df["y"]), "y", "classification", ["a", "b"])
+    assert len(calls) == 3
+    _memo._CACHE.clear()

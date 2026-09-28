@@ -27,6 +27,8 @@ from sklearn.feature_selection import (
 )
 from sklearn.linear_model import LassoCV, LinearRegression, LogisticRegression
 
+from dtk_engine.ops._memo import memo_frame
+
 TASKS = ("classification", "regression")
 # task "auto": an integer-valued numeric target with at most this many distinct
 # values is a class label, not a quantity.
@@ -225,7 +227,24 @@ def feature_scores(
     random_state: int = 0,
 ) -> pd.DataFrame:
     """Per feature: variance, pct_missing, filter scores, embedded scores,
-    optional RFECV rank and a combined rank (1 = most useful), best first."""
+    optional RFECV rank and a combined rank (1 = most useful), best first.
+    Memoized on the content of ``df[[target, *columns]]`` and the params."""
+    return memo_frame(
+        "feature_scores",
+        df[list(dict.fromkeys([target, *columns]))],
+        (target, task, list(columns), wrapper, random_state),
+        lambda: _feature_scores(df, target, task, columns, wrapper, random_state),
+    )
+
+
+def _feature_scores(
+    df: pd.DataFrame,
+    target: str,
+    task: str,
+    columns: list[str],
+    wrapper: bool,
+    random_state: int,
+) -> pd.DataFrame:
     rows, X = _analysis_frame(df, target, columns)
     y = target_vector(rows, target, task, "feature_selection")
     table = pd.DataFrame(
