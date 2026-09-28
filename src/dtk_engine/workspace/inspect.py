@@ -49,6 +49,7 @@ from dtk_engine.workspace.replay import (
     resolve_version,
     validate_steps,
 )
+from dtk_engine.workspace.replay_cache import cached_frame
 
 # Grid ``kind`` from ``ops.profile.semantic_type`` (plus dtype fallbacks for
 # ``constant``). Fronts use these labels; do not invent others.
@@ -146,18 +147,25 @@ def _with_rids(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _raw_role(ws: Workspace, role: str, labeled: bool = True) -> pd.DataFrame:
-    return _with_rids(raw_workspace_frame(ws, role, labeled))
+    return cached_frame(
+        ws, "raw_rid", role, [], labeled,
+        lambda: _with_rids(raw_workspace_frame(ws, role, labeled)),
+    )
 
 
 def _replay_role(
     ws: Workspace, role: str, steps: list[Step], labeled: bool = True
 ) -> pd.DataFrame:
     """Replay ``steps`` on ``role``, preserving ``_rid`` on the index."""
-    frame = _raw_role(ws, role, labeled)
-    train = None
-    if role == "test" and needs_train(steps):
-        train = _raw_role(ws, "train", labeled)
-    return replay(steps, role, frame, train)
+
+    def compute() -> pd.DataFrame:
+        frame = _raw_role(ws, role, labeled)
+        train = None
+        if role == "test" and needs_train(steps):
+            train = _raw_role(ws, "train", labeled)
+        return replay(steps, role, frame, train)
+
+    return cached_frame(ws, "replay_rid", role, steps, labeled, compute)
 
 
 def _frame_at(
