@@ -11,6 +11,7 @@
     api.distribution(train, test, columns=["Age", "Sex"])
     api.target_analysis(train, target="Survived")
     api.correlations(train, method="spearman")
+    api.chart(train, chart="scatter", x="Age", y="Fare", trendline=True)
     api.export_workspace("titanic", "out/")  # parquet + manifest.json
 
 Same code as the keys (``keys/*`` build their Result from the same functions);
@@ -26,6 +27,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from dtk_engine.contract import list_transforms, preview_workspace
 from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.keys.chart import chart_result
 from dtk_engine.keys.column_distribution import distribution_result
 from dtk_engine.keys.correlations import correlations_result
 from dtk_engine.keys.dataset_overview import overview_result
@@ -45,6 +47,7 @@ from dtk_engine.workspace.export import export_workspace as _export_workspace
 
 __all__ = [
     "advise",
+    "chart",
     "check",
     "correlations",
     "distribution",
@@ -223,6 +226,11 @@ def correlations(
 ) -> Result:
     """``correlations`` on a DataFrame: heatmap + pairs with |corr| >= threshold."""
     return correlations_result(df, columns, method, threshold, target)
+
+
+def chart(df: pd.DataFrame, chart: str = "histogram", **params) -> Result:
+    """``chart`` on a DataFrame: a Plotly Express figure from typed params."""
+    return chart_result(df, chart, **params)
 
 
 def export_workspace(
