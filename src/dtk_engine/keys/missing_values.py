@@ -7,6 +7,7 @@ from pydantic import Field
 from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.missing import (
+    DROP_PCT,
     cooccurrence,
     cooccurrence_pairs,
     missing_per_row,
@@ -62,6 +63,8 @@ def missing_result(
     sentinels = sentinel_counts(work)
     matrix = cooccurrence(work)
     pairs = cooccurrence_pairs(matrix)
+    n_cells = work.size
+    n_missing_cells = int(work.isna().sum().sum())
     metrics: dict = {
         "n_rows": len(work),
         "n_columns": work.shape[1],
@@ -70,6 +73,8 @@ def missing_result(
             rates["recommendation"].str.startswith("drop").sum()
         ),
         "n_rows_with_missing": int((work.isna().any(axis=1)).sum()),
+        "n_missing_cells": n_missing_cells,
+        "pct_missing_cells": round(100 * n_missing_cells / n_cells, 2) if n_cells else 0.0,
         "n_spike_bins": int(per_row["spike"].sum()),
         "n_sentinel_columns": int(sentinels["column"].nunique()),
         "n_cooccurring_pairs": len(pairs),
@@ -108,6 +113,14 @@ def missing_result(
     result.add_table("cooccurrence_pairs", pairs)
     if spikes is not None:
         result.add_table("test_value_spikes", spikes)
+    drop_candidates = rates.loc[
+        rates["recommendation"].str.startswith("drop"), "column"
+    ].tolist()
+    result.add_table(
+        "suggested_steps",
+        _suggested_steps(drop_candidates, target),
+        kind="steps",
+    )
     result.add_figure(
         "% missing per column",
         px.bar(
@@ -133,6 +146,28 @@ def missing_result(
             px.imshow(matrix, zmin=0, zmax=1, aspect="auto"),
         )
     return result
+
+
+def _suggested_steps(drop_candidates: list[str], target: str | None) -> pd.DataFrame:
+    fields = ["order", "op", "target", "params", "why"]
+    if not drop_candidates:
+        return pd.DataFrame(columns=fields)
+    params: dict = {"threshold": DROP_PCT / 100}
+    if target is not None:
+        params["target"] = target
+    return pd.DataFrame(
+        [
+            {
+                "order": 1,
+                "op": "drop_high_missing",
+                "target": "both",
+                "params": params,
+                "why": f"drop the {len(drop_candidates)} column(s) >= {DROP_PCT:.0f}% "
+                f"missing on train ({', '.join(drop_candidates)})",
+            }
+        ],
+        columns=fields,
+    )
 
 
 def _scoped(

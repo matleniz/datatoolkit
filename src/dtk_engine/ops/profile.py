@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
@@ -175,6 +177,49 @@ def pct_numeric_parsable(series: pd.Series) -> float:
         return 0.0
     parsed = pd.to_numeric(values.astype(str).str.strip(), errors="coerce")
     return round(100 * float(parsed.notna().mean()), 2)
+
+
+# Currency symbol / ISO code, an optional sign, digits grouped by '.', ',' or ' '
+# (thousands), an optional differently-punctuated decimal part, an optional '%'.
+_CURRENCY_TOKEN_RE = re.compile(r"(?i)[$€£]|USD|EUR|GBP")
+_CURRENCY_NUMBER_RE = re.compile(r"^[+-]?\d{1,3}(?:[,. ]\d{3})*(?:[.,]\d+)?%?$")
+# Share of non-null values that must carry a currency symbol / code to call a
+# text column "currency as text" (mirrors NUMERIC_AS_TEXT_RATIO's tolerance).
+CURRENCY_AS_TEXT_RATIO = 0.8
+
+
+def currency_format(series: pd.Series) -> dict | None:
+    """Best-effort ``{decimal, thousands, percent}`` for a text column of money
+    strings (``'$1,250.00'``, ``'12,5 %'``, ``'1 250,00 EUR'``), else ``None``.
+
+    ``decimal`` / ``thousands`` are guessed from the separators seen once the
+    currency symbol / code and the '%' sign are stripped (comma decimal wins
+    when both '.' and ',' are absent from a value with a space group).
+    """
+    if pdt.is_numeric_dtype(series) or pdt.is_bool_dtype(series) or object_kind(series):
+        return None
+    values = series.dropna()
+    values = values[values.map(lambda v: isinstance(v, str))]
+    if values.empty:
+        return None
+    has_symbol = values.str.contains(_CURRENCY_TOKEN_RE, regex=True)
+    if has_symbol.mean() < CURRENCY_AS_TEXT_RATIO:
+        return None
+    stripped = values.str.replace(_CURRENCY_TOKEN_RE, "", regex=True).str.strip()
+    percent = bool(stripped.str.contains("%").any())
+    stripped = stripped.str.replace("%", "", regex=False).str.strip()
+    if not stripped.map(lambda v: bool(_CURRENCY_NUMBER_RE.fullmatch(v))).all():
+        return None
+    has_comma = stripped.str.contains(",").any()
+    has_dot = stripped.str.contains(r"\.").any()
+    has_space = stripped.str.contains(" ").any()
+    if has_comma and has_dot:
+        decimal, thousands = ".", ","
+    elif has_comma:
+        decimal, thousands = ",", (" " if has_space else None)
+    else:
+        decimal, thousands = ".", (" " if has_space else None)
+    return {"decimal": decimal, "thousands": thousands, "percent": percent}
 
 
 def _short(value: object) -> str:

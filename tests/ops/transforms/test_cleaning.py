@@ -112,6 +112,72 @@ def test_standardize_text():
         )
 
 
+def test_standardize_text_unify_separators():
+    df = pd.DataFrame({"c": ["site-a", "site_a", "Site  A", "site.a"]})
+    p = {"columns": ["c"], "lower": True, "unify_separators": True}
+    out = DtkTransformer("standardize_text", **p).fit_transform(df)
+    assert out["c"].tolist() == ["site a"] * 4
+    assert _both("standardize_text", p, df, df)["c"].tolist() == ["site a"] * 4
+    # unify_separators=False (default): the punctuation variants stay distinct
+    assert DtkTransformer(
+        "standardize_text", columns=["c"], lower=True
+    ).fit_transform(df)["c"].nunique() == 4
+
+
+def test_to_numeric_currency_and_percent():
+    cases = [
+        ("$2.39 ", {}, 2.39),
+        ("$1,250.00", {"thousands": ","}, 1250.0),
+        ("12,5 %", {"decimal": ",", "percent": True}, 0.125),
+        ("1 250,00 EUR", {"decimal": ",", "thousands": " "}, 1250.0),
+    ]
+    for raw, extra, expected in cases:
+        p = {"columns": ["v"], **extra}
+        df = pd.DataFrame({"v": [raw]})
+        out = DtkTransformer("to_numeric", **p).fit_transform(df)
+        assert out["v"].iloc[0] == pytest.approx(expected), raw
+        assert _both("to_numeric", p, df, df)["v"].iloc[0] == pytest.approx(expected)
+
+
+def test_to_numeric_missing_and_errors():
+    df = pd.DataFrame({"v": ["$1.00", None, "nope"]})
+    out = DtkTransformer("to_numeric", columns=["v"], errors="coerce").fit_transform(df)
+    assert out["v"].tolist()[0] == pytest.approx(1.0)
+    assert pd.isna(out["v"].iloc[1]) and pd.isna(out["v"].iloc[2])
+    with pytest.raises(ValueError):
+        DtkTransformer("to_numeric", columns=["v"], errors="raise").fit_transform(df)
+
+
+def test_to_numeric_params_strict():
+    t = get_transform("to_numeric")
+    with pytest.raises(KeyParamsError):
+        t.parse({"columns": ["v"], "decimal": ",", "thousands": ","})
+
+
+def test_drop_high_missing():
+    train = pd.DataFrame(
+        {
+            "a": [1, None, None, None],
+            "b": [1, 2, 3, None],
+            "y": [1, None, None, None],
+        }
+    )
+    test = pd.DataFrame({"a": [1, 2], "b": [3, 4], "y": [5, 6]})
+    p = {"threshold": 0.5, "target": "y"}
+    t = DtkTransformer("drop_high_missing", **p).fit(train)
+    # a=75%>50% dropped; b=25%<50% kept; y=75%>50% but excluded as target
+    assert t.state_ == {"dropped": ["a"]}
+    assert t.transform(test).columns.tolist() == ["b", "y"]
+    assert _both("drop_high_missing", p, train, test).columns.tolist() == ["b", "y"]
+
+
+def test_drop_high_missing_exclude():
+    train = pd.DataFrame({"a": [1, None, None], "b": [1, None, None]})
+    p = {"threshold": 0.5, "exclude": ["a"]}
+    t = DtkTransformer("drop_high_missing", **p).fit(train)
+    assert t.state_ == {"dropped": ["b"]}
+
+
 def test_parse_dates():
     df = pd.DataFrame({"d": ["2024-01-02", "2024-02-03"]})
     out = DtkTransformer("parse_dates", columns=["d"], format="%Y-%m-%d").fit_transform(

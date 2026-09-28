@@ -6,6 +6,7 @@ from dtk_engine.ops.consistency import (
     date_format,
     mixed_date_formats,
     mixed_types,
+    normalize,
     variants,
 )
 
@@ -24,6 +25,24 @@ def test_variants_merge_and_canonical():
 def test_variants_none_when_clean():
     summary, mapping = variants(pd.DataFrame({"c": ["a", "b"]}), ["c"])
     assert summary.empty and mapping.empty
+
+
+def test_normalize_unifies_separators():
+    assert normalize("site-a") == normalize("site_a") == normalize("Site  A")
+    assert normalize("site.a") == normalize("site-a")
+    assert normalize("site-a") == "site a"
+
+
+def test_variants_merges_separator_punctuation():
+    df = pd.DataFrame({"site": ["site-a", "site_a", "Site A", "site-b"]})
+    summary, mapping = variants(df, ["site"])
+    row = summary.iloc[0]
+    assert (row["distinct_before"], row["distinct_after"]) == (4, 2)
+    site_a_forms = set(mapping.loc[mapping["variant"] == "site-a", "canonical"])
+    assert site_a_forms  # site-a was merged with something
+    canonical = site_a_forms.pop()
+    merged = set(mapping.loc[mapping["canonical"] == canonical, "variant"])
+    assert merged == {"site-a", "site_a", "Site A"}
 
 
 def test_mixed_types():

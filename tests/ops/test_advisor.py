@@ -113,6 +113,21 @@ def test_cleaning(frames):
     assert {mapping.get(v, v) for v in ("Male", "MALE", "male")} == {"male"}
 
 
+def test_currency_column_suggests_to_numeric():
+    train = pd.DataFrame(
+        {
+            "price": ["$2.39 ", "$1,250.00", "$50.00", "$3.10"] * 5,
+            "y": [0, 1] * 10,
+        }
+    )
+    recs, _ = advise(train, model_family="tree", target="y")
+    rec = _rec(recs, "price", "to_numeric")
+    assert rec["params"]["columns"] == ["price"]
+    assert rec["params"]["decimal"] == "."
+    assert rec["params"]["thousands"] == ","
+    get_transform("to_numeric").parse(rec["params"])
+
+
 def test_missing_skew_scaling(frames):
     train, test = frames
     recs, columns = advise(train, test, "linear", target="y")

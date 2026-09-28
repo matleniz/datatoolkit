@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 import numpy as np
@@ -122,15 +123,25 @@ def drop_duplicates(
     return df[mask]
 
 
+_SEPARATOR_RE = re.compile(r"[-_.]+")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
 class StandardizeTextParams(TransformParams):
     columns: list[str] = columns_field(
         "Text columns to normalize", source="step", required=True, min_length=1
     )
     strip: bool = Field(default=True, description="Strip surrounding whitespace")
     lower: bool = Field(default=False, description="Lowercase")
+    unify_separators: bool = Field(
+        default=False,
+        description="Turn '-', '_', '.' and repeated spaces into a single space "
+        "(then strip), so 'site-a' / 'site_a' / 'Site  A' collapse together",
+    )
     mapping: dict[str, str] = Field(
         default_factory=dict,
-        description="Variant -> canonical value, matched after strip / lower",
+        description="Variant -> canonical value, matched after strip / lower / "
+        "unify_separators",
     )
 
 
@@ -148,11 +159,86 @@ def standardize_text(
             raise TypeError(f"column {col!r} is not text (dtype {s.dtype})")
         if params.strip:
             s = s.str.strip()
+        if params.unify_separators:
+            s = s.str.replace(_SEPARATOR_RE, " ", regex=True)
+            s = s.str.replace(_WHITESPACE_RE, " ", regex=True).str.strip()
         if params.lower:
             s = s.str.lower()
         if params.mapping:
             s = s.mask(s.isin(list(params.mapping)), s.map(params.mapping))
         out[col] = s
+    return out
+
+
+# Currency symbol or ISO code (stripped unconditionally, wherever it sits).
+_CURRENCY_TOKEN_RE = re.compile(r"(?i)[$€£]|USD|EUR|GBP")
+
+
+class ToNumericParams(TransformParams):
+    columns: list[str] = columns_field(
+        "Text columns to parse as numbers", source="step", required=True, min_length=1
+    )
+    decimal: Literal[".", ","] = Field(
+        default=".", description="Decimal separator"
+    )
+    thousands: Literal[",", ".", " "] | None = Field(
+        default=None, description="Thousands separator to drop (must differ from decimal)"
+    )
+    percent: bool = Field(
+        default=False,
+        description="Divide by 100 when the value carries a '%' sign "
+        "(else the sign is stripped without scaling)",
+    )
+    errors: Literal["coerce", "raise"] = Field(
+        default="raise",
+        description="coerce: unparseable values become NaN; raise: they raise",
+    )
+
+    @model_validator(mode="after")
+    def _sep_differ(self) -> ToNumericParams:
+        if self.thousands is not None and self.thousands == self.decimal:
+            raise ValueError("thousands and decimal separators must differ")
+        return self
+
+
+def _parse_numeric_cell(
+    value: object, params: ToNumericParams
+) -> float:
+    if not isinstance(value, str):
+        raise TypeError(f"not a string: {value!r}")
+    s = value.strip()
+    has_percent = "%" in s
+    s = s.replace("%", "")
+    s = _CURRENCY_TOKEN_RE.sub("", s).strip()
+    if params.thousands:
+        s = s.replace(params.thousands, "")
+    if params.decimal != ".":
+        s = s.replace(params.decimal, ".")
+    s = s.strip()
+    number = float(s)
+    if params.percent and has_percent:
+        number /= 100
+    return number
+
+
+@transform("to_numeric", params_model=ToNumericParams, title="Parse numeric text")
+def to_numeric(df: pd.DataFrame, params: ToNumericParams, state: dict) -> pd.DataFrame:
+    """Parse text numbers (currency symbols, thousands / decimal separators,
+    percent signs) to float; `errors` controls unparseable values."""
+    out = df.copy()
+    for col in params.columns:
+
+        def _parse(v, col=col):
+            if pd.isna(v):
+                return np.nan
+            try:
+                return _parse_numeric_cell(v, params)
+            except (ValueError, TypeError):
+                if params.errors == "coerce":
+                    return np.nan
+                raise ValueError(f"column {col!r}: cannot parse {v!r} as a number") from None
+
+        out[col] = out[col].map(_parse).astype(float)
     return out
 
 
@@ -226,6 +312,47 @@ def drop_missing_target(
     if params.target not in df.columns:
         return df.copy()
     return df[df[params.target].notna()]
+
+
+class DropHighMissingParams(TransformParams):
+    threshold: float = Field(
+        default=0.5,
+        gt=0,
+        le=1,
+        description="Drop columns whose train missing fraction exceeds this",
+    )
+    exclude: list[str] | None = columns_field(
+        "Columns never dropped", source="step", nullable=True
+    )
+    target: str | None = column_field(None, "Target column: never dropped", source="step")
+
+
+def _fit_drop_high_missing(df: pd.DataFrame, params: DropHighMissingParams) -> dict:
+    exclude = set(params.exclude or [])
+    if params.target is not None:
+        exclude.add(params.target)
+    rates = df.isna().mean()
+    dropped = [
+        str(c) for c in df.columns if c not in exclude and rates[c] > params.threshold
+    ]
+    return {"dropped": dropped}
+
+
+@transform(
+    "drop_high_missing",
+    params_model=DropHighMissingParams,
+    fit=_fit_drop_high_missing,
+    title="Drop high-missing columns",
+)
+def drop_high_missing(
+    df: pd.DataFrame, params: DropHighMissingParams, state: dict
+) -> pd.DataFrame:
+    """Drop columns whose train missing fraction exceeded the threshold
+    (state: dropped), same columns dropped on train and test."""
+    missing = [c for c in state["dropped"] if c not in df.columns]
+    if missing:
+        raise KeyError(f"drop_high_missing: fitted columns not in the frame {missing}")
+    return df.drop(columns=state["dropped"])
 
 
 class Condition(TransformParams):
