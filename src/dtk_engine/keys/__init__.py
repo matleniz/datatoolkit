@@ -1,6 +1,7 @@
 """Import every key module so registration happens on `import dtk_engine`."""
 
 from . import (  # noqa: F401
+    chart,
     column_distribution,
     correlations,
     dataset_overview,
