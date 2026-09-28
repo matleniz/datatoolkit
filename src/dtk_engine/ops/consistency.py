@@ -7,9 +7,29 @@ import re
 
 import pandas as pd
 from pandas.api import types as pdt
+from rapidfuzz import fuzz, process
 
-VARIANT_COLUMNS = ["column", "canonical", "variant", "count"]
+VARIANT_COLUMNS = ["column", "canonical", "variant", "count", "similarity", "method"]
 SUMMARY_COLUMNS = ["column", "distinct_before", "distinct_after", "n_merged"]
+
+# fuzz.ratio similarity (0-100) above which two already-normalised values are
+# clustered as spelling variants of one another.
+FUZZY_THRESHOLD = 90.0
+# Columns with more distinct normalised values than this skip the fuzzy pass
+# (O(n^2) pairwise comparison): only exact (strip/casefold/separator) merges apply.
+FUZZY_MAX_DISTINCT = 2000
+# Normalised values longer than this are excluded from the fuzzy pass: categorical
+# labels (country, city, ...) are short, while free-text sentences built from a
+# shared template (e.g. "note 1 ...", "note 2 ...") differ by a couple of
+# characters and would otherwise score as near-100% similar without being variants
+# of the same value.
+FUZZY_MAX_VALUE_LEN = 30
+# Above this distinct/row ratio, a column looks like near-unique free text or an
+# identifier (e.g. a Name column) rather than a repeated categorical value: two
+# distinct people's names can be one edit apart ("Wright, Mr. Henry" / "Wright,
+# Mrs. Henry") without being spelling variants of the same value. Categorical
+# columns worth clustering are dominated by repeats, so gate the fuzzy pass on it.
+FUZZY_MAX_CARDINALITY_RATIO = 0.5
 MIXED_COLUMNS = [
     "column",
     "n_numbers",
@@ -43,11 +63,74 @@ def _strings(series: pd.Series) -> pd.Series:
     return series[series.map(lambda v: isinstance(v, str))]
 
 
-def variants(df: pd.DataFrame, columns: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Spelling variants that merge after normalisation.
+def _compact(key: str) -> str:
+    """Fuzzy-comparison key: the normalised key with internal spaces removed, so
+    that separator-only differences (``u s a`` vs ``usa``) do not depress the
+    similarity score the way they would under fuzz.ratio on the spaced form."""
+    return key.replace(" ", "")
+
+
+def _fuzzy_eligible(key: str) -> bool:
+    """Categorical-label-shaped: short and letters only (spaces already
+    stripped by ``_compact``). Excludes free-text sentences (too long),
+    numeric / date-like values (``2020-01-10`` vs ``2020-01-11`` is one digit
+    apart, not a spelling variant), and id-like codes with digits (``rare13``
+    vs ``rare1``, different categories, not variants of one another)."""
+    compact = _compact(key)
+    if not compact or len(compact) > FUZZY_MAX_VALUE_LEN:
+        return False
+    return compact.isalpha()
+
+
+def _fuzzy_clusters(
+    keys_by_count: list[str], threshold: float
+) -> dict[str, tuple[str, float]]:
+    """Greedily cluster normalised keys (ordered most frequent first) by rapidfuzz
+    similarity. Returns key -> (cluster representative, similarity to it); a key
+    that starts a new cluster maps to itself with similarity 100."""
+    n = len(keys_by_count)
+    if n < 2:
+        return {k: (k, 100.0) for k in keys_by_count}
+    compact = [_compact(k) for k in keys_by_count]
+    scores = process.cdist(compact, compact, scorer=fuzz.ratio)
+    assigned = [False] * n
+    rep: dict[str, tuple[str, float]] = {}
+    for i in range(n):
+        if assigned[i]:
+            continue
+        assigned[i] = True
+        rep[keys_by_count[i]] = (keys_by_count[i], 100.0)
+        for j in range(i + 1, n):
+            if assigned[j]:
+                continue
+            score = scores[i][j]
+            if score >= threshold:
+                assigned[j] = True
+                rep[keys_by_count[j]] = (keys_by_count[i], float(score))
+    return rep
+
+
+def variants(
+    df: pd.DataFrame,
+    columns: list[str],
+    fuzzy_threshold: float = FUZZY_THRESHOLD,
+    fuzzy_max_distinct: int = FUZZY_MAX_DISTINCT,
+    fuzzy_max_cardinality_ratio: float = FUZZY_MAX_CARDINALITY_RATIO,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Spelling variants that merge after normalisation, plus approximate
+    variants close enough by rapidfuzz similarity (typos, acronym punctuation:
+    ``Untied States``/``United States``, ``USA``/``U.S.A``, ``Pariss``/``Paris``).
+
+    Acronyms vs. full names (``usa`` vs. ``United States``) score far below the
+    similarity threshold on purpose and are not merged; they need a manual map.
+    The fuzzy pass only runs on columns dominated by repeated (categorical-
+    looking) values, and only compares short, mostly-alphabetic values: it
+    skips near-unique text/identifier columns (e.g. a Name column, where two
+    different people can be an edit apart) and numeric/date-like strings.
 
     Returns (summary: distinct before / after per affected column, mapping:
-    variant -> canonical, the most frequent form of each merged set).
+    variant -> canonical, the most frequent form of each merged set, with a
+    ``similarity`` score and ``method`` of ``exact`` or ``fuzzy``).
     """
     summary, mapping = [], []
     for col in columns:
@@ -55,7 +138,36 @@ def variants(df: pd.DataFrame, columns: list[str]) -> tuple[pd.DataFrame, pd.Dat
         if counts.empty:
             continue
         keys = pd.Series([normalize(v) for v in counts.index], index=counts.index)
-        n_after = int(keys.nunique())
+
+        # Exact clusters: normalised key -> original forms, most frequent first
+        # (counts.index is already sorted by count desc).
+        exact_groups: dict[str, list[str]] = {}
+        for form in counts.index:
+            exact_groups.setdefault(keys[form], []).append(form)
+        key_count = {
+            k: sum(int(counts[f]) for f in forms) for k, forms in exact_groups.items()
+        }
+        distinct_keys = sorted(exact_groups, key=lambda k: -key_count[k])
+        cardinality_ratio = len(counts) / int(counts.sum())
+        if cardinality_ratio > fuzzy_max_cardinality_ratio:
+            fuzzy_eligible: list[str] = []
+        else:
+            fuzzy_eligible = [k for k in distinct_keys if _fuzzy_eligible(k)]
+
+        if len(fuzzy_eligible) > fuzzy_max_distinct:
+            fuzzy_rep = {k: (k, 100.0) for k in distinct_keys}
+        else:
+            fuzzy_rep = _fuzzy_clusters(fuzzy_eligible, fuzzy_threshold)
+            for k in distinct_keys:
+                fuzzy_rep.setdefault(k, (k, 100.0))
+
+        # Final clusters: representative normalised key -> member normalised keys.
+        final: dict[str, list[str]] = {}
+        for k in distinct_keys:
+            rep_key, _ = fuzzy_rep[k]
+            final.setdefault(rep_key, []).append(k)
+
+        n_after = len(final)
         if n_after == len(counts):
             continue
         summary.append(
@@ -66,18 +178,23 @@ def variants(df: pd.DataFrame, columns: list[str]) -> tuple[pd.DataFrame, pd.Dat
                 "n_merged": len(counts) - n_after,
             }
         )
-        for _, forms in keys.groupby(keys, sort=False):
+        for member_keys in final.values():
+            forms = [f for k in member_keys for f in exact_groups[k]]
             if len(forms) < 2:
                 continue
-            # value_counts is sorted by count desc: the first form is canonical.
-            canonical = forms.index[0]
-            for form in forms.index:
+            canonical = max(forms, key=lambda f: int(counts[f]))
+            for form in forms:
+                key = keys[form]
+                _, similarity = fuzzy_rep[key]
+                method = "exact" if normalize(canonical) == key else "fuzzy"
                 mapping.append(
                     {
                         "column": col,
                         "canonical": canonical,
                         "variant": form,
                         "count": int(counts[form]),
+                        "similarity": 100.0 if method == "exact" else round(similarity, 1),
+                        "method": method,
                     }
                 )
     return (

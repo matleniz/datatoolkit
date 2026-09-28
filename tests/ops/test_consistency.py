@@ -1,7 +1,10 @@
+import time
+
 import pandas as pd
 import pytest
 
 from dtk_engine.ops.consistency import (
+    FUZZY_MAX_DISTINCT,
     ambiguous_dates,
     date_format,
     mixed_date_formats,
@@ -20,6 +23,8 @@ def test_variants_merge_and_canonical():
     assert (row["distinct_before"], row["distinct_after"]) == (4, 2)
     assert set(mapping["canonical"]) == {"Paris"}
     assert set(mapping["variant"]) == {"Paris", " paris", "PARIS "}
+    assert set(mapping["method"]) == {"exact"}
+    assert set(mapping["similarity"]) == {100.0}
 
 
 def test_variants_none_when_clean():
@@ -103,3 +108,89 @@ def test_mixed_date_formats():
     assert (joined["n_formats"], joined["n_not_date"]) == (3, 1)
     assert "not-a-date" in joined["examples"]
     assert out.loc["flip", "formats"] == "dd/mm/yyyy: 2, mm/dd/yyyy: 2"
+
+
+# --- fuzzy (rapidfuzz) matching, MAT-170 -----------------------------------
+
+
+def test_variants_fuzzy_typos_and_punctuation():
+    """Approximate spelling variants close enough to merge: a transposition
+    typo, dotted vs. plain acronym, a doubled letter, and (via the existing
+    exact pass) a hyphen vs. space separator."""
+    country = (
+        ["United States"] * 5
+        + ["Untied States"]
+        + ["USA"] * 4
+        + ["U.S.A"] * 2
+        + ["France"] * 6
+        + ["Paris"] * 3
+        + ["Pariss"]
+        + ["new york"] * 3
+        + ["new-york"] * 2
+    )
+    df = pd.DataFrame({"country": country})
+    summary, mapping = variants(df, ["country"])
+    row = summary.loc[summary["column"] == "country"].iloc[0]
+    assert (row["distinct_before"], row["distinct_after"]) == (9, 5)
+
+    by_variant = mapping.set_index("variant")
+    assert by_variant.loc["Untied States", "canonical"] == "United States"
+    assert by_variant.loc["Untied States", "method"] == "fuzzy"
+    assert 90 <= by_variant.loc["Untied States", "similarity"] < 100
+
+    assert by_variant.loc["U.S.A", "canonical"] == "USA"
+    assert by_variant.loc["U.S.A", "method"] == "fuzzy"
+
+    assert by_variant.loc["Pariss", "canonical"] == "Paris"
+    assert by_variant.loc["Pariss", "method"] == "fuzzy"
+
+    # "new-york" already merges with "new york" via the exact pass (unify
+    # separators), no fuzzy matching needed.
+    assert by_variant.loc["new-york", "canonical"] == "new york"
+    assert by_variant.loc["new-york", "method"] == "exact"
+
+
+def test_variants_acronyms_vs_full_names_not_fuzzy_matched():
+    """Keep it honest (MAT-170): 'usa' vs 'United States' score far below the
+    similarity threshold and are left apart for a manual map."""
+    df = pd.DataFrame({"country": ["usa"] * 5 + ["United States"] * 5})
+    summary, mapping = variants(df, ["country"])
+    assert summary.empty
+    assert mapping.empty
+
+
+def test_variants_fuzzy_pass_ignores_numeric_and_id_like_values():
+    """Values that are mostly digits (dates) or carry digits (id-like codes)
+    are not fuzzy-clustered: a 1-digit difference is not a spelling variant."""
+    df = pd.DataFrame(
+        {
+            "signup": ["2020-01-10"] * 3 + ["2020-01-11"] * 3 + ["2020-01-12"] * 3,
+            "code": ["rare0"] * 3 + ["rare1"] * 3 + ["rare10"] * 3,
+        }
+    )
+    summary, mapping = variants(df, ["signup", "code"])
+    assert summary.empty
+    assert mapping.empty
+
+
+def test_variants_high_cardinality_column_skips_fuzzy_pass():
+    """A column above fuzzy_max_distinct skips the O(n^2) fuzzy comparison;
+    only exact merges still apply."""
+    df = pd.DataFrame({"city": ["Paris"] * 3 + ["Pariss"] + ["Lyon"] * 2})
+    summary, mapping = variants(df, ["city"], fuzzy_max_distinct=1)
+    assert summary.empty
+    assert mapping.empty
+
+
+def test_variants_high_cardinality_column_is_fast():
+    """Real-scale guard for the FUZZY_MAX_DISTINCT bound: many distinct,
+    mostly-unique values must not trigger the O(n^2) fuzzy pass."""
+    n = FUZZY_MAX_DISTINCT + 200
+    values = [f"value{i}" for i in range(n)]
+    df = pd.DataFrame({"c": values})
+    start = time.perf_counter()
+    summary, mapping = variants(df, ["c"])
+    elapsed = time.perf_counter() - start
+    assert summary.empty
+    assert mapping.empty
+    assert elapsed < 5

@@ -27,10 +27,14 @@ class Params(KeyParams):
     id="inconsistencies",
     title="Inconsistencies",
     category="analysis",
-    description="Text variants that merge after strip + lower-case, mixed "
-    "number / string columns, ambiguous dd/mm vs mm/dd dates, date columns "
-    "mixing formats (ISO, US, EU, ...) or holding non-dates, and a suggested "
-    "variant -> canonical mapping.",
+    description="Text variants that merge after strip + lower-case (method: "
+    "exact), plus close spelling variants found by approximate matching "
+    "(method: fuzzy, e.g. typos or acronym punctuation like 'USA' / 'U.S.A.'; "
+    "acronyms vs. full names such as 'usa' vs. 'United States' are not fuzzy "
+    "matches and are left for a manual map), mixed number / string columns, "
+    "ambiguous dd/mm vs mm/dd dates, date columns mixing formats (ISO, US, "
+    "EU, ...) or holding non-dates, and a suggested variant -> canonical "
+    "mapping.",
 )
 def run(params: Params) -> Result:
     return inconsistencies_result(load(params.source), params.columns)
