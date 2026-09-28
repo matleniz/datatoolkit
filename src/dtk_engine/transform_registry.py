@@ -32,7 +32,10 @@ from typing import Any
 import pandas as pd
 from pydantic import BaseModel, ValidationError
 
-from dtk_engine.errors import KeyParamsError, UnknownTransformError
+from dtk_engine.errors import (
+    UnknownTransformError,
+    key_params_from_validation,
+)
 from dtk_engine.params import KeyParams
 
 FitFn = Callable[[pd.DataFrame, Any], dict]
@@ -66,7 +69,9 @@ class Transform:
         try:
             return self.params_model.model_validate(params)
         except ValidationError as exc:
-            raise KeyParamsError(f"transform {self.op!r}: {exc}") from exc
+            raise key_params_from_validation(
+                exc, prefix=f"transform {self.op!r}: "
+            ) from exc
 
     def fit(self, df: pd.DataFrame, params: BaseModel) -> dict:
         """Learn the state on ``df``; it must be JSON-serializable."""

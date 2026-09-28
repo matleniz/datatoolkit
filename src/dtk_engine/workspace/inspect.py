@@ -18,7 +18,7 @@ import pandas as pd
 from pandas.api import types as pdt
 from pydantic import ValidationError
 
-from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.errors import KeyParamsError, SourceError, key_params_from_validation
 from dtk_engine.ops._util import json_scalar, py
 from dtk_engine.ops.compare import schema_diff
 from dtk_engine.ops.consistency import DATE_LIKE_MIN_SHARE, date_format
@@ -341,7 +341,11 @@ def _profile_one(name: str, series: pd.Series) -> dict:
         "kind": kind,
         "count": count,
         "missing": n_missing,
-        "sentinel_candidates": _sentinel_candidates(series),
+        # Identifier values (Index 0..n, patient ids) often include sentinel-looking
+        # numbers like 999 / -1; those are real ids, not missing-value markers.
+        "sentinel_candidates": (
+            [] if kind == KIND_IDENTIFIER else _sentinel_candidates(series)
+        ),
         "distinct": distinct,
         "histogram": hist,
         "top_values": top,
@@ -370,7 +374,7 @@ def _parse_step(step: dict) -> Step:
     try:
         return Step.model_validate(step)
     except ValidationError as exc:
-        raise KeyParamsError(str(exc)) from exc
+        raise key_params_from_validation(exc) from exc
 
 
 def _diff_cells(
