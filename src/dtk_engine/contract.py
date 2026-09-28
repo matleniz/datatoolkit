@@ -236,7 +236,10 @@ def align_report(ws: dict) -> dict:
     means, ``numbers_as_text``, and ``similar`` test-only names (difflib).
     On ``value_mismatch`` (categorical / label column with test-only values):
     ``only_in_test`` (``[{value, count}, ...]``), ``pct_test_rows_unseen``,
-    ``near_match_hint``, and ``near_matches`` (``[{test, train}, ...]``).
-    Those four fields are ``null`` / ``[]`` on other statuses.
+    ``near_match_hint``, ``near_matches`` (``[{test, train}, ...]``), and
+    ``blocking`` (True when ``near_matches`` is non-empty or
+    ``pct_test_rows_unseen`` exceeds 50 — Studio "to decide"; otherwise
+    informational for rare new categories). Those fields are ``null`` / ``[]``
+    / ``False`` on other statuses.
     """
     return _inspect.align_report(_parse_workspace(ws))

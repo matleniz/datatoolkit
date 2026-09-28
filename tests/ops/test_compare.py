@@ -85,6 +85,16 @@ def test_category_shift_near_match_trailing_punctuation():
     assert "<=50K." in shift["near_match_hint"]
 
 
+def test_value_mismatch_is_blocking_threshold():
+    from dtk_engine.ops.compare.schema import value_mismatch_is_blocking
+
+    assert value_mismatch_is_blocking([{"test": "a", "train": "A"}], 10.0) is True
+    assert value_mismatch_is_blocking([], 66.67) is True
+    assert value_mismatch_is_blocking([], 50.0) is False
+    assert value_mismatch_is_blocking([], 33.33) is False
+    assert value_mismatch_is_blocking([], None) is True
+
+
 @pytest.mark.parametrize(
     ("train", "test", "expected"),
     [

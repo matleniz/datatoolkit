@@ -34,6 +34,7 @@ from dtk_engine.ops.compare.schema import (
     MISSING_DELTA_WARNING,
     OUT_OF_RANGE_WARNING,
     OVERLAP_FIELDS,
+    VALUE_MISMATCH_BLOCKING_PCT,
     auto_id_columns,
     category_shift,
     compare_columns,
@@ -41,6 +42,7 @@ from dtk_engine.ops.compare.schema import (
     numeric_shift,
     overlap,
     schema_diff,
+    value_mismatch_is_blocking,
 )
 
 __all__ = [
@@ -65,6 +67,7 @@ __all__ = [
     "SEVERITIES",
     "SMD_WARNING",
     "TVD_WARNING",
+    "VALUE_MISMATCH_BLOCKING_PCT",
     "auto_id_columns",
     "categorical_drift",
     "category_shift",
@@ -79,4 +82,5 @@ __all__ = [
     "overlap",
     "psi",
     "schema_diff",
+    "value_mismatch_is_blocking",
 ]

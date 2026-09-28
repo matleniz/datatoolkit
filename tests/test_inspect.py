@@ -551,6 +551,41 @@ def test_align_report_value_mismatch_adult_like_labels(tmp_path):
         {"test": ">50K.", "train": ">50K"},
     ]
     assert "standardize_text" in income["near_match_hint"]
+    assert income["blocking"] is True
+
+
+def test_align_report_value_mismatch_rare_new_category_not_blocking(tmp_path):
+    """A single new city on a few test rows is informational once no near_matches."""
+    train = tmp_path / "train.csv"
+    test = tmp_path / "test.csv"
+    train.write_text(
+        "age,city\n"
+        "25,Paris\n30,Lyon\n40,Paris\n50,Lyon\n"
+        "28,Paris\n35,Lyon\n"
+    )
+    test.write_text(
+        "age,city\n"
+        "22,Paris\n33,Lyon\n44,Nice\n"
+        "26,Paris\n38,Lyon\n48,Paris\n"
+    )
+    ws = {
+        "name": "cities",
+        "datasets": {
+            "train": {
+                "x": {"kind": "csv", "path": str(train)},
+                "target_column": "age",
+            },
+            "test": {"x": {"kind": "csv", "path": str(test)}},
+        },
+    }
+    out = align_report(ws)
+    by = {r["train"]["name"]: r for r in out["columns"] if r["train"]}
+    city = by["city"]
+    assert city["status"] == "value_mismatch"
+    assert city["near_matches"] == []
+    assert city["pct_test_rows_unseen"] < 50
+    assert {r["value"] for r in city["only_in_test"]} == {"Nice"}
+    assert city["blocking"] is False
 
 
 def test_column_kind_mapping():

@@ -20,6 +20,10 @@ MISSING_DELTA_WARNING = 5.0
 MISSING_DELTA_INFO = 1.0
 # % of non-null test values outside the train [min, max]: > WARNING -> warning.
 OUT_OF_RANGE_WARNING = 5.0
+# align_report value_mismatch: pct_test_rows_unseen above this (with no
+# near_matches) is blocking "to decide"; at or below is informational
+# (one-hot handle_unknown absorbs rare new categories). See MAT-179.
+VALUE_MISMATCH_BLOCKING_PCT = 50.0
 
 COLUMN_FIELDS = [
     "column",
@@ -125,6 +129,24 @@ def _near_match_hint(pairs: list[dict[str, str]]) -> str | None:
         f"near-match after strip/casefold/trailing punctuation: {mapped}; "
         "try standardize_text or map on test"
     )
+
+
+def value_mismatch_is_blocking(
+    near_matches: list[dict[str, str]] | None,
+    pct_test_rows_unseen: float | None,
+) -> bool:
+    """Whether a ``value_mismatch`` should block Studio "to decide".
+
+    Spelling drift (``near_matches``) and a large share of test rows carrying
+    unseen values stay blocking. Rare pure-new categories (empty near_matches,
+    ``pct_test_rows_unseen`` at or below ``VALUE_MISMATCH_BLOCKING_PCT``) are
+    informational — one-hot ``handle_unknown`` absorbs them.
+    """
+    if near_matches:
+        return True
+    if pct_test_rows_unseen is None:
+        return True
+    return float(pct_test_rows_unseen) > VALUE_MISMATCH_BLOCKING_PCT
 
 
 def category_shift(train: pd.Series, test: pd.Series) -> dict:
