@@ -34,6 +34,7 @@ from dtk_engine.ops.profile import (
     object_kind,
     semantic_type,
 )
+from dtk_engine.ops.suggested import suggested_params as _suggested_params
 from dtk_engine.sources import load
 from dtk_engine.sources.dataset import raw_workspace_frame
 from dtk_engine.workspace.models import Step, Workspace
@@ -383,6 +384,7 @@ def _profile_one(name: str, series: pd.Series) -> dict:
         "numbers_as_text": _numbers_as_text(series),
         "currency_as_text": _currency_as_text(series),
         "skewed": _skewed(series),
+        "suggested_params": _suggested_params(series, kind=kind),
     }
 
 

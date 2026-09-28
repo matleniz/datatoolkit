@@ -88,3 +88,25 @@ def test_api_door_renders():
     res = api.missing(api.load(TRAIN_CSV), columns=["Age"])
     assert res.metrics["n_columns"] == 1
     assert "missing_rates" in res._repr_html_()
+
+
+def test_sort_and_threshold():
+    df = pd.DataFrame(
+        {
+            "almost": [1] * 9 + [None],
+            "half": [1] * 5 + [None] * 5,
+            "full": [None] * 10,
+            "ok": list(range(10)),
+        }
+    )
+    by_name = api.missing(df, sort="column")
+    names = [r["column"] for r in next(t.records for t in by_name.tables if t.title == "missing_rates")]
+    assert names == sorted(names)
+
+    filtered = api.missing(df, threshold=50)
+    rates = [
+        r for r in next(t.records for t in filtered.tables if t.title == "missing_rates")
+    ]
+    assert {r["column"] for r in rates} == {"half", "full"}
+    assert filtered.metrics["threshold"] == 50
+    assert filtered.metrics["pct_missing_cells"] > 0

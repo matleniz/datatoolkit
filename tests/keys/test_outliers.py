@@ -49,3 +49,21 @@ def test_api_door():
     res = api.outliers(api.load(TRAIN_CSV), contamination=0.05, columns=["Fare"])
     assert res.metrics["n_numeric_columns"] == 1
     assert res.metrics["n_rows_flagged"] >= 1
+
+
+def test_method_scopes_detectors():
+    iqr_only = run_key("outliers", {"columns": ["Fare"], "method": "iqr"})
+    assert iqr_only["metrics"]["method"] == "iqr"
+    assert iqr_only["metrics"]["n_rows_flagged"] == 0
+    assert iqr_only["metrics"]["n_columns_with_z_outliers"] == 0
+    assert any(f["title"].startswith("% outliers") for f in iqr_only["figures"])
+
+    z_only = run_key("outliers", {"columns": ["Fare"], "method": "zscore"})
+    assert z_only["metrics"]["n_columns_with_iqr_outliers"] == 0
+    assert not any(f["title"].startswith("% outliers") for f in z_only["figures"])
+
+    if_only = run_key(
+        "outliers", {"columns": ["Fare"], "method": "isolation_forest", "contamination": 0.05}
+    )
+    assert if_only["metrics"]["n_rows_flagged"] >= 1
+    assert if_only["metrics"]["n_columns_with_iqr_outliers"] == 0

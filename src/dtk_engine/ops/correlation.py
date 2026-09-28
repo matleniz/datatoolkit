@@ -12,7 +12,7 @@ import pandas as pd
 
 from dtk_engine.ops.selection import COLLINEAR_CORR
 
-METHODS = ("pearson", "spearman")
+METHODS = ("pearson", "spearman", "kendall")
 DEFAULT_THRESHOLD = COLLINEAR_CORR
 PAIR_FIELDS = ["a", "b", "corr", "abs_corr", "n_rows", "keep"]
 
@@ -21,6 +21,8 @@ def correlation_matrix(
     df: pd.DataFrame, columns: list[str], method: str
 ) -> pd.DataFrame:
     """Pairwise-complete correlation matrix (a constant column gives NaN)."""
+    if method not in METHODS:
+        raise ValueError(f"method must be one of {METHODS}, got {method!r}")
     return df[columns].astype(float).corr(method=method)
 
 

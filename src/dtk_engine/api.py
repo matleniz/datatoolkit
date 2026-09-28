@@ -134,9 +134,11 @@ def missing(
     test: pd.DataFrame | None = None,
     target: str | None = None,
     columns: list[str] | None = None,
+    sort: str = "pct_missing",
+    threshold: float = 0.0,
 ) -> Result:
     """``missing_values`` on a DataFrame (and an optional test frame)."""
-    return missing_result(df, test, target, columns)
+    return missing_result(df, test, target, columns, sort, threshold)
 
 
 def outliers(
@@ -146,10 +148,11 @@ def outliers(
     contamination: float = 0.01,
     random_state: int = 0,
     columns: list[str] | None = None,
+    method: str = "all",
 ) -> Result:
     """``outliers`` on a DataFrame."""
     return outliers_result(
-        df, iqr_k, z_threshold, contamination, random_state, columns
+        df, iqr_k, z_threshold, contamination, random_state, columns, method
     )
 
 
@@ -189,16 +192,38 @@ def distribution(
     columns: list[str] | None = None,
     target: str | None = None,
     by_label: bool = False,
-    bins: int = 30,
+    bins: int | str = "auto",
     top_k: int = 10,
     target_bins: int = 4,
     by: str | None = None,
+    bin_edges: list[float] | None = None,
+    range_min_pct: float = 0.0,
+    range_max_pct: float = 100.0,
+    log_x: bool = False,
+    log_y: bool = False,
+    norm: str = "share",
+    cumulative: bool = False,
 ) -> Result:
     """``column_distribution`` on a DataFrame (``test`` given: train vs test
     overlay; ``by_label``: split by the classes of ``target``; ``by``: split by
     any column)."""
     return distribution_result(
-        df, test, columns, target, by_label, bins, top_k, target_bins, by
+        df,
+        test,
+        columns,
+        target,
+        by_label,
+        bins,
+        top_k,
+        target_bins,
+        by,
+        bin_edges,
+        range_min_pct,
+        range_max_pct,
+        log_x,
+        log_y,
+        norm,
+        cumulative,
     )
 
 
@@ -208,10 +233,14 @@ def target_analysis(
     columns: list[str] | None = None,
     task: str = "auto",
     top_k: int = 10,
+    bins: int = 10,
     random_state: int = 0,
+    target_bins: int = 10,
 ) -> Result:
     """``target_analysis`` on a DataFrame: each feature vs ``target``."""
-    return target_result(df, target, columns, task, top_k, random_state=random_state)
+    return target_result(
+        df, target, columns, task, top_k, bins, random_state, target_bins
+    )
 
 
 def correlations(

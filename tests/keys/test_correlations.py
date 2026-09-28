@@ -66,6 +66,14 @@ def test_spearman_sees_monotonic_and_no_step():
     assert "method=pearson" in spearman.text
 
 
+def test_kendall_method():
+    df = _planted()
+    res = api.correlations(df, columns=["a", "b"], method="kendall", threshold=0.5)
+    assert res.metrics["method"] == "kendall"
+    assert res.metrics["n_pairs"] >= 1
+    assert res.tables[-1].records == []  # suggested step is pearson only
+
+
 def test_errors():
     df = _planted().assign(text=["x"] * 200)
     with pytest.raises(ValueError, match="not numeric"):

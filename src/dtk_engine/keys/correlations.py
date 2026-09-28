@@ -35,10 +35,10 @@ class Params(KeyParams):
         f"target, first {MAX_COLUMNS})",
         dtype="numeric",
     )
-    method: Literal["pearson", "spearman"] = Field(
+    method: Literal["pearson", "spearman", "kendall"] = Field(
         default="pearson",
-        description="pearson (linear) | spearman (monotonic, on ranks); the "
-        "drop_correlated op uses pearson",
+        description="pearson (linear) | spearman (monotonic, on ranks) | "
+        "kendall (ordinal); the drop_correlated op uses pearson",
     )
     threshold: float = Field(
         default=DEFAULT_THRESHOLD,
@@ -57,9 +57,9 @@ class Params(KeyParams):
     id="correlations",
     title="Correlations",
     category="analysis",
-    description="Correlation matrix (Pearson or Spearman) of picked numeric columns "
-    "as a heatmap, plus the pairs above a threshold with the column "
-    "drop_correlated would keep, and the matching suggested step.",
+    description="Correlation matrix (Pearson, Spearman or Kendall) of picked "
+    "numeric columns as a heatmap, plus the pairs above a threshold with the "
+    "column drop_correlated would keep, and the matching suggested step.",
 )
 def run(params: Params) -> Result:
     return correlations_result(
