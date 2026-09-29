@@ -4,17 +4,22 @@ from typing import Literal
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from pydantic import Field
 
 from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.columns import is_numeric, pick_columns
 from dtk_engine.ops.outliers import (
     ACTION_TABLE,
+    BOX_FIELDS,
     IQR_K,
     Z_THRESHOLD,
+    box_stats,
     flagged_rows,
     isolation_forest,
     numeric_columns,
+    outlier_points,
     univariate_outliers,
 )
 from dtk_engine.params import KeyParams, columns_field
@@ -109,7 +114,9 @@ def outliers_result(
     flagged = flagged_rows(df, scores, picked) if run_if else pd.DataFrame(
         columns=["row", "score", *picked]
     )
-    headline = _headline(picked, table, int(scores["flagged"].sum()) if len(scores) else 0, run_iqr)
+    n_flagged = int(scores["flagged"].sum()) if len(scores) else 0
+    boxes = box_stats(df, picked, iqr_k) if run_iqr else pd.DataFrame(columns=BOX_FIELDS)
+    headline = _headline(picked, table, boxes, n_flagged, run_iqr)
     result = Result(
         headline=headline,
         metrics={
@@ -117,7 +124,7 @@ def outliers_result(
             "n_numeric_columns": len(picked),
             "n_columns_with_iqr_outliers": int((table["n_iqr"] > 0).sum()),
             "n_columns_with_z_outliers": int((table["n_z"] > 0).sum()),
-            "n_rows_flagged": int(scores["flagged"].sum()) if len(scores) else 0,
+            "n_rows_flagged": n_flagged,
             "contamination": contamination,
             "method": method,
         },
@@ -125,41 +132,200 @@ def outliers_result(
     )
     result.add_table("outliers_per_column", table)
     result.add_table("flagged_rows", flagged)
-    with plotly_lock:
-        if run_iqr and len(table):
-            result.add_figure(
-                "% outliers per column (IQR)",
-                px.bar(
-                    table, x="column", y="pct_iqr", labels={"pct_iqr": "% outside fences"}
-                ),
-                main=True,
+    if run_iqr:
+        result.add_table("box_stats", boxes)
+    hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
+    has_main = False
+    if run_iqr and len(picked) == 1:
+        col = picked[0]
+        result.add_figure(
+            f"{col}: box plot" + (" with outliers" if len(hit) else ""),
+            lambda: _single_box(df, col, boxes.iloc[0]),
+            main=True,
+        )
+        has_main = True
+    elif run_iqr and len(hit):
+        result.add_figure(
+            "% outliers per column (IQR)",
+            lambda: _pct_bars(hit),
+            main=True,
+        )
+        top = boxes.set_index("column").loc[hit["column"].head(MULTIPLES)]
+        result.add_figure(
+            "Box plots of the most affected columns",
+            lambda: _multiples(df, top.reset_index()),
+        )
+        has_main = True
+    if run_if and len(scores):
+        with plotly_lock:
+            fig = px.histogram(
+                scores,
+                x="score",
+                color="flagged",
+                labels={"score": "anomaly score", "flagged": "flagged"},
             )
-        if run_if and len(scores):
-            result.add_figure(
-                "IsolationForest scores",
-                px.histogram(
-                    scores, x="score", color="flagged", labels={"score": "anomaly score"}
-                ),
-                main=not (run_iqr and len(table)),
-            )
+        result.add_figure("IsolationForest scores", fig, main=not has_main)
     return result
 
 
+MULTIPLES = 6
+_OUTLIER_COLOR = "#d62728"
+_BOX_COLOR = "#1f77b4"
+
+
+def _fmt(x: float) -> str:
+    return f"{x:,.4g}"
+
+
+def _single_box(df: pd.DataFrame, col: str, row: pd.Series) -> go.Figure:
+    lo, hi = row["lower_fence"], row["upper_fence"]
+    pts = outlier_points(df, col, lo, hi)
+    fig = go.Figure()
+    fig.add_trace(
+        go.Box(
+            y=[col],
+            orientation="h",
+            q1=[row["q1"]],
+            median=[row["median"]],
+            q3=[row["q3"]],
+            lowerfence=[row["lower_whisker"]],
+            upperfence=[row["upper_whisker"]],
+            marker_color=_BOX_COLOR,
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    if len(pts):
+        fig.add_trace(
+            go.Scatter(
+                x=pts.tolist(),
+                y=[col] * len(pts),
+                mode="markers",
+                marker={"color": _OUTLIER_COLOR, "size": 8, "opacity": 0.7},
+                name="outliers",
+                hovertemplate="%{x}<extra>outlier</extra>",
+                showlegend=False,
+            )
+        )
+    values = df[col].dropna().astype(float)
+    vmin, vmax = values.min(), values.max()
+    for side, fence in (("low", lo), ("high", hi)):
+        # A fence past the data range only stretches the axis, unless there is
+        # nothing to flag: then both fences show why the column is clean.
+        if vmin <= fence <= vmax or not (row["n_below"] or row["n_above"]):
+            fig.add_vline(
+                x=fence,
+                line={"dash": "dot", "color": _OUTLIER_COLOR},
+                annotation_text=f"{side} fence {_fmt(fence)}",
+                annotation_position="top",
+            )
+    fig.update_layout(
+        xaxis_title=col,
+        yaxis_title=None,
+        yaxis_showticklabels=False,
+        showlegend=False,
+    )
+    return fig
+
+
+def _pct_bars(hit: pd.DataFrame) -> go.Figure:
+    fig = go.Figure(
+        go.Bar(
+            x=hit["pct_iqr"].tolist(),
+            y=hit["column"].tolist(),
+            orientation="h",
+            marker_color=_BOX_COLOR,
+            text=[f"{p:.1f} %" for p in hit["pct_iqr"]],
+            textposition="outside",
+            customdata=hit["n_iqr"].tolist(),
+            hovertemplate="%{y}: %{customdata} values (%{x:.1f} %)<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        xaxis_title="% of values outside the IQR fences",
+        yaxis_title=None,
+        yaxis={"autorange": "reversed"},
+        showlegend=False,
+    )
+    return fig
+
+
+def _multiples(df: pd.DataFrame, top: pd.DataFrame) -> go.Figure:
+    n = len(top)
+    cols = min(3, n)
+    rows = -(-n // cols)
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=list(top["column"]))
+    for i, row in enumerate(top.itertuples(index=False)):
+        r, c = divmod(i, cols)
+        name = row.column
+        pts = outlier_points(df, name, row.lower_fence, row.upper_fence)
+        fig.add_trace(
+            go.Box(
+                x=[name],
+                q1=[row.q1],
+                median=[row.median],
+                q3=[row.q3],
+                lowerfence=[row.lower_whisker],
+                upperfence=[row.upper_whisker],
+                marker_color=_BOX_COLOR,
+                hoverinfo="skip",
+            ),
+            row=r + 1,
+            col=c + 1,
+        )
+        if len(pts):
+            fig.add_trace(
+                go.Scatter(
+                    x=[name] * len(pts),
+                    y=pts.tolist(),
+                    mode="markers",
+                    marker={"color": _OUTLIER_COLOR, "size": 6, "opacity": 0.7},
+                    hovertemplate="%{y}<extra>outlier</extra>",
+                ),
+                row=r + 1,
+                col=c + 1,
+            )
+    fig.update_xaxes(showticklabels=False)
+    fig.update_layout(showlegend=False, height=300 * rows)
+    return fig
+
+
 def _headline(
-    picked: list[str], table: pd.DataFrame, n_rows_flagged: int, run_iqr: bool
+    picked: list[str],
+    table: pd.DataFrame,
+    boxes: pd.DataFrame,
+    n_rows_flagged: int,
+    run_iqr: bool,
 ) -> str:
     if not picked:
         return ""
     if run_iqr:
-        n_iqr_cols = int((table["n_iqr"] > 0).sum()) if len(table) else 0
-        if n_iqr_cols == 0:
+        hit = table[table["n_iqr"] > 0]
+        if hit.empty:
+            if len(picked) == 1:
+                b = boxes.iloc[0]
+                return (
+                    f"No outliers outside the IQR fences in {picked[0]} "
+                    f"(fences {_fmt(b['lower_fence'])}–{_fmt(b['upper_fence'])})"
+                )
             return "No outliers outside the IQR fences"
-        top_row = table.sort_values("pct_iqr", ascending=False).iloc[0]
-        top_col = top_row["column"]
-        top_pct = top_row["pct_iqr"]
+        top = hit.sort_values("pct_iqr", ascending=False).iloc[0]
+        if len(picked) == 1:
+            col, n = top["column"], int(top["n_iqr"])
+            b = boxes.iloc[0]
+            where = []
+            if b["n_above"]:
+                where.append(f"above {_fmt(b['upper_fence'])}")
+            if b["n_below"]:
+                where.append(f"below {_fmt(b['lower_fence'])}")
+            return (
+                f"{n} outlier{'s' if n > 1 else ''} in {col} "
+                f"({top['pct_iqr']:.1f} %), {' and '.join(where)}"
+            )
+        k = len(hit)
         return (
-            f"{n_iqr_cols} column{'s' if n_iqr_cols > 1 else ''} with outliers outside "
-            f"IQR fences (max: {top_col} at {top_pct:.1f} %)"
+            f"{k} column{'s' if k > 1 else ''} with outliers; "
+            f"most: {top['column']} ({top['pct_iqr']:.1f} %)"
         )
     if n_rows_flagged == 0:
         return "No anomalous rows flagged"
