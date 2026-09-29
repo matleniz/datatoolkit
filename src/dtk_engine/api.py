@@ -252,9 +252,10 @@ def correlations(
     method: str = "pearson",
     threshold: float = 0.9,
     target: str | None = None,
+    top_n: int = 15,
 ) -> Result:
     """``correlations`` on a DataFrame: heatmap + pairs with |corr| >= threshold."""
-    return correlations_result(df, columns, method, threshold, target)
+    return correlations_result(df, columns, method, threshold, target, top_n)
 
 
 def chart(df: pd.DataFrame, chart: str = "histogram", **params) -> Result:

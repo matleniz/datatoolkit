@@ -94,3 +94,57 @@ def test_bad_params_raise_key_params_error():
     for params in ({"target": "nope"}, {"columns": ["nope"]}):
         with pytest.raises(KeyParamsError):
             run_key("correlations", params)
+
+
+def _decode(z):
+    """A Plotly array field: nested lists, or ``{dtype, bdata, shape}``."""
+    if isinstance(z, dict):
+        import base64
+
+        arr = np.frombuffer(base64.b64decode(z["bdata"]), dtype=z["dtype"])
+        return arr.reshape([int(d) for d in z["shape"].split(",")]).astype(float)
+    return np.array(z, dtype=float)
+
+
+def _wide(n_cols=20, seed=1):
+    rng = np.random.default_rng(seed)
+    df = pd.DataFrame(
+        rng.normal(size=(100, n_cols)),
+        columns=[f"col_{i:02d}_long_name_x" for i in range(n_cols)],
+    )
+    df["col_19_long_name_x"] = df["col_00_long_name_x"] * 2 + rng.normal(
+        scale=0.01, size=100
+    )
+    return df
+
+
+def test_heatmap_lower_triangle_and_top_n():
+    res = api.correlations(_wide(), top_n=6)
+    assert res.metrics["n_columns"] == 20 and res.metrics["n_columns_shown"] == 6
+    assert res.headline.startswith("Strongest pair: col_00") or "col_19" in res.headline
+    assert "1 pair with |corr| >= 0.9" in res.headline
+    main = [f for f in res.figures if f.main]
+    assert len(main) == 1
+    z = _decode(main[0].plotly["data"][0]["z"])
+    assert z.shape == (5, 5)
+    assert np.isnan(z[np.triu_indices(5, k=1)]).all()  # upper triangle masked
+    assert not np.isnan(z[np.tril_indices(5)]).any()
+    shown_x = main[0].plotly["data"][0]["x"]
+    assert all(len(x) <= 18 for x in shown_x)
+    assert any("col_00" in x for x in shown_x) and any(
+        "col_19" in y for y in main[0].plotly["data"][0]["y"]
+    )
+    assert len(next(t for t in res.tables if t.title == "matrix").records) == 20
+
+
+def test_strongest_pairs_figure():
+    res = api.correlations(_wide())
+    fig = next(f for f in res.figures if f.title == "Strongest pairs")
+    assert not fig.main
+    ys = [y for tr in fig.plotly["data"] for y in tr["y"]]
+    assert len(ys) == 10 and all(" × " in y for y in ys)
+
+
+def test_top_n_bounds():
+    with pytest.raises(ValueError):
+        api.correlations(_wide(), top_n=1)
