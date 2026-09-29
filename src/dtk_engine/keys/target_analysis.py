@@ -25,7 +25,7 @@ from dtk_engine.ops.target import (
 )
 from dtk_engine.params import KeyParams, column_field, columns_field
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 # Features analysed when none are picked (the first eligible ones).
@@ -126,10 +126,11 @@ def target_result(
     result = Result(metrics=metrics)
     result.add_table("ranking", ranking)
     top = ranking["column"].head(FIGURE_TOP).tolist()
-    result.add_figure(
-        "Mutual information with the target",
-        px.bar(ranking, x="column", y="mutual_info", color="kind"),
-    )
+    with plotly_lock:
+        result.add_figure(
+            "Mutual information with the target",
+            px.bar(ranking, x="column", y="mutual_info", color="kind"),
+        )
     if task == "classification":
         balance = class_balance(rows[target])
         result.metrics["n_classes"] = len(balance)
@@ -142,15 +143,16 @@ def target_result(
         result.metrics["target_std"] = float(y.std()) if len(y) > 1 else 0.0
         target_hist = _target_histogram(y, target, target_bins)
         result.add_table("target_histogram", target_hist)
-        result.add_figure(
-            f"{target} distribution",
-            px.bar(
-                target_hist,
-                x="bin_left",
-                y="count",
-                labels={"bin_left": target, "count": "count"},
-            ),
-        )
+        with plotly_lock:
+            result.add_figure(
+                f"{target} distribution",
+                px.bar(
+                    target_hist,
+                    x="bin_left",
+                    y="count",
+                    labels={"bin_left": target, "count": "count"},
+                ),
+            )
         _regression_details(result, rows, target, picked, kinds, top, top_k, bins)
     if n_capped:
         result.text = (
@@ -195,20 +197,21 @@ def _classification_details(result, rows, target, picked, kinds, top, top_k):
             pd.concat(rates.values(), ignore_index=True),
             "categorical",
         )
-    for col in top:
-        if col in stats:
-            result.add_figure(
-                f"{col} by class", _box_figure(stats[col], col), "numeric"
-            )
-        else:
-            fig = px.bar(
-                rates[col],
-                x="value",
-                y="rate",
-                color="class",
-                labels={"value": col, "rate": "share of the value's rows"},
-            )
-            result.add_figure(f"class rate by {col}", fig, "categorical")
+    with plotly_lock:
+        for col in top:
+            if col in stats:
+                result.add_figure(
+                    f"{col} by class", _box_figure(stats[col], col), "numeric"
+                )
+            else:
+                fig = px.bar(
+                    rates[col],
+                    x="value",
+                    y="rate",
+                    color="class",
+                    labels={"value": col, "rate": "share of the value's rows"},
+                )
+                result.add_figure(f"class rate by {col}", fig, "categorical")
 
 
 def _regression_details(result, rows, target, picked, kinds, top, top_k, bins):
@@ -235,23 +238,25 @@ def _regression_details(result, rows, target, picked, kinds, top, top_k, bins):
             "categorical",
         )
     labels = {"mean_target": f"mean {target}"}
-    for col in top:
-        if col in binned:
-            fig = px.line(
-                binned[col].dropna(subset=["feature_mean"]),
-                x="feature_mean",
-                y="mean_target",
-                markers=True,
-                labels={**labels, "feature_mean": col},
-            )
-            result.add_figure(f"mean {target} by {col} bin", fig, "numeric")
-        else:
-            fig = px.bar(
-                means[col], x="value", y="mean_target", labels={**labels, "value": col}
-            )
-            result.add_figure(f"mean {target} by {col}", fig, "categorical")
+    with plotly_lock:
+        for col in top:
+            if col in binned:
+                fig = px.line(
+                    binned[col].dropna(subset=["feature_mean"]),
+                    x="feature_mean",
+                    y="mean_target",
+                    markers=True,
+                    labels={**labels, "feature_mean": col},
+                )
+                result.add_figure(f"mean {target} by {col} bin", fig, "numeric")
+            else:
+                fig = px.bar(
+                    means[col], x="value", y="mean_target", labels={**labels, "value": col}
+                )
+                result.add_figure(f"mean {target} by {col}", fig, "categorical")
 
 
+@plotly_lock
 def _box_figure(stats: pd.DataFrame, col: str) -> go.Figure:
     """Box per class from precomputed quartiles (no raw points in the JSON)."""
     fig = go.Figure(

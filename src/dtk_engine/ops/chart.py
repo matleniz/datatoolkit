@@ -15,6 +15,7 @@ import plotly.graph_objects as go
 
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.columns import is_numeric, numeric_feature
+from dtk_engine.result import plotly_lock
 
 ChartType = Literal[
     "histogram",
@@ -52,6 +53,7 @@ def sample_frame(
     return df.sample(sample_size, random_state=random_state), len(df) - sample_size
 
 
+@plotly_lock
 def build_figure(
     df: pd.DataFrame,
     chart: ChartType,

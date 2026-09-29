@@ -19,7 +19,7 @@ from dtk_engine.ops.compare import (
 )
 from dtk_engine.params import KeyParams, columns_field
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 # Overlaid train/test histograms for the most drifted numeric columns.
@@ -112,23 +112,24 @@ def check_result(
     ranked = num_drift.dropna(subset=["psi"]).sort_values("psi", ascending=False)
     for col in ranked["column"].head(HISTOGRAM_TOP):
         edges, dens_train, dens_test = histogram_pair(train[col], test[col])
-        fig = go.Figure(
-            [
-                go.Bar(
-                    x=edges[:-1],
-                    y=dens,
-                    width=np.diff(edges),
-                    name=side,
-                    offset=0,
-                    opacity=0.55,
-                )
-                for side, dens in (("train", dens_train), ("test", dens_test))
-            ]
-        )
-        fig.update_layout(
-            barmode="overlay",
-            xaxis_title=col,
-            yaxis_title="share of rows",
-        )
-        result.add_figure(f"{col}: train vs test", fig)
+        with plotly_lock:
+            fig = go.Figure(
+                [
+                    go.Bar(
+                        x=edges[:-1],
+                        y=dens,
+                        width=np.diff(edges),
+                        name=side,
+                        offset=0,
+                        opacity=0.55,
+                    )
+                    for side, dens in (("train", dens_train), ("test", dens_test))
+                ]
+            )
+            fig.update_layout(
+                barmode="overlay",
+                xaxis_title=col,
+                yaxis_title="share of rows",
+            )
+            result.add_figure(f"{col}: train vs test", fig)
     return result

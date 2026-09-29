@@ -13,7 +13,7 @@ from dtk_engine.ops.chart import (
 from dtk_engine.ops.profile import HIST_BINS
 from dtk_engine.params import KeyParams, column_field, columns_field
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 
@@ -112,34 +112,35 @@ def chart_result(
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.chart``)."""
     frame, n_dropped = sample_frame(df, sample_size)
-    fig = build_figure(
-        frame,
-        chart,
-        x=x,
-        y=y,
-        color=color,
-        facet_row=facet_row,
-        facet_col=facet_col,
-        size=size,
-        columns=columns,
-        agg=agg,
-        trendline=trendline,
-        log_x=log_x,
-        log_y=log_y,
-        bins=bins,
-    )
-    title = _title(chart, x, y)
-    result = Result(
-        metrics={
-            "chart": chart,
-            "n_rows": len(frame),
-            "n_rows_source": len(df),
-            "n_sampled_out": n_dropped,
-            "trendline": int(trendline),
-        },
-        text=_text(n_dropped, sample_size),
-    )
-    result.add_figure(title, fig)
+    with plotly_lock:
+        fig = build_figure(
+            frame,
+            chart,
+            x=x,
+            y=y,
+            color=color,
+            facet_row=facet_row,
+            facet_col=facet_col,
+            size=size,
+            columns=columns,
+            agg=agg,
+            trendline=trendline,
+            log_x=log_x,
+            log_y=log_y,
+            bins=bins,
+        )
+        title = _title(chart, x, y)
+        result = Result(
+            metrics={
+                "chart": chart,
+                "n_rows": len(frame),
+                "n_rows_source": len(df),
+                "n_sampled_out": n_dropped,
+                "trendline": int(trendline),
+            },
+            text=_text(n_dropped, sample_size),
+        )
+        result.add_figure(title, fig)
     return result
 
 

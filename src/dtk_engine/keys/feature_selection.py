@@ -23,7 +23,7 @@ from dtk_engine.ops.selection import (
 )
 from dtk_engine.params import KeyParams, column_field, columns_field
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 
@@ -121,14 +121,15 @@ def selection_result(
     result.add_table("pca_explained_variance", pca_table)
     result.add_table("families", FAMILIES)
     result.add_table("suggested_steps", steps, kind="steps")
-    result.add_figure(
-        "Mutual information per feature (color: combined rank, 1 = best)",
-        px.bar(scores, x="column", y="mutual_info", color="combined_rank"),
-    )
-    result.add_figure(
-        "PCA cumulative explained variance (standardized features)",
-        px.line(pca_table, x="component", y="cumulative", markers=True),
-    )
+    with plotly_lock:
+        result.add_figure(
+            "Mutual information per feature (color: combined rank, 1 = best)",
+            px.bar(scores, x="column", y="mutual_info", color="combined_rank"),
+        )
+        result.add_figure(
+            "PCA cumulative explained variance (standardized features)",
+            px.line(pca_table, x="component", y="cumulative", markers=True),
+        )
     return result
 
 

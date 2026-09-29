@@ -19,7 +19,7 @@ from dtk_engine.ops.profile import (
 )
 from dtk_engine.params import KeyParams
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 
@@ -58,19 +58,21 @@ def overview_result(df: pd.DataFrame, head_rows: int = 5) -> Result:
     )
     result.add_table("columns", profile, group="Overview")
     result.add_table("head", df.head(head_rows), group="Overview")
-    result.add_figure(
-        "% missing per column",
-        px.bar(
-            profile, x="column", y="pct_missing", labels={"pct_missing": "% missing"}
-        ),
-        group="Overview",
-    )
+    with plotly_lock:
+        result.add_figure(
+            "% missing per column",
+            px.bar(
+                profile, x="column", y="pct_missing", labels={"pct_missing": "% missing"}
+            ),
+            group="Overview",
+        )
     _add_type_groups(
         result, df, dict(zip(profile["column"], profile["semantic_type"], strict=True))
     )
     return result
 
 
+@plotly_lock
 def _histogram_grid(hist: pd.DataFrame):
     hist = hist.assign(bin_mid=(hist["bin_left"] + hist["bin_right"]) / 2)
     fig = px.bar(
@@ -96,11 +98,13 @@ def _add_type_groups(
     numeric = numeric_stats(df, semantic)
     if not numeric.empty:
         result.add_table("numeric stats", numeric, group="Numeric")
-        result.add_figure(
-            "distributions",
-            _histogram_grid(numeric_histograms(df, semantic=semantic)),
-            group="Numeric",
-        )
+        hists = numeric_histograms(df, semantic=semantic)
+        with plotly_lock:
+            result.add_figure(
+                "distributions",
+                _histogram_grid(hists),
+                group="Numeric",
+            )
 
     cat_columns = columns_of_type(df, "categorical", "boolean", semantic=semantic)
     if cat_columns:

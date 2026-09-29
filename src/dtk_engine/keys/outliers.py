@@ -19,7 +19,7 @@ from dtk_engine.ops.outliers import (
 )
 from dtk_engine.params import KeyParams, columns_field
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 OutlierMethod = Literal["all", "iqr", "zscore", "isolation_forest"]
@@ -123,18 +123,19 @@ def outliers_result(
     )
     result.add_table("outliers_per_column", table)
     result.add_table("flagged_rows", flagged)
-    if run_iqr and len(table):
-        result.add_figure(
-            "% outliers per column (IQR)",
-            px.bar(
-                table, x="column", y="pct_iqr", labels={"pct_iqr": "% outside fences"}
-            ),
-        )
-    if run_if and len(scores):
-        result.add_figure(
-            "IsolationForest scores",
-            px.histogram(
-                scores, x="score", color="flagged", labels={"score": "anomaly score"}
-            ),
-        )
+    with plotly_lock:
+        if run_iqr and len(table):
+            result.add_figure(
+                "% outliers per column (IQR)",
+                px.bar(
+                    table, x="column", y="pct_iqr", labels={"pct_iqr": "% outside fences"}
+                ),
+            )
+        if run_if and len(scores):
+            result.add_figure(
+                "IsolationForest scores",
+                px.histogram(
+                    scores, x="score", color="flagged", labels={"score": "anomaly score"}
+                ),
+            )
     return result

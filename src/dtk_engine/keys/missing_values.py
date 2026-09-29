@@ -19,7 +19,7 @@ from dtk_engine.ops.missing import (
 )
 from dtk_engine.params import KeyParams, column_field, columns_field
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 SortBy = Literal["pct_missing", "n_missing", "column"]
@@ -152,30 +152,31 @@ def missing_result(
         _suggested_steps(drop_candidates, target),
         kind="steps",
     )
-    result.add_figure(
-        "% missing per column",
-        px.bar(
-            rates[rates["n_missing"] > 0],
-            x="column",
-            y="pct_missing",
-            labels={"pct_missing": "% missing"},
-        ),
-    )
-    result.add_figure(
-        "Missing fields per row",
-        px.bar(
-            per_row,
-            x="n_missing",
-            y="n_rows",
-            color="spike",
-            labels={"n_missing": "missing fields in the row", "n_rows": "rows"},
-        ),
-    )
-    if not matrix.empty:
+    with plotly_lock:
         result.add_figure(
-            "Missingness co-occurrence (Jaccard)",
-            px.imshow(matrix, zmin=0, zmax=1, aspect="auto"),
+            "% missing per column",
+            px.bar(
+                rates[rates["n_missing"] > 0],
+                x="column",
+                y="pct_missing",
+                labels={"pct_missing": "% missing"},
+            ),
         )
+        result.add_figure(
+            "Missing fields per row",
+            px.bar(
+                per_row,
+                x="n_missing",
+                y="n_rows",
+                color="spike",
+                labels={"n_missing": "missing fields in the row", "n_rows": "rows"},
+            ),
+        )
+        if not matrix.empty:
+            result.add_figure(
+                "Missingness co-occurrence (Jaccard)",
+                px.imshow(matrix, zmin=0, zmax=1, aspect="auto"),
+            )
     return result
 
 
