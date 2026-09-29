@@ -15,6 +15,22 @@ Z_THRESHOLD = 3.0
 # Rows sampled in the flagged-rows table.
 FLAGGED_SAMPLE = 20
 
+# Outlier points kept per column for the box plots.
+OUTLIER_POINTS_MAX = 500
+
+BOX_FIELDS = [
+    "column",
+    "q1",
+    "median",
+    "q3",
+    "lower_fence",
+    "upper_fence",
+    "lower_whisker",
+    "upper_whisker",
+    "n_below",
+    "n_above",
+]
+
 UNIVARIATE_FIELDS = [
     "column",
     "count",
@@ -66,6 +82,49 @@ def univariate_outliers(
                 n_z = int((((values - values.mean()) / std).abs() > z_threshold).sum())
         rows.append((col, n, lo, hi, n_iqr, _pct(n_iqr, n), n_z, _pct(n_z, n)))
     return pd.DataFrame(rows, columns=UNIVARIATE_FIELDS)
+
+
+def box_stats(
+    df: pd.DataFrame, columns: list[str], iqr_k: float = IQR_K
+) -> pd.DataFrame:
+    """Per column: quartiles, IQR fences, whiskers (most extreme values inside
+    the fences) and how many values fall below / above the fences."""
+    rows = []
+    for col in columns:
+        values = df[col].dropna().astype(float)
+        if values.empty:
+            rows.append((col, *[float("nan")] * 7, 0, 0))
+            continue
+        q1, med, q3 = values.quantile([0.25, 0.5, 0.75])
+        lo, hi = q1 - iqr_k * (q3 - q1), q3 + iqr_k * (q3 - q1)
+        inside = values[(values >= lo) & (values <= hi)]
+        rows.append(
+            (
+                col,
+                q1,
+                med,
+                q3,
+                lo,
+                hi,
+                inside.min(),
+                inside.max(),
+                int((values < lo).sum()),
+                int((values > hi).sum()),
+            )
+        )
+    return pd.DataFrame(rows, columns=BOX_FIELDS)
+
+
+def outlier_points(
+    df: pd.DataFrame, column: str, lower: float, upper: float
+) -> pd.Series:
+    """Values of ``column`` outside ``[lower, upper]``, sampled (seeded) down to
+    ``OUTLIER_POINTS_MAX``."""
+    values = df[column].dropna().astype(float)
+    out = values[(values < lower) | (values > upper)]
+    if len(out) > OUTLIER_POINTS_MAX:
+        out = out.sample(OUTLIER_POINTS_MAX, random_state=0)
+    return out
 
 
 def isolation_forest(
