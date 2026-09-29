@@ -10,6 +10,7 @@ from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.missing import (
     DROP_PCT,
+    REVIEW_PCT,
     cooccurrence,
     cooccurrence_pairs,
     missing_per_row,
@@ -153,17 +154,115 @@ def missing_result(
         _suggested_steps(drop_candidates, target),
         kind="steps",
     )
+    missing_cols = rates[rates["n_missing"] > 0].copy()
+    if not missing_cols.empty:
+        missing_cols = missing_cols.sort_values(
+            "pct_missing", ascending=False, kind="stable"
+        ).reset_index(drop=True)
+        missing_cols["severity"] = missing_cols["pct_missing"].apply(_severity_label)
+        missing_cols["pct_label"] = missing_cols["pct_missing"].apply(
+            lambda p: f"{p:.0f}%" if p == int(p) else f"{p:.1f}%"
+        )
+        severity_order = [
+            f"≥ {DROP_PCT:.0f} % (drop)",
+            f"{REVIEW_PCT:.0f}–{DROP_PCT:.0f} % (indicator)",
+            f"< {REVIEW_PCT:.0f} %",
+        ]
+        severity_colors = {
+            f"≥ {DROP_PCT:.0f} % (drop)": "#ef4444",
+            f"{REVIEW_PCT:.0f}–{DROP_PCT:.0f} % (indicator)": "#f59e0b",
+            f"< {REVIEW_PCT:.0f} %": "#3b82f6",
+        }
+        fig_main = px.bar(
+            missing_cols,
+            x="pct_missing",
+            y="column",
+            color="severity",
+            text="pct_label",
+            orientation="h",
+            color_discrete_map=severity_colors,
+            category_orders={"severity": severity_order},
+            labels={"pct_missing": "% missing", "column": "", "severity": ""},
+        )
+        fig_main.update_traces(textposition="outside", cliponaxis=False)
+        fig_main.update_yaxes(
+            categoryorder="array",
+            categoryarray=list(reversed(missing_cols["column"].tolist())),
+        )
+        fig_main.update_xaxes(ticksuffix="%")
+        fig_main.update_layout(legend_title_text="")
+    else:
+        empty_df = pd.DataFrame(
+            {"column": pd.Series([], dtype=str), "pct_missing": pd.Series([], dtype=float)}
+        )
+        fig_main = px.bar(
+            empty_df,
+            x="pct_missing",
+            y="column",
+            orientation="h",
+            labels={"pct_missing": "% missing", "column": ""},
+        )
+        fig_main.update_layout(
+            xaxis_title="% missing",
+            yaxis_title="",
+            annotations=[
+                {
+                    "text": "No missing values",
+                    "xref": "paper",
+                    "yref": "paper",
+                    "x": 0.5,
+                    "y": 0.5,
+                    "showarrow": False,
+                    "font": {"size": 14},
+                }
+            ],
+        )
+
+    fig_matrix = None
+    if not missing_cols.empty:
+        cols_with_missing = [c for c in missing_cols["column"] if c in work.columns]
+        if cols_with_missing:
+            sample_work = (
+                work[cols_with_missing].sample(n=300, random_state=42).sort_index()
+                if len(work) > 300
+                else work[cols_with_missing]
+            )
+            matrix_mask = sample_work.isna().astype(int)
+            fig_matrix = px.imshow(
+                matrix_mask,
+                zmin=0,
+                zmax=1,
+                color_continuous_scale=[
+                    [0.0, "#f1f5f9"],
+                    [0.5, "#f1f5f9"],
+                    [0.5, "#ef4444"],
+                    [1.0, "#ef4444"],
+                ],
+                aspect="auto",
+                labels={"x": "Column", "y": "Row index", "color": ""},
+            )
+            fig_matrix.update_coloraxes(
+                colorbar={
+                    "tickvals": [0.25, 0.75],
+                    "ticktext": ["Present", "Missing"],
+                    "len": 0.4,
+                }
+            )
+            fig_matrix.update_traces(
+                hovertemplate="Column: %{x}<br>Row: %{y}<extra></extra>"
+            )
+
     with plotly_lock:
         result.add_figure(
             "% missing per column",
-            px.bar(
-                rates[rates["n_missing"] > 0],
-                x="column",
-                y="pct_missing",
-                labels={"pct_missing": "% missing"},
-            ),
+            fig_main,
             main=True,
         )
+        if fig_matrix is not None:
+            result.add_figure(
+                "Missingness matrix",
+                fig_matrix,
+            )
         result.add_figure(
             "Missing fields per row",
             px.bar(
@@ -182,19 +281,36 @@ def missing_result(
     return result
 
 
+def _severity_label(pct: float) -> str:
+    if pct >= DROP_PCT:
+        return f"≥ {DROP_PCT:.0f} % (drop)"
+    if pct >= REVIEW_PCT:
+        return f"{REVIEW_PCT:.0f}–{DROP_PCT:.0f} % (indicator)"
+    return f"< {REVIEW_PCT:.0f} %"
+
+
 def _headline(n_missing_cols: int, rates: pd.DataFrame) -> str:
     if n_missing_cols == 0:
         return "No missing values"
     n_above_30 = int((rates["pct_missing"] >= 30.0).sum()) if len(rates) else 0
+    worst_str = ""
+    missing_rates_df = rates[rates["n_missing"] > 0]
+    if not missing_rates_df.empty:
+        worst = missing_rates_df.sort_values(
+            "pct_missing", ascending=False, kind="stable"
+        ).iloc[0]
+        worst_col = worst["column"]
+        worst_pct = worst["pct_missing"]
+        pct_display = f"{worst_pct:.0f} %" if worst_pct >= 1 else f"{worst_pct:.1f} %"
+        worst_str = f" ({worst_col} {pct_display})"
+
+    has_have = "has" if n_missing_cols == 1 else "have"
+    cols_str = f"{n_missing_cols} column{'s' if n_missing_cols > 1 else ''}"
     if n_above_30 > 0:
         return (
-            f"{n_missing_cols} column{'s' if n_missing_cols > 1 else ''} have missing "
-            f"values; {n_above_30} above 30 %"
+            f"{cols_str} {has_have} missing values; {n_above_30} above 30 %{worst_str}"
         )
-    return (
-        f"{n_missing_cols} column{'s' if n_missing_cols > 1 else ''} have missing "
-        f"values; none above 30 %"
-    )
+    return f"{cols_str} {has_have} missing values; none above 30 %{worst_str}"
 
 
 def _suggested_steps(drop_candidates: list[str], target: str | None) -> pd.DataFrame:

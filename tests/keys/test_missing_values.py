@@ -110,3 +110,74 @@ def test_sort_and_threshold():
     assert {r["column"] for r in rates} == {"half", "full"}
     assert filtered.metrics["threshold"] == 50
     assert filtered.metrics["pct_missing_cells"] > 0
+
+
+def test_headline_mentions_worst_column():
+    res = run_key("missing_values", {})
+    assert "Cabin 88 %" in res["headline"]
+    assert "2 columns have missing values; 1 above 30 % (Cabin 88 %)" == res["headline"]
+
+    clean = api.missing(pd.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]}))
+    assert clean.headline == "No missing values"
+
+    low = api.missing(pd.DataFrame({"a": [1, 2, 3, 4, None], "b": [1, 2, 3, 4, 5]}))
+    assert low.headline == "1 column has missing values; none above 30 % (a 20 %)"
+
+
+def test_main_figure_horizontal_bars_and_styling():
+    res = run_key("missing_values", {})
+    main_figs = [f for f in res["figures"] if f.get("main")]
+    assert len(main_figs) == 1
+    fig0 = main_figs[0]
+    assert fig0["title"] == "% missing per column"
+
+    traces = fig0["plotly"]["data"]
+    # Traces for severity categories
+    assert len(traces) >= 1
+    for trace in traces:
+        assert trace["orientation"] == "h"
+        assert trace["textposition"] == "outside"
+
+    # Y-axis order: Cabin is top, Age is below
+    cat_order = fig0["plotly"]["layout"]["yaxis"]["categoryarray"]
+    assert cat_order == ["Age", "Cabin"]
+
+    # Only columns with missing values are included
+    all_y_cols = []
+    for trace in traces:
+        all_y_cols.extend(trace["y"])
+    assert set(all_y_cols) == {"Cabin", "Age"}
+
+
+def test_missingness_matrix_figure():
+    res = run_key("missing_values", {})
+    titles = [f["title"] for f in res["figures"]]
+    assert titles[0] == "% missing per column"
+    assert titles[1] == "Missingness matrix"
+    assert "Missing fields per row" in titles
+    assert "Missingness co-occurrence (Jaccard)" in titles
+
+    matrix_fig = res["figures"][1]["plotly"]
+    assert matrix_fig["data"][0]["type"] == "heatmap"
+    assert list(matrix_fig["data"][0]["x"]) == ["Cabin", "Age"]
+
+    # Sample capped at 300 rows
+    large_df = pd.DataFrame(
+        {
+            "a": [None if i % 3 == 0 else i for i in range(500)],
+            "b": [None if i % 2 == 0 else i for i in range(500)],
+            "c": list(range(500)),
+        }
+    )
+    large_res = api.missing(large_df)
+    large_matrix = next(
+        f for f in large_res.figures if f.title == "Missingness matrix"
+    )
+    # The matrix should have shape 300 x 2
+    z_info = large_matrix.plotly["data"][0]["z"]
+    assert z_info["shape"] == "300, 2"
+
+    # When clean data, no missingness matrix
+    clean_res = api.missing(pd.DataFrame({"x": [1, 2, 3]}))
+    assert not any(f.title == "Missingness matrix" for f in clean_res.figures)
+
