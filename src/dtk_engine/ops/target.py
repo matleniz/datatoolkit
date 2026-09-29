@@ -9,6 +9,8 @@ information on their (top-k) labels, missing as its own label.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
@@ -169,6 +171,41 @@ def association_table(
     return table
 
 
+def _sig(v: float, digits: int) -> str:
+    """``v`` rounded to ``digits`` significant digits, no trailing zeros."""
+    if v == 0:
+        return "0"
+    decimals = max(0, digits - 1 - math.floor(math.log10(abs(v))))
+    text = f"{round(v, decimals):.{decimals}f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def quantile_bins(present: pd.Series, bins: int) -> tuple[pd.Series, list[str]]:
+    """Quantile bin code of each (non-missing) value and the readable label of every
+    bin ("11.7–13.5": 3 significant digits, whole numbers for an integer column)."""
+    codes, edges = pd.qcut(
+        present,
+        q=min(bins, present.nunique()),
+        duplicates="drop",
+        retbins=True,
+        labels=False,
+    )
+    integer = bool((present % 1 == 0).all())
+    for digits in range(3, 11):
+        labels = []
+        for i in range(len(edges) - 1):
+            if integer:
+                lo = int(edges[i]) if i == 0 else math.floor(edges[i]) + 1
+                hi = math.floor(edges[i + 1])
+                lo_s, hi_s = str(lo), str(hi)
+            else:
+                lo_s, hi_s = _sig(edges[i], digits), _sig(edges[i + 1], digits)
+            labels.append(lo_s if lo_s == hi_s else f"{lo_s}–{hi_s}")
+        if len(set(labels)) == len(labels):
+            break
+    return codes, labels
+
+
 def _corr(x: pd.Series, y: pd.Series, method: str) -> float:
     with np.errstate(divide="ignore", invalid="ignore"):
         value = x.corr(y, method=method)
@@ -268,13 +305,13 @@ def binned_target_mean(
     ]
     if present.empty:
         return pd.DataFrame(columns=fields)
-    codes = pd.qcut(present, q=min(bins, present.nunique()), duplicates="drop")
+    codes, names = quantile_bins(present, bins)
     out = []
-    for interval, idx in present.groupby(codes, observed=True).groups.items():
+    for code, idx in present.groupby(codes).groups.items():
         out.append(
             {
                 "column": column,
-                "bin": str(interval),
+                "bin": names[int(code)],
                 "feature_mean": float(x[idx].mean()),
                 "count": len(idx),
                 **_spread(y[idx]),
@@ -345,11 +382,11 @@ def class_counts_by_bin(
     present = x.dropna()
     if present.empty:
         return pd.DataFrame(columns=fields)
-    codes = pd.qcut(present, q=min(bins, present.nunique()), duplicates="drop")
-    order = [str(i) for i in codes.cat.categories]
-    labels = codes.astype(object).map(str).reindex(x.index)
+    codes, order = quantile_bins(present, bins)
+    labels = codes.map(dict(enumerate(order))).reindex(x.index)
     labels = labels.where(x.notna(), value_label(np.nan))
     if x.isna().any():
         order.append(value_label(np.nan))
     counts = pd.crosstab(labels, rows[target].map(value_label))
+    order = [b for b in order if b in counts.index]
     return pd.DataFrame(_count_rows(counts, order, "bin", column), columns=fields)

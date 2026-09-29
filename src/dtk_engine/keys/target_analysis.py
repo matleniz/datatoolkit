@@ -1,5 +1,6 @@
 """Target analysis: each picked feature vs the label (course "per-label analysis")."""
 
+import math
 from typing import Literal
 
 import numpy as np
@@ -32,8 +33,8 @@ from dtk_engine.sources import CsvSource, SourceSpec, load
 
 # Features analysed when none are picked (the first eligible ones).
 MAX_COLUMNS = 30
-# Per-feature figures for the best-ranked features.
-FIGURE_TOP = 6
+# A bin / category needs this share of the rows (and 5 rows) to bound a headline.
+MIN_GROUP_SHARE = 0.05
 # Features drawn in the association ranking figure.
 RANKING_SHOWN = 30
 
@@ -132,15 +133,13 @@ def target_result(
     metrics["focus_feature"] = focus
     result = Result(metrics=metrics)
     result.add_table("ranking", ranking)
-    top = [focus] + [c for c in ranking["column"].head(FIGURE_TOP) if c != focus]
-    top = top[:FIGURE_TOP]
     if task == "classification":
         balance = class_balance(rows[target])
         result.metrics["n_classes"] = len(balance)
         result.metrics["minority_pct"] = float(balance["pct"].min())
         result.add_table("class_balance", balance)
         result.headline = _classification_details(
-            result, rows, target, picked, kinds, top, top_k, bins
+            result, rows, target, picked, kinds, focus, top_k, bins
         ) or (
             f"Top feature: {ranking['column'].iloc[0]}; "
             f"{len(balance)}-class classification ({float(balance['pct'].min()):.1f} % minority)"
@@ -150,7 +149,7 @@ def target_result(
         result.metrics["target_mean"] = float(y.mean())
         result.metrics["target_std"] = float(y.std()) if len(y) > 1 else 0.0
         result.headline = _regression_details(
-            result, rows, target, picked, kinds, top, top_k, bins
+            result, rows, target, picked, kinds, focus, top_k, bins
         ) or (
             f"Top feature: {ranking['column'].iloc[0]}; "
             f"regression target across {len(picked)} feature{'s' if len(picked) != 1 else ''}"
@@ -216,9 +215,9 @@ def _target_histogram(y: pd.Series, target: str, bins: int) -> pd.DataFrame:
     )
 
 
-def _classification_details(result, rows, target, picked, kinds, top, top_k, bins):
-    """Tables and figures of a classification target; returns the headline of the
-    focused feature (``top[0]``), None when it cannot be summarised."""
+def _classification_details(result, rows, target, picked, kinds, col, top_k, bins):
+    """Tables for every picked feature, figures for the focused one (``col``); returns
+    its headline, None when it cannot be summarised."""
     numeric = [c for c in picked if kinds[c] == "numeric"]
     categorical = [c for c in picked if kinds[c] == "categorical"]
     stats = {c: numeric_by_class(rows, c, target) for c in numeric}
@@ -247,31 +246,25 @@ def _classification_details(result, rows, target, picked, kinds, top, top_k, bin
             pd.concat(counts_bin.values(), ignore_index=True),
             "numeric",
         )
-    for i, col in enumerate(top):
-        if col in counts_bin:
-            table, key, group, what = counts_bin[col], "bin", "numeric", "bin"
-        else:
-            table, key, group, what = counts[col], "value", "categorical", "category"
-        with plotly_lock:
-            result.add_figure(
-                f"{target} count by {col} {what}",
-                _class_counts_figure(table, key, col, target, percent=False),
-                group,
-                main=(i == 0),
-            )
-            result.add_figure(
-                f"{target} share by {col} {what} (%)",
-                _class_counts_figure(table, key, col, target, percent=True),
-                group,
-            )
-            if col in stats:
-                result.add_figure(
-                    f"{col} by class", _box_figure(stats[col], col), group
-                )
-    focus = top[0]
-    if focus in counts_bin:
-        return _class_headline(counts_bin[focus], "bin", focus, target)
-    return _class_headline(counts[focus], "value", focus, target)
+    if col in counts_bin:
+        table, key, group, what = counts_bin[col], "bin", "numeric", "bin"
+    else:
+        table, key, group, what = counts[col], "value", "categorical", "category"
+    with plotly_lock:
+        result.add_figure(
+            f"{target} count by {col} {what}",
+            _class_counts_figure(table, key, col, target, percent=False),
+            group,
+            main=True,
+        )
+        result.add_figure(
+            f"{target} share by {col} {what} (%)",
+            _class_counts_figure(table, key, col, target, percent=True),
+            group,
+        )
+        if col in stats:
+            result.add_figure(f"{col} by class", _box_figure(stats[col], col), group)
+    return _class_headline(table, key, col, target)
 
 
 @plotly_lock
@@ -305,20 +298,28 @@ def _class_counts_figure(
     return fig
 
 
+_GROUPS = {"bin": "bins", "value": "categories"}
+
+
+def _big_enough(sizes: pd.Series) -> pd.Series:
+    """Mask of the groups fit to bound a headline: at least max(5 rows, 5 % of the
+    rows), neither ``other`` nor ``(missing)``."""
+    floor = max(5, math.ceil(MIN_GROUP_SHARE * sizes.sum()))
+    return (sizes >= floor) & ~sizes.index.isin([OTHER_LABEL, MISSING_LABEL])
+
+
 def _class_headline(table: pd.DataFrame, key: str, col: str, target: str) -> str | None:
     """ "<target> rate ranges from a % (group) to b % (group) across <col>": the
     class whose rate varies the most (the last one on a tie: the positive class),
-    over groups with enough rows."""
+    over groups with enough rows (see ``_big_enough``); too few of them: a cautious
+    "varies across" sentence."""
     rate = f"pct_of_{key}"
     sizes = table.groupby(key, sort=False)["count"].sum()
-    n = sizes.sum()
-    kept = sizes[
-        (sizes >= max(5, n // 100)) & ~sizes.index.isin([OTHER_LABEL, MISSING_LABEL])
-    ]
-    if len(kept) < 2:
-        kept = sizes[~sizes.index.isin([OTHER_LABEL, MISSING_LABEL])]
-    if len(kept) < 2:
+    if len(sizes) < 2:
         return None
+    kept = sizes[_big_enough(sizes)]
+    if len(kept) < 2:
+        return f"{target} rate varies across {col} {_GROUPS[key]} (small sample)"
     sub = table[table[key].isin(kept.index)]
     spreads = {
         cls: round(g[rate].max() - g[rate].min(), 6) for cls, g in sub.groupby("class")
@@ -334,9 +335,9 @@ def _class_headline(table: pd.DataFrame, key: str, col: str, target: str) -> str
     )
 
 
-def _regression_details(result, rows, target, picked, kinds, top, top_k, bins):
-    """Tables and figures of a regression target; returns the headline of the
-    focused feature (``top[0]``), None when it cannot be summarised."""
+def _regression_details(result, rows, target, picked, kinds, col, top_k, bins):
+    """Tables for every picked feature, figure for the focused one (``col``); returns
+    its headline, None when it cannot be summarised."""
     binned = {
         c: binned_target_mean(rows, c, target, bins)
         for c in picked
@@ -359,21 +360,22 @@ def _regression_details(result, rows, target, picked, kinds, top, top_k, bins):
             pd.concat(means.values(), ignore_index=True),
             "categorical",
         )
-    for i, col in enumerate(top):
-        if col in binned:
-            title, group = f"mean {target} by {col} bin", "numeric"
-            table = binned[col].dropna(subset=["feature_mean"])
-            build = lambda t=table, c=col: _mean_curve(t, "feature_mean", c, target)
-        else:
-            title, group = f"mean {target} by {col}", "categorical"
-            build = lambda t=means[col], c=col: _mean_curve(t, "value", c, target)
-        result.add_figure(title, build, group, main=(i == 0))
-    focus = top[0]
-    if focus in binned:
-        return _mean_headline(
-            binned[focus].dropna(subset=["feature_mean"]), "bin", focus, target, True
+    if col in binned:
+        table = binned[col].dropna(subset=["feature_mean"])
+        result.add_figure(
+            f"mean {target} by {col} bin",
+            lambda: _mean_curve(table, "feature_mean", col, target),
+            "numeric",
+            main=True,
         )
-    return _mean_headline(means[focus], "value", focus, target, False)
+        return _mean_headline(table, "bin", col, target, True)
+    result.add_figure(
+        f"mean {target} by {col}",
+        lambda: _mean_curve(means[col], "value", col, target),
+        "categorical",
+        main=True,
+    )
+    return _mean_headline(means[col], "value", col, target, False)
 
 
 @plotly_lock
@@ -444,19 +446,18 @@ def _mean_headline(
     """Numeric feature (ordered bins): "Mean <t> rises / falls from a to b across
     <col> bins"; categorical: "... ranges from a (cat) to b (cat) across <col>"."""
     table = table.dropna(subset=["mean_target"])
-    if table.empty or (len(table) < 2 and ordered):
+    if len(table) < 2:
         return None
+    kept = table[_big_enough(table.set_index(key)["count"]).to_numpy()]
+    if len(kept) < 2:
+        return f"Mean {target} varies across {col} {_GROUPS[key]} (small sample)"
     if ordered:
-        first, last = table["mean_target"].iloc[0], table["mean_target"].iloc[-1]
+        first, last = kept["mean_target"].iloc[0], kept["mean_target"].iloc[-1]
         verb = "rises" if last >= first else "falls"
         return (
             f"Mean {target} {verb} from {_compact(first)} to {_compact(last)} "
             f"across {col} bins"
         )
-    kept = table[~table[key].isin([OTHER_LABEL, MISSING_LABEL])]
-    kept = kept[kept["count"] >= 5] if (kept["count"] >= 5).sum() >= 2 else kept
-    if len(kept) < 2:
-        return None
     lo = kept.loc[kept["mean_target"].idxmin()]
     hi = kept.loc[kept["mean_target"].idxmax()]
     return (

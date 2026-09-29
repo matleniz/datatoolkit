@@ -156,3 +156,62 @@ def test_regression_curve_band_and_headline():
         next(t.records for t in res.tables if t.title == "binned_target_mean")
     )
     assert {"std_target", "q1_target", "q3_target"} <= set(binned.columns)
+
+
+def test_figures_only_for_the_focused_feature():
+    df = _planted()
+    res = api.target_analysis(df, target="y")
+    titles = [f.title for f in res.figures]
+    focus = res.metrics["focus_feature"]
+    assert len(titles) <= 4
+    assert "Association with the target" in titles
+    assert all(focus in t for t in titles if t != "Association with the target")
+    assert not any("noise" in t for t in titles)
+    # tables still cover every feature
+    by_bin = pd.DataFrame.from_records(
+        next(t.records for t in res.tables if t.title == "class_counts_by_bin")
+    )
+    assert {"signal", "noise"} <= set(by_bin["column"])
+
+
+def test_bin_labels_are_readable():
+    rng = np.random.default_rng(3)
+    n = 300
+    y = rng.integers(0, 2, size=n)
+    df = pd.DataFrame(
+        {
+            "fare": rng.uniform(5, 120, size=n).round(2),
+            "age": rng.integers(1, 80, size=n),
+            "y": y,
+        }
+    )
+    res = api.target_analysis(df, target="y", columns=["fare", "age"])
+    by_bin = pd.DataFrame.from_records(
+        next(t.records for t in res.tables if t.title == "class_counts_by_bin")
+    )
+    for label in by_bin["bin"].unique():
+        assert "(" not in label and "]" not in label and "," not in label
+    fare = by_bin[by_bin["column"] == "fare"]["bin"].unique()
+    assert all(len(p) <= 5 for label in fare for p in label.split("–"))
+    age = by_bin[by_bin["column"] == "age"]["bin"].unique()
+    assert all("." not in label for label in age)
+
+
+def test_headline_ignores_tiny_groups():
+    # Top bin holds 2 rows, all positive: it must not set the headline extreme.
+    rng = np.random.default_rng(4)
+    n = 200
+    x = np.concatenate([rng.uniform(0, 10, n - 2), [500.0, 501.0]])
+    y = np.concatenate([rng.integers(0, 2, n - 2), [1, 1]])
+    df = pd.DataFrame({"x": x, "y": y})
+    res = api.target_analysis(df, target="y", columns=["x"], bins=50)
+    assert "100 %" not in res.headline or "500" not in res.headline
+
+    # Few big-enough groups: cautious headline.
+    small = pd.DataFrame({"c": ["a"] * 30 + ["b"] * 2 + ["c"] * 2, "y": [0, 1] * 17})
+    res = api.target_analysis(small, target="y", columns=["c"])
+    assert res.headline == "y rate varies across c categories (small sample)"
+
+    reg = pd.DataFrame({"c": ["a"] * 30 + ["b"] * 2, "y": np.arange(32.0)})
+    res = api.target_analysis(reg, target="y", columns=["c"])
+    assert res.headline == "Mean y varies across c categories (small sample)"
