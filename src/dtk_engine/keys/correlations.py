@@ -19,7 +19,7 @@ from dtk_engine.ops.correlation import (
 )
 from dtk_engine.params import KeyParams, column_field, columns_field
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 # Columns in the matrix when none are picked (the first numeric ones).
@@ -140,15 +140,16 @@ def correlations_result(
             to_target.rename("abs_corr").rename_axis("column").reset_index(),
         )
     result.add_table("suggested_steps", steps, kind="steps")
-    fig = px.imshow(
-        corr,
-        zmin=-1,
-        zmax=1,
-        color_continuous_scale="RdBu_r",
-        text_auto=".2f" if len(picked) <= ANNOTATE_MAX else False,
-        aspect="auto",
-    )
-    result.add_figure(f"{method} correlation", fig)
+    with plotly_lock:
+        fig = px.imshow(
+            corr,
+            zmin=-1,
+            zmax=1,
+            color_continuous_scale="RdBu_r",
+            text_auto=".2f" if len(picked) <= ANNOTATE_MAX else False,
+            aspect="auto",
+        )
+        result.add_figure(f"{method} correlation", fig)
     return result
 
 

@@ -2,14 +2,58 @@
 
 from __future__ import annotations
 
+import functools
 import html
 import json
+import threading
+import types
+from collections.abc import Callable
 from typing import Any, Literal
 
 import pandas as pd
 from pydantic import BaseModel, Field
 
 from dtk_engine.ops.profile import as_text, object_kind
+
+
+class PlotlyLock:
+    """Process-wide re-entrant lock protecting Plotly figure construction & serialization.
+
+    Plotly's figure construction and template cascade are not thread-safe:
+    concurrent callers share global template objects and validator caches,
+    causing intermittent ``ValueError: Invalid value`` in ``_index_is``.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+
+    def __enter__(self) -> bool:
+        return self._lock.__enter__()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> bool | None:
+        return self._lock.__exit__(exc_type, exc_val, exc_tb)
+
+    def __call__(self, fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            with self._lock:
+                return fn(*args, **kwargs)
+
+        return wrapper
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+
+plotly_lock = PlotlyLock()
 
 # Rows of each table shown by _repr_html_ (the Result keeps them all).
 HTML_TABLE_ROWS = 10
@@ -39,11 +83,22 @@ class Result(BaseModel):
     figures: list[Figure] = Field(default_factory=list)
     text: str = ""
 
-    def add_figure(self, title: str, fig: Any, group: str | None = None) -> None:
-        """Attach a Plotly figure as JSON; `group` lets a front bucket it in a tab."""
-        self.figures.append(
-            Figure(title=title, plotly=json.loads(fig.to_json()), group=group)
-        )
+    def add_figure(
+        self,
+        title: str,
+        fig: Any | Callable[[], Any],
+        group: str | None = None,
+    ) -> None:
+        """Attach a Plotly figure as JSON; `group` lets a front bucket it in a tab.
+
+        ``fig`` may be a Plotly Figure, a dict, or a callable returning either.
+        Construction (if callable) and serialization are protected by ``plotly_lock``.
+        """
+        with plotly_lock:
+            if callable(fig):
+                fig = fig()
+            data = fig if isinstance(fig, dict) else json.loads(fig.to_json())
+            self.figures.append(Figure(title=title, plotly=data, group=group))
 
     def add_table(
         self,
@@ -72,7 +127,9 @@ class Result(BaseModel):
         for name, value in self.metrics.items():
             print(f"{name}: {value}")
         for figure in self.figures:
-            plotly.io.from_json(json.dumps(figure.plotly)).show()
+            with plotly_lock:
+                fig = plotly.io.from_json(json.dumps(figure.plotly))
+            fig.show()
 
     def _repr_html_(self) -> str:
         """Jupyter display: metrics, head of each table, figures, text."""
@@ -91,7 +148,8 @@ class Result(BaseModel):
             if len(frame) > HTML_TABLE_ROWS:
                 parts.append(f"<p><i>{HTML_TABLE_ROWS} of {len(frame)} rows</i></p>")
         for i, figure in enumerate(self.figures):
-            fig = plotly.io.from_json(json.dumps(figure.plotly))
+            with plotly_lock:
+                fig = plotly.io.from_json(json.dumps(figure.plotly))
             parts.append(f"<h4>{html.escape(_label(figure))}</h4>")
             parts.append(
                 fig.to_html(

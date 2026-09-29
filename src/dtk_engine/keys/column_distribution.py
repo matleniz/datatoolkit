@@ -27,7 +27,7 @@ from dtk_engine.ops.distribution import (
 )
 from dtk_engine.params import KeyParams, column_field, columns_field
 from dtk_engine.registry import key
-from dtk_engine.result import Result
+from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
 
 # Columns analysed when none are picked (the first eligible ones).
@@ -223,13 +223,11 @@ def distribution_result(
                 raise KeyParamsError(f"{op}: {exc}") from exc
             hists.append(hist)
             summaries.append(summary)
-            figures.append(
-                (col, "numeric", _histogram_figure(hist, col, norm, cumulative, log_y))
-            )
+            figures.append((col, "numeric", hist))
         else:
             table = categorical_distribution(data, col, top_k)
             counts.append(table)
-            figures.append((col, "categorical", _counts_figure(table, col)))
+            figures.append((col, "categorical", table))
 
     groups = group_order(data[GROUP])
     absent = [c for c in picked if c not in test.columns] if test is not None else []
@@ -269,31 +267,36 @@ def distribution_result(
         result.add_table(
             "value_counts", pd.concat(counts, ignore_index=True), "categorical"
         )
-    for col, group, fig in figures:
-        result.add_figure(col, fig, group)
-    if by_numeric:
-        numeric_cols = [c for c in picked if kinds[c] == "numeric"]
-        if numeric_cols:
-            corr = vs_by_correlations(df, numeric_cols, by)
-            result.add_table("vs_by", corr, "numeric")
-            if len(corr) == 1:
-                result.metrics["pearson"] = float(corr["pearson"].iloc[0])
-                result.metrics["spearman"] = float(corr["spearman"].iloc[0])
-            for col in numeric_cols:
-                sample = sample_scatter(df, col, by)
-                if sample.empty:
-                    continue
-                result.add_figure(
-                    f"{col} vs {by}",
-                    px.scatter(
-                        sample,
-                        x=by,
-                        y=col,
-                        labels={by: by, col: col},
-                        opacity=0.55,
-                    ),
-                    "numeric",
-                )
+    with plotly_lock:
+        for col, group, item in figures:
+            if group == "numeric":
+                fig = _histogram_figure(item, col, norm, cumulative, log_y)
+            else:
+                fig = _counts_figure(item, col)
+            result.add_figure(col, fig, group)
+        if by_numeric:
+            numeric_cols = [c for c in picked if kinds[c] == "numeric"]
+            if numeric_cols:
+                corr = vs_by_correlations(df, numeric_cols, by)
+                result.add_table("vs_by", corr, "numeric")
+                if len(corr) == 1:
+                    result.metrics["pearson"] = float(corr["pearson"].iloc[0])
+                    result.metrics["spearman"] = float(corr["spearman"].iloc[0])
+                for col in numeric_cols:
+                    sample = sample_scatter(df, col, by)
+                    if sample.empty:
+                        continue
+                    result.add_figure(
+                        f"{col} vs {by}",
+                        px.scatter(
+                            sample,
+                            x=by,
+                            y=col,
+                            labels={by: by, col: col},
+                            opacity=0.55,
+                        ),
+                        "numeric",
+                    )
     return result
 
 
@@ -313,6 +316,7 @@ def _y_title(norm: NormSpec, cumulative: bool) -> str:
     return {"count": "count", "density": "density", "share": "share of rows"}[norm]
 
 
+@plotly_lock
 def _histogram_figure(
     hist: pd.DataFrame,
     col: str,
@@ -343,6 +347,7 @@ def _histogram_figure(
     return fig
 
 
+@plotly_lock
 def _counts_figure(table: pd.DataFrame, col: str):
     return px.bar(
         table,
