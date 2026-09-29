@@ -136,25 +136,25 @@ def outliers_result(
         result.add_table("box_stats", boxes)
     hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
     has_main = False
-    if run_iqr and len(hit):
-        if len(picked) == 1:
-            col = picked[0]
-            result.add_figure(
-                f"{col}: box plot with outliers",
-                lambda: _single_box(df, col, boxes.iloc[0]),
-                main=True,
-            )
-        else:
-            result.add_figure(
-                "% outliers per column (IQR)",
-                lambda: _pct_bars(hit),
-                main=True,
-            )
-            top = boxes.set_index("column").loc[hit["column"].head(MULTIPLES)]
-            result.add_figure(
-                "Box plots of the most affected columns",
-                lambda: _multiples(df, top.reset_index()),
-            )
+    if run_iqr and len(picked) == 1:
+        col = picked[0]
+        result.add_figure(
+            f"{col}: box plot" + (" with outliers" if len(hit) else ""),
+            lambda: _single_box(df, col, boxes.iloc[0]),
+            main=True,
+        )
+        has_main = True
+    elif run_iqr and len(hit):
+        result.add_figure(
+            "% outliers per column (IQR)",
+            lambda: _pct_bars(hit),
+            main=True,
+        )
+        top = boxes.set_index("column").loc[hit["column"].head(MULTIPLES)]
+        result.add_figure(
+            "Box plots of the most affected columns",
+            lambda: _multiples(df, top.reset_index()),
+        )
         has_main = True
     if run_if and len(scores):
         with plotly_lock:
@@ -207,8 +207,12 @@ def _single_box(df: pd.DataFrame, col: str, row: pd.Series) -> go.Figure:
                 showlegend=False,
             )
         )
-    for side, fence, n in (("low", lo, row["n_below"]), ("high", hi, row["n_above"])):
-        if n:
+    values = df[col].dropna().astype(float)
+    vmin, vmax = values.min(), values.max()
+    for side, fence in (("low", lo), ("high", hi)):
+        # A fence past the data range only stretches the axis, unless there is
+        # nothing to flag: then both fences show why the column is clean.
+        if vmin <= fence <= vmax or not (row["n_below"] or row["n_above"]):
             fig.add_vline(
                 x=fence,
                 line={"dash": "dot", "color": _OUTLIER_COLOR},
@@ -298,6 +302,12 @@ def _headline(
     if run_iqr:
         hit = table[table["n_iqr"] > 0]
         if hit.empty:
+            if len(picked) == 1:
+                b = boxes.iloc[0]
+                return (
+                    f"No outliers outside the IQR fences in {picked[0]} "
+                    f"(fences {_fmt(b['lower_fence'])}–{_fmt(b['upper_fence'])})"
+                )
             return "No outliers outside the IQR fences"
         top = hit.sort_values("pct_iqr", ascending=False).iloc[0]
         if len(picked) == 1:

@@ -157,7 +157,7 @@ def test_outliers_clean_data_headline():
 
     clean_df = pd.DataFrame({"a": [10, 11, 12, 10, 11, 12, 11, 10, 12, 11]})
     res = outliers_result(clean_df)
-    assert res.headline == "No outliers outside the IQR fences"
+    assert res.headline.startswith("No outliers outside the IQR fences in a (fences ")
 
 
 def test_http_api_passes_headline_and_main(tmp_path, monkeypatch):

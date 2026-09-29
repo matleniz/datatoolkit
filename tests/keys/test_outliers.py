@@ -105,10 +105,21 @@ def test_multi_column_bars_sorted_and_multiples():
 
 
 def test_no_outliers_no_main_figure():
-    df = api.load(TRAIN_CSV)[["Pclass"]].assign(x=lambda d: range(len(d)))
-    res = api.outliers(df, columns=["x"], method="iqr")
+    df = pd.DataFrame({"x": range(50), "y": range(50)})
+    res = api.outliers(df, columns=["x", "y"], method="iqr")
     assert res.headline == "No outliers outside the IQR fences"
     assert not [f for f in res.figures if f.main]
+
+
+def test_single_column_without_outliers_keeps_box_plot_main():
+    df = pd.DataFrame({"Age": list(range(20, 60))})
+    res = api.outliers(df, columns=["Age"]).model_dump(mode="json")
+    assert res["headline"].startswith("No outliers outside the IQR fences in Age (fences ")
+    (main,) = _mains(res)
+    assert main["title"] == "Age: box plot"
+    traces = main["plotly"]["data"]
+    assert [t["type"] for t in traces] == ["box"]  # no outlier points
+    assert len(main["plotly"]["layout"]["shapes"]) == 2  # both fences in range
 
 
 def test_sampled_outlier_points_capped():
