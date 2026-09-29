@@ -120,7 +120,9 @@ def correlations_result(
             "matching step."
         )
 
+    headline = _headline(corr, pairs, threshold)
     result = Result(
+        headline=headline,
         metrics={
             "method": method,
             "n_columns": len(picked),
@@ -149,8 +151,32 @@ def correlations_result(
             text_auto=".2f" if len(picked) <= ANNOTATE_MAX else False,
             aspect="auto",
         )
-        result.add_figure(f"{method} correlation", fig)
+        result.add_figure(f"{method} correlation", fig, main=True)
     return result
+
+
+def _headline(corr: pd.DataFrame, pairs: pd.DataFrame, threshold: float) -> str:
+    if len(corr) < 2:
+        return ""
+    off = off_diagonal(corr)
+    top_pair = None
+    max_val = -1.0
+    cols = list(corr.columns)
+    for i, a in enumerate(cols):
+        for b in cols[i + 1 :]:
+            val = off.loc[a, b]
+            if not pd.isna(val) and abs(float(val)) > max_val:
+                max_val = abs(float(val))
+                top_pair = (a, b, float(val))
+    if top_pair is None:
+        return ""
+    a, b, val = top_pair
+    if len(pairs) > 0:
+        return (
+            f"{len(pairs)} collinear pair{'s' if len(pairs) > 1 else ''} "
+            f"(|corr| >= {threshold}); strongest: {a} / {b} ({val:.2f})"
+        )
+    return f"Strongest pair: {a} / {b} ({val:.2f})"
 
 
 def _suggested_steps(

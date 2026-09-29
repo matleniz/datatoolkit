@@ -231,7 +231,18 @@ def distribution_result(
 
     groups = group_order(data[GROUP])
     absent = [c for c in picked if c not in test.columns] if test is not None else []
+    headline = _headline(
+        picked,
+        kinds,
+        "train_vs_test" if test is not None else "none",
+        by,
+        by_label,
+        target,
+        summaries,
+        counts,
+    )
     result = Result(
+        headline=headline,
         metrics={
             "n_columns": len(picked),
             "n_numeric": sum(k == "numeric" for k in kinds.values()),
@@ -268,12 +279,12 @@ def distribution_result(
             "value_counts", pd.concat(counts, ignore_index=True), "categorical"
         )
     with plotly_lock:
-        for col, group, item in figures:
+        for i, (col, group, item) in enumerate(figures):
             if group == "numeric":
                 fig = _histogram_figure(item, col, norm, cumulative, log_y)
             else:
                 fig = _counts_figure(item, col)
-            result.add_figure(col, fig, group)
+            result.add_figure(col, fig, group, main=(i == 0))
         if by_numeric:
             numeric_cols = [c for c in picked if kinds[c] == "numeric"]
             if numeric_cols:
@@ -369,3 +380,40 @@ def _text(n_capped: int, absent: list[str]) -> str:
     if absent:
         lines.append(f"Not in test (shown as missing there): {absent}")
     return "\n".join(lines)
+
+
+def _headline(
+    picked: list[str],
+    kinds: dict[str, str],
+    compare: str,
+    by: str | None,
+    by_label: bool,
+    target: str | None,
+    summaries: list[pd.DataFrame],
+    counts: list[pd.DataFrame],
+) -> str:
+    if not picked:
+        return ""
+    n_num = sum(k == "numeric" for k in kinds.values())
+    n_cat = sum(k == "categorical" for k in kinds.values())
+    if len(picked) == 1:
+        col = picked[0]
+        if kinds[col] == "numeric" and summaries:
+            s = summaries[0]
+            mean_val = float(s["mean"].iloc[0])
+            std_val = float(s["std"].iloc[0])
+            return f"{col}: numeric distribution (mean {mean_val:.2f}, std {std_val:.2f})"
+        if kinds[col] == "categorical" and counts:
+            n_vals = len(counts[0])
+            return f"{col}: categorical distribution ({n_vals} categories)"
+        return f"{col}: distribution ({kinds.get(col, 'feature')})"
+
+    context = ""
+    if compare == "train_vs_test":
+        context = " across train vs test"
+    elif by is not None:
+        context = f" split by {by}"
+    elif by_label and target is not None:
+        context = f" split by {target}"
+
+    return f"{len(picked)} columns described ({n_num} numeric, {n_cat} categorical){context}"

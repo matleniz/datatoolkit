@@ -69,22 +69,28 @@ def check_result(
         train, test, columns, overlap_table, missing_ids, num_drift, cat_drift
     )
 
+    n_issues = len(issues)
+    n_errors = int((issues["severity"] == "error").sum())
+    n_warnings = int((issues["severity"] == "warning").sum())
+    n_drifted = int(
+        issues.loc[
+            (issues["check"] == "drift") & (issues["severity"] == "warning"),
+            "column",
+        ].nunique()
+    )
+    headline = _headline(n_issues, n_errors, n_warnings, n_drifted)
     result = Result(
+        headline=headline,
         metrics={
             "n_common": len(schema["common"]),
             "n_only_train": len(schema["only_train"]),
             "n_only_test": len(schema["only_test"]),
             "n_dtype_mismatch": int((both["dtype_train"] != both["dtype_test"]).sum()),
-            "n_issues": len(issues),
-            "n_errors": int((issues["severity"] == "error").sum()),
-            "n_warnings": int((issues["severity"] == "warning").sum()),
-            "n_drifted": int(
-                issues.loc[
-                    (issues["check"] == "drift") & (issues["severity"] == "warning"),
-                    "column",
-                ].nunique()
-            ),
-        }
+            "n_issues": n_issues,
+            "n_errors": n_errors,
+            "n_warnings": n_warnings,
+            "n_drifted": n_drifted,
+        },
     )
     result.add_table("issues", issues)
     result.add_table("columns", columns)
@@ -108,6 +114,7 @@ def check_result(
             barmode="group",
             labels={"pct_missing": "% missing"},
         ),
+        main=True,
     )
     ranked = num_drift.dropna(subset=["psi"]).sort_values("psi", ascending=False)
     for col in ranked["column"].head(HISTOGRAM_TOP):
@@ -133,3 +140,13 @@ def check_result(
             )
             result.add_figure(f"{col}: train vs test", fig)
     return result
+
+
+def _headline(n_issues: int, n_errors: int, n_warnings: int, n_drifted: int) -> str:
+    if n_issues == 0:
+        return "No schema, drift, or mismatch issues between train and test"
+    return (
+        f"{n_issues} train/test issue{'s' if n_issues > 1 else ''} "
+        f"({n_errors} error{'s' if n_errors != 1 else ''}, {n_warnings} warning{'s' if n_warnings != 1 else ''}); "
+        f"{n_drifted} column{'s' if n_drifted != 1 else ''} drifted"
+    )

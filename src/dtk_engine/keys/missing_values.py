@@ -137,7 +137,8 @@ def missing_result(
                 f"({s.n_test} rows) vs {s.pct_train}% of train (imputed on test?)"
             )
 
-    result = Result(metrics=metrics, text="\n".join(issues))
+    headline = _headline(metrics["n_columns_with_missing"], rates)
+    result = Result(headline=headline, metrics=metrics, text="\n".join(issues))
     result.add_table("missing_rates", rates)
     result.add_table("missing_per_row", per_row)
     result.add_table("sentinels", sentinels)
@@ -161,6 +162,7 @@ def missing_result(
                 y="pct_missing",
                 labels={"pct_missing": "% missing"},
             ),
+            main=True,
         )
         result.add_figure(
             "Missing fields per row",
@@ -178,6 +180,21 @@ def missing_result(
                 px.imshow(matrix, zmin=0, zmax=1, aspect="auto"),
             )
     return result
+
+
+def _headline(n_missing_cols: int, rates: pd.DataFrame) -> str:
+    if n_missing_cols == 0:
+        return "No missing values"
+    n_above_30 = int((rates["pct_missing"] >= 30.0).sum()) if len(rates) else 0
+    if n_above_30 > 0:
+        return (
+            f"{n_missing_cols} column{'s' if n_missing_cols > 1 else ''} have missing "
+            f"values; {n_above_30} above 30 %"
+        )
+    return (
+        f"{n_missing_cols} column{'s' if n_missing_cols > 1 else ''} have missing "
+        f"values; none above 30 %"
+    )
 
 
 def _suggested_steps(drop_candidates: list[str], target: str | None) -> pd.DataFrame:

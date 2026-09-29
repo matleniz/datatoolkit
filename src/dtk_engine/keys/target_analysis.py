@@ -137,6 +137,10 @@ def target_result(
         result.metrics["minority_pct"] = float(balance["pct"].min())
         result.add_table("class_balance", balance)
         _classification_details(result, rows, target, picked, kinds, top, top_k)
+        headline = (
+            f"Top feature: {ranking['column'].iloc[0]}; "
+            f"{len(balance)}-class classification ({float(balance['pct'].min()):.1f} % minority)"
+        )
     else:
         y = rows[target].astype(float)
         result.metrics["target_mean"] = float(y.mean())
@@ -154,6 +158,14 @@ def target_result(
                 ),
             )
         _regression_details(result, rows, target, picked, kinds, top, top_k, bins)
+        headline = (
+            f"Top feature: {ranking['column'].iloc[0]}; "
+            f"regression target across {len(picked)} feature{'s' if len(picked) != 1 else ''}"
+        )
+    result.headline = headline
+    if not top and result.figures:
+        # If no per-feature figure, make the overview figure main
+        result.figures[0].main = True
     if n_capped:
         result.text = (
             f"{n_capped} more eligible features not analysed (first "
@@ -198,10 +210,13 @@ def _classification_details(result, rows, target, picked, kinds, top, top_k):
             "categorical",
         )
     with plotly_lock:
-        for col in top:
+        for i, col in enumerate(top):
             if col in stats:
                 result.add_figure(
-                    f"{col} by class", _box_figure(stats[col], col), "numeric"
+                    f"{col} by class",
+                    _box_figure(stats[col], col),
+                    "numeric",
+                    main=(i == 0),
                 )
             else:
                 fig = px.bar(
@@ -211,7 +226,9 @@ def _classification_details(result, rows, target, picked, kinds, top, top_k):
                     color="class",
                     labels={"value": col, "rate": "share of the value's rows"},
                 )
-                result.add_figure(f"class rate by {col}", fig, "categorical")
+                result.add_figure(
+                    f"class rate by {col}", fig, "categorical", main=(i == 0)
+                )
 
 
 def _regression_details(result, rows, target, picked, kinds, top, top_k, bins):
@@ -239,7 +256,7 @@ def _regression_details(result, rows, target, picked, kinds, top, top_k, bins):
         )
     labels = {"mean_target": f"mean {target}"}
     with plotly_lock:
-        for col in top:
+        for i, col in enumerate(top):
             if col in binned:
                 fig = px.line(
                     binned[col].dropna(subset=["feature_mean"]),
@@ -248,12 +265,16 @@ def _regression_details(result, rows, target, picked, kinds, top, top_k, bins):
                     markers=True,
                     labels={**labels, "feature_mean": col},
                 )
-                result.add_figure(f"mean {target} by {col} bin", fig, "numeric")
+                result.add_figure(
+                    f"mean {target} by {col} bin", fig, "numeric", main=(i == 0)
+                )
             else:
                 fig = px.bar(
                     means[col], x="value", y="mean_target", labels={**labels, "value": col}
                 )
-                result.add_figure(f"mean {target} by {col}", fig, "categorical")
+                result.add_figure(
+                    f"mean {target} by {col}", fig, "categorical", main=(i == 0)
+                )
 
 
 @plotly_lock

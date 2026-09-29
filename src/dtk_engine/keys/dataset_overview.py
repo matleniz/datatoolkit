@@ -45,16 +45,23 @@ def overview_result(df: pd.DataFrame, head_rows: int = 5) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.overview``)."""
     profile = column_profile(df)
     n_cells = df.size
+    pct_missing = (
+        round(100 * int(df.isna().sum().sum()) / n_cells, 2) if n_cells else 0.0
+    )
+    n_dups = int(hashable_frame(df).duplicated().sum())
+    headline = (
+        f"{len(df)} rows, {df.shape[1]} columns; "
+        f"{pct_missing:.1f} % missing cells, {n_dups} duplicate row{'s' if n_dups != 1 else ''}"
+    )
     result = Result(
+        headline=headline,
         metrics={
             "rows": len(df),
             "cols": df.shape[1],
             "memory_mb": round(df.memory_usage(deep=True).sum() / 1e6, 3),
-            "pct_missing_cells": (
-                round(100 * int(df.isna().sum().sum()) / n_cells, 2) if n_cells else 0.0
-            ),
-            "n_duplicate_rows": int(hashable_frame(df).duplicated().sum()),
-        }
+            "pct_missing_cells": pct_missing,
+            "n_duplicate_rows": n_dups,
+        },
     )
     result.add_table("columns", profile, group="Overview")
     result.add_table("head", df.head(head_rows), group="Overview")
@@ -65,6 +72,7 @@ def overview_result(df: pd.DataFrame, head_rows: int = 5) -> Result:
                 profile, x="column", y="pct_missing", labels={"pct_missing": "% missing"}
             ),
             group="Overview",
+            main=True,
         )
     _add_type_groups(
         result, df, dict(zip(profile["column"], profile["semantic_type"], strict=True))
