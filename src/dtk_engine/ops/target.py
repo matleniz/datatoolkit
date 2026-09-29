@@ -9,6 +9,8 @@ information on their (top-k) labels, missing as its own label.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
@@ -169,6 +171,41 @@ def association_table(
     return table
 
 
+def _sig(v: float, digits: int) -> str:
+    """``v`` rounded to ``digits`` significant digits, no trailing zeros."""
+    if v == 0:
+        return "0"
+    decimals = max(0, digits - 1 - math.floor(math.log10(abs(v))))
+    text = f"{round(v, decimals):.{decimals}f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def quantile_bins(present: pd.Series, bins: int) -> tuple[pd.Series, list[str]]:
+    """Quantile bin code of each (non-missing) value and the readable label of every
+    bin ("11.7–13.5": 3 significant digits, whole numbers for an integer column)."""
+    codes, edges = pd.qcut(
+        present,
+        q=min(bins, present.nunique()),
+        duplicates="drop",
+        retbins=True,
+        labels=False,
+    )
+    integer = bool((present % 1 == 0).all())
+    for digits in range(3, 11):
+        labels = []
+        for i in range(len(edges) - 1):
+            if integer:
+                lo = int(edges[i]) if i == 0 else math.floor(edges[i]) + 1
+                hi = math.floor(edges[i + 1])
+                lo_s, hi_s = str(lo), str(hi)
+            else:
+                lo_s, hi_s = _sig(edges[i], digits), _sig(edges[i + 1], digits)
+            labels.append(lo_s if lo_s == hi_s else f"{lo_s}–{hi_s}")
+        if len(set(labels)) == len(labels):
+            break
+    return codes, labels
+
+
 def _corr(x: pd.Series, y: pd.Series, method: str) -> float:
     with np.errstate(divide="ignore", invalid="ignore"):
         value = x.corr(y, method=method)
@@ -227,10 +264,14 @@ def category_class_rates(
 def category_target_means(
     rows: pd.DataFrame, column: str, target: str, top_k: int = TOP_K
 ) -> pd.DataFrame:
-    """Per (top-k) value of a categorical feature: row count and mean target."""
+    """Per (top-k) value of a categorical feature: row count, mean target and its
+    spread (std, quartiles)."""
     labels = top_labels(rows[column], top_k)
     y = rows[target].astype(float)
-    grouped = y.groupby(labels).agg(["count", "mean"])
+    by = y.groupby(labels)
+    grouped = by.agg(["count", "mean", "std"])
+    grouped["q1"] = by.quantile(0.25)
+    grouped["q3"] = by.quantile(0.75)
     grouped = grouped.sort_values("count", ascending=False, kind="stable")
     return pd.DataFrame(
         {
@@ -238,6 +279,9 @@ def category_target_means(
             "value": grouped.index,
             "count": grouped["count"].to_numpy(),
             "mean_target": grouped["mean"].to_numpy(),
+            "std_target": grouped["std"].to_numpy(),
+            "q1_target": grouped["q1"].to_numpy(),
+            "q3_target": grouped["q3"].to_numpy(),
         }
     )
 
@@ -249,19 +293,28 @@ def binned_target_mean(
     x = rows[column].astype(float)
     y = rows[target].astype(float)
     present = x.dropna()
-    fields = ["column", "bin", "feature_mean", "count", "mean_target"]
+    fields = [
+        "column",
+        "bin",
+        "feature_mean",
+        "count",
+        "mean_target",
+        "std_target",
+        "q1_target",
+        "q3_target",
+    ]
     if present.empty:
         return pd.DataFrame(columns=fields)
-    codes = pd.qcut(present, q=min(bins, present.nunique()), duplicates="drop")
+    codes, names = quantile_bins(present, bins)
     out = []
-    for interval, idx in present.groupby(codes, observed=True).groups.items():
+    for code, idx in present.groupby(codes).groups.items():
         out.append(
             {
                 "column": column,
-                "bin": str(interval),
+                "bin": names[int(code)],
                 "feature_mean": float(x[idx].mean()),
                 "count": len(idx),
-                "mean_target": float(y[idx].mean()),
+                **_spread(y[idx]),
             }
         )
     missing = x.isna()
@@ -272,7 +325,68 @@ def binned_target_mean(
                 "bin": value_label(np.nan),
                 "feature_mean": np.nan,
                 "count": int(missing.sum()),
-                "mean_target": float(y[missing].mean()),
+                **_spread(y[missing]),
             }
         )
     return pd.DataFrame(out, columns=fields)
+
+
+def _spread(y: pd.Series) -> dict:
+    """Mean, std and quartiles of a target slice (``*_target`` table fields)."""
+    return {
+        "mean_target": float(y.mean()),
+        "std_target": float(y.std()) if len(y) > 1 else np.nan,
+        "q1_target": float(y.quantile(0.25)),
+        "q3_target": float(y.quantile(0.75)),
+    }
+
+
+def _count_rows(counts: pd.DataFrame, order: list[str], key: str, column: str) -> list:
+    """Long rows (one per group x class) from a group x class count crosstab;
+    ``pct_of_<key>`` is the class share (0-100) of the group's rows."""
+    totals = counts.sum(axis=1)
+    return [
+        {
+            "column": column,
+            key: group,
+            "class": cls,
+            "count": int(counts.loc[group, cls]),
+            f"pct_of_{key}": float(100 * counts.loc[group, cls] / totals[group]),
+        }
+        for group in order
+        for cls in sorted(counts.columns, key=natural_key)
+    ]
+
+
+def class_counts_by_category(
+    rows: pd.DataFrame, column: str, target: str, top_k: int = TOP_K
+) -> pd.DataFrame:
+    """Row count per (top-k value of a categorical feature, class), long format,
+    values most frequent first; ``pct_of_value`` = class share of the value's rows."""
+    labels = top_labels(rows[column], top_k)
+    counts = pd.crosstab(labels, rows[target].map(value_label))
+    order = counts.sum(axis=1).sort_values(ascending=False, kind="stable").index
+    return pd.DataFrame(
+        _count_rows(counts, list(order), "value", column),
+        columns=["column", "value", "class", "count", "pct_of_value"],
+    )
+
+
+def class_counts_by_bin(
+    rows: pd.DataFrame, column: str, target: str, bins: int = FEATURE_BINS
+) -> pd.DataFrame:
+    """Row count per (quantile bin of a numeric feature, class), long format, bins
+    in increasing order then ``(missing)``; ``pct_of_bin`` = class share of the bin."""
+    fields = ["column", "bin", "class", "count", "pct_of_bin"]
+    x = rows[column].astype(float)
+    present = x.dropna()
+    if present.empty:
+        return pd.DataFrame(columns=fields)
+    codes, order = quantile_bins(present, bins)
+    labels = codes.map(dict(enumerate(order))).reindex(x.index)
+    labels = labels.where(x.notna(), value_label(np.nan))
+    if x.isna().any():
+        order.append(value_label(np.nan))
+    counts = pd.crosstab(labels, rows[target].map(value_label))
+    order = [b for b in order if b in counts.index]
+    return pd.DataFrame(_count_rows(counts, order, "bin", column), columns=fields)
