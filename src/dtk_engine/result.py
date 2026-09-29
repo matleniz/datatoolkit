@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from dtk_engine.ops.profile import as_text, object_kind
 
@@ -75,30 +75,46 @@ class Figure(BaseModel):
     title: str
     plotly: dict[str, Any]
     group: str | None = None
+    main: bool = False
 
 
 class Result(BaseModel):
+    headline: str = ""
     metrics: dict[str, float | int | str] = Field(default_factory=dict)
     tables: list[Table] = Field(default_factory=list)
     figures: list[Figure] = Field(default_factory=list)
     text: str = ""
+
+    @model_validator(mode="after")
+    def _check_single_main_figure(self) -> Result:
+        main_count = sum(1 for f in self.figures if f.main)
+        if main_count > 1:
+            raise ValueError(f"At most one figure can have main=True, got {main_count}")
+        return self
 
     def add_figure(
         self,
         title: str,
         fig: Any | Callable[[], Any],
         group: str | None = None,
+        main: bool = False,
     ) -> None:
         """Attach a Plotly figure as JSON; `group` lets a front bucket it in a tab.
 
         ``fig`` may be a Plotly Figure, a dict, or a callable returning either.
         Construction (if callable) and serialization are protected by ``plotly_lock``.
+        At most one figure per Result can have ``main=True``.
         """
         with plotly_lock:
             if callable(fig):
                 fig = fig()
             data = fig if isinstance(fig, dict) else json.loads(fig.to_json())
-            self.figures.append(Figure(title=title, plotly=data, group=group))
+            if main:
+                for existing in self.figures:
+                    existing.main = False
+            self.figures.append(
+                Figure(title=title, plotly=data, group=group, main=main)
+            )
 
     def add_table(
         self,

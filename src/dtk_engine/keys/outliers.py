@@ -109,7 +109,9 @@ def outliers_result(
     flagged = flagged_rows(df, scores, picked) if run_if else pd.DataFrame(
         columns=["row", "score", *picked]
     )
+    headline = _headline(picked, table, int(scores["flagged"].sum()) if len(scores) else 0, run_iqr)
     result = Result(
+        headline=headline,
         metrics={
             "n_rows": len(df),
             "n_numeric_columns": len(picked),
@@ -130,6 +132,7 @@ def outliers_result(
                 px.bar(
                     table, x="column", y="pct_iqr", labels={"pct_iqr": "% outside fences"}
                 ),
+                main=True,
             )
         if run_if and len(scores):
             result.add_figure(
@@ -137,5 +140,27 @@ def outliers_result(
                 px.histogram(
                     scores, x="score", color="flagged", labels={"score": "anomaly score"}
                 ),
+                main=not (run_iqr and len(table)),
             )
     return result
+
+
+def _headline(
+    picked: list[str], table: pd.DataFrame, n_rows_flagged: int, run_iqr: bool
+) -> str:
+    if not picked:
+        return ""
+    if run_iqr:
+        n_iqr_cols = int((table["n_iqr"] > 0).sum()) if len(table) else 0
+        if n_iqr_cols == 0:
+            return "No outliers outside the IQR fences"
+        top_row = table.sort_values("pct_iqr", ascending=False).iloc[0]
+        top_col = top_row["column"]
+        top_pct = top_row["pct_iqr"]
+        return (
+            f"{n_iqr_cols} column{'s' if n_iqr_cols > 1 else ''} with outliers outside "
+            f"IQR fences (max: {top_col} at {top_pct:.1f} %)"
+        )
+    if n_rows_flagged == 0:
+        return "No anomalous rows flagged"
+    return f"{n_rows_flagged} anomalous row{'s' if n_rows_flagged > 1 else ''} flagged"

@@ -140,7 +140,7 @@ def chart_result(
             },
             text=_text(n_dropped, sample_size),
         )
-        result.add_figure(title, fig)
+        result.add_figure(title, fig, main=True)
     return result
 
 

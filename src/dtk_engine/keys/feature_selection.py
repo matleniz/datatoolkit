@@ -100,14 +100,21 @@ def selection_result(
     steps = suggested_steps(
         target, scores, pairs, constant, needed["pca_components_95pct"]
     )
+    top_feat = str(scores["column"].iloc[0])
+    pca95 = needed["pca_components_95pct"]
+    headline = (
+        f"Top feature: {top_feat}; {pca95} PCA components explain 95 % variance "
+        f"({len(columns)} features scored)"
+    )
     result = Result(
+        headline=headline,
         metrics={
             "task": task,
             "n_rows": len(df),
             "n_features": len(columns),
             "n_collinear_pairs": len(pairs),
             "n_near_constant": len(constant),
-            "top_feature": str(scores["column"].iloc[0]),
+            "top_feature": top_feat,
             **needed,
         },
         text=FAMILIES_TEXT
@@ -125,6 +132,7 @@ def selection_result(
         result.add_figure(
             "Mutual information per feature (color: combined rank, 1 = best)",
             px.bar(scores, x="column", y="mutual_info", color="combined_rank"),
+            main=True,
         )
         result.add_figure(
             "PCA cumulative explained variance (standardized features)",
@@ -147,6 +155,7 @@ def _encode_first_result(df: pd.DataFrame, target: str, task: str) -> Result:
     steps, summary = advise(df, target=target)
     features = summary[summary["column"] != target]
     result = Result(
+        headline=f"No numeric features to score for target {target!r}; encode first",
         metrics={
             "task": task,
             "n_rows": len(df),
