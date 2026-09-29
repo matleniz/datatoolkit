@@ -112,3 +112,47 @@ def test_bad_params_raise_key_params_error():
     for params in ({"target": "nope"}, {"columns": ["nope"]}):
         with pytest.raises(KeyParamsError):
             run_key("target_analysis", params)
+
+
+def test_classification_focus_counts_headline_and_figures():
+    df = _planted()
+    res = api.target_analysis(df, target="y", columns=["cat_signal", "signal"])
+    assert res.metrics["focus_feature"] == "cat_signal"
+    counts = pd.DataFrame.from_records(
+        next(t.records for t in res.tables if t.title == "class_counts_by_category")
+    )
+    sub = counts[counts["column"] == "cat_signal"]
+    assert sub["count"].sum() == len(df)
+    assert np.allclose(sub.groupby("value")["pct_of_value"].sum(), 100.0)
+    by_bin = pd.DataFrame.from_records(
+        next(t.records for t in res.tables if t.title == "class_counts_by_bin")
+    )
+    assert by_bin["count"].sum() == len(df)
+    assert (
+        res.headline == "y rate ranges from 0 % (no) to 100 % (yes) across cat_signal"
+    )
+    mains = [f for f in res.figures if f.main]
+    assert len(mains) == 1 and "cat_signal" in mains[0].title
+    assert {t["type"] for t in mains[0].plotly["data"]} == {"bar"}
+    assert mains[0].plotly["layout"]["barmode"] == "group"
+    assert any("share" in f.title and "cat_signal" in f.title for f in res.figures)
+    assert any(f.title == "Association with the target" for f in res.figures)
+
+
+def test_regression_curve_band_and_headline():
+    rng = np.random.default_rng(2)
+    n = 400
+    x = rng.integers(1, 11, size=n)
+    df = pd.DataFrame({"qual": x, "price": 30000 * x + rng.normal(0, 5000, n)})
+    res = api.target_analysis(df, target="price", bins=5)
+    assert res.headline.startswith("Mean price rises from ")
+    assert res.headline.endswith(" across qual bins")
+    main = next(f for f in res.figures if f.main)
+    assert "qual" in main.title
+    traces = main.plotly["data"]
+    assert len(traces) == 3 and traces[1]["fill"] == "tonexty"
+    assert len(traces[2]["customdata"][0]) == 4  # bin, rows, q1, q3
+    binned = pd.DataFrame.from_records(
+        next(t.records for t in res.tables if t.title == "binned_target_mean")
+    )
+    assert {"std_target", "q1_target", "q3_target"} <= set(binned.columns)
