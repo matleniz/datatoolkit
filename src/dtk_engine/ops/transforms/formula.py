@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import re
-from typing import Literal
+from typing import Literal, NoReturn
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,7 @@ from dtk_engine.transform_registry import TransformParams, transform
 
 IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_]*$"
 _VAR_PREFIX = "_dtk_var_"
+_COL_PREFIX = "_dtk_col_"  # df.col / df["col"] references
 _VAR_TOKEN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)")
 _DIV_EPS = 1e-12
 
@@ -50,11 +51,37 @@ _ALLOWED_FUNCS = frozenset(
     }
 )
 _ALLOWED_CONSTANTS = frozenset({"pi"})
-_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow)
-_UNARYOPS = (ast.UAdd, ast.USub)
+_BINOPS = (
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.Pow,
+    ast.Mod,
+    ast.FloorDiv,
+    ast.BitAnd,
+    ast.BitOr,
+)
+_UNARYOPS = (ast.UAdd, ast.USub, ast.Not, ast.Invert)
 _CMPOPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)
 _STATS = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
 _CONSTANT_VALUES = {"pi": float(np.pi)}
+_NP_MODULES = frozenset({"np", "numpy"})
+# np.<name> -> canonical whitelist name.
+_NP_FUNCS: dict[str, str] = {
+    **{
+        f: f
+        for f in (
+            "log", "log1p", "log2", "log10", "exp", "sqrt", "abs", "round",
+            "floor", "ceil", "sign", "square", "sin", "cos", "tanh", "clip",
+            "where",
+        )
+    },
+    "minimum": "min",
+    "maximum": "max",
+    "isnan": "isnull",
+}
+_NP_CONSTANTS: dict[str, str] = {"pi": "pi"}
 # Exact arity for functions that are not min/max/round (those keep flexible rules).
 _FUNC_ARITY: dict[str, int] = {
     "log": 1,
@@ -123,22 +150,176 @@ def _rewrite_vars(expr: str) -> str:
     return _VAR_TOKEN.sub(lambda m: f"{_VAR_PREFIX}{m.group(1)}", expr)
 
 
-def _refuse(construct: str, detail: str = "") -> None:
-    msg = f"formula: refused {construct}"
+def _restore_vars(text: str) -> str:
+    """Undo ``_rewrite_vars`` inside a string literal (e.g. ``df["a@b"]``)."""
+    return text.replace(_VAR_PREFIX, "@")
+
+
+def _not_allowed(msg: str) -> NoReturn:
+    raise ValueError(f"formula: {msg}")
+
+
+def _refuse(construct: str, detail: str = "") -> NoReturn:
+    msg = f"{construct} is not allowed in a formula"
     if detail:
         msg += f" ({detail})"
-    raise ValueError(msg)
+    _not_allowed(msg)
+
+
+def _dotted(node: ast.AST) -> list[str] | None:
+    """``np.random.rand`` -> ``["np", "random", "rand"]``; None if not a name chain."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return parts[::-1]
+
+
+def _check_dunder(attr: str) -> None:
+    if attr.startswith("__"):
+        _not_allowed(f"dunder attribute access ({attr}) is not allowed in a formula")
+
+
+def _np_allowed() -> str:
+    return ", ".join(f"np.{n}" for n in sorted(_NP_FUNCS) + sorted(_NP_CONSTANTS))
+
+
+class _Normalizer(ast.NodeTransformer):
+    """Map the Python-flavoured forms onto the canonical mini-language AST.
+
+    ``np.f(...)`` / ``numpy.f(...)`` -> ``f(...)``, ``np.pi`` -> ``pi``,
+    ``a if c else b`` -> ``where(c, a, b)``, ``df.col`` / ``df["col"]`` -> a
+    column reference. Every other attribute / subscript / method call is refused
+    here with a message naming the construct; the rest is checked by the walk.
+    """
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            _check_dunder(func.attr)
+            parts = _dotted(func)
+            if parts is not None and parts[0] in _NP_MODULES:
+                name = ".".join(["np", *parts[1:]])
+                if len(parts) != 2 or parts[1] not in _NP_FUNCS:
+                    _not_allowed(
+                        f"{name} is not allowed in a formula; "
+                        f"allowed numpy names: {_np_allowed()}"
+                    )
+                node.func = ast.Name(id=_NP_FUNCS[parts[1]], ctx=ast.Load())
+                if parts[1] in ("minimum", "maximum") and len(node.args) != 2:
+                    _not_allowed(
+                        f"{name}() takes 2 arguments, got {len(node.args)}"
+                    )
+            elif parts is not None and parts[0] == "df" and len(parts) == 2:
+                _not_allowed(
+                    f"method calls like df.{func.attr}(...) are not allowed "
+                    "in a formula"
+                )
+            else:
+                _not_allowed(
+                    f"method calls like .{func.attr}(...) are not allowed in a "
+                    "formula; call functions by name (log(x)) or as np.log(x)"
+                )
+        elif not isinstance(func, ast.Name):
+            _not_allowed(
+                "calling the result of an expression is not allowed in a "
+                "formula; call functions by name (log(x)) or as np.log(x)"
+            )
+        node.args = [self.visit(arg) for arg in node.args]
+        return node
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        _check_dunder(node.attr)
+        parts = _dotted(node)
+        if parts is not None and len(parts) == 2:
+            root, attr = parts
+            if root in _NP_MODULES:
+                if attr in _NP_CONSTANTS:
+                    return ast.Name(id=_NP_CONSTANTS[attr], ctx=ast.Load())
+                if attr in _NP_FUNCS:
+                    _not_allowed(f"np.{attr} must be called, e.g. np.{attr}(x)")
+                _not_allowed(
+                    f"np.{attr} is not allowed in a formula; "
+                    f"allowed numpy names: {_np_allowed()}"
+                )
+            if root == "df":
+                return ast.Name(id=f"{_COL_PREFIX}{attr}", ctx=ast.Load())
+        _not_allowed(
+            "attribute access is only allowed as np.<function> or df.<column>"
+            + (f" (got {'.'.join(parts)})" if parts else "")
+        )
+
+    def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+        if isinstance(node.value, ast.Name) and node.value.id == "df":
+            key = node.slice
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                col = _restore_vars(key.value)
+                return ast.Name(id=f"{_COL_PREFIX}{col}", ctx=ast.Load())
+            _not_allowed('df[...] needs a column name in quotes, e.g. df["Age"]')
+        _not_allowed('subscript is only allowed as df["column"]')
+
+    def visit_IfExp(self, node: ast.IfExp) -> ast.AST:
+        return ast.Call(
+            func=ast.Name(id="where", ctx=ast.Load()),
+            args=[self.visit(node.test), self.visit(node.body), self.visit(node.orelse)],
+            keywords=[],
+        )
+
+
+# Named refusals for constructs the walk never accepts.
+_REFUSED_NODES: tuple[tuple[type, str], ...] = (
+    (ast.Lambda, "lambda"),
+    (ast.ListComp, "a comprehension"),
+    (ast.GeneratorExp, "a comprehension"),
+    (ast.DictComp, "a comprehension"),
+    (ast.SetComp, "a comprehension"),
+    (ast.List, "a list literal"),
+    (ast.Tuple, "a tuple"),
+    (ast.Dict, "a dict literal"),
+    (ast.Set, "a set literal"),
+    (ast.NamedExpr, "assignment (:=)"),
+    (ast.Await, "await"),
+    (ast.Yield, "yield"),
+    (ast.YieldFrom, "yield"),
+    (ast.Starred, "*unpacking"),
+    (ast.JoinedStr, "an f-string"),
+    (ast.FormattedValue, "an f-string"),
+    (ast.Slice, "a slice"),
+)
+_OP_SYMBOLS: dict[type, str] = {
+    ast.MatMult: "@ (write @name with no space for a variable)",
+    ast.BitXor: "^ (use ** for powers)",
+    ast.LShift: "<<",
+    ast.RShift: ">>",
+    ast.Is: "'is'",
+    ast.IsNot: "'is not'",
+    ast.In: "'in'",
+    ast.NotIn: "'not in'",
+}
+
+
+def _op_label(op: ast.AST) -> str:
+    return _OP_SYMBOLS.get(type(op), type(op).__name__)
 
 
 def _check_expr(expr: str, declared_vars: set[str]) -> ast.Expression:
-    """Parse and whitelist-walk ``expr``; return the AST (or raise ValueError)."""
+    """Parse, normalize and whitelist-walk ``expr``; return the canonical AST.
+
+    Raises ValueError naming the refused construct.
+    """
     rewritten = _rewrite_vars(expr)
-    if "@" in rewritten:
-        _refuse("@variable", "invalid or incomplete @name")
     try:
         tree = ast.parse(rewritten, mode="eval")
     except SyntaxError as exc:
+        if re.match(r"\s*(import|from)\b", expr):
+            _refuse("import")
+        if "@" in rewritten:
+            _not_allowed("invalid or incomplete @name")
         raise ValueError(f"formula: invalid expression ({exc.msg})") from exc
+    tree = _Normalizer().visit(tree)
 
     used_vars: set[str] = set()
 
@@ -147,91 +328,80 @@ def _check_expr(expr: str, declared_vars: set[str]) -> ast.Expression:
             walk(node.body)
             return
         if isinstance(node, ast.Constant):
-            if type(node.value) not in (int, float) or isinstance(node.value, bool):
-                _refuse("Constant", f"non-numeric {node.value!r}")
+            if isinstance(node.value, str):
+                _refuse(
+                    f"text constant {_restore_vars(node.value)!r}",
+                    'only df["column"] takes a string',
+                )
+            if type(node.value) not in (int, float):
+                _refuse(f"constant {node.value!r}", "only numbers are")
             return
         if isinstance(node, ast.Name):
             if node.id.startswith(_VAR_PREFIX):
                 used_vars.add(node.id[len(_VAR_PREFIX) :])
+            elif node.id.startswith("__") and node.id.endswith("__"):
+                _refuse(f"dunder name {node.id}")
             return
         if isinstance(node, ast.UnaryOp):
             if not isinstance(node.op, _UNARYOPS):
-                _refuse("UnaryOp", type(node.op).__name__)
+                _refuse(_op_label(node.op))
             walk(node.operand)
             return
         if isinstance(node, ast.BinOp):
             if not isinstance(node.op, _BINOPS):
-                _refuse("BinOp", type(node.op).__name__)
+                _refuse(_op_label(node.op))
             walk(node.left)
             walk(node.right)
+            return
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                walk(value)
             return
         if isinstance(node, ast.Compare):
             for op in node.ops:
                 if not isinstance(op, _CMPOPS):
-                    _refuse("Compare", type(op).__name__)
+                    _refuse(_op_label(op))
             walk(node.left)
             for comparator in node.comparators:
                 walk(comparator)
             return
         if isinstance(node, ast.Call):
-            if not isinstance(node.func, ast.Name):
-                _refuse("Call", "function must be a bare name")
+            assert isinstance(node.func, ast.Name)  # _Normalizer guarantees it
+            fname = node.func.id
             if node.keywords:
-                _refuse("keyword arguments", node.func.id)
-            if node.func.id not in _ALLOWED_FUNCS:
-                _refuse(
-                    "unknown function",
-                    f"{node.func.id}(); allowed: {', '.join(sorted(_ALLOWED_FUNCS))}",
+                _refuse("keyword arguments", f"in {fname}()")
+            if fname not in _ALLOWED_FUNCS:
+                _not_allowed(
+                    f"unknown function {fname}() is not allowed in a formula; "
+                    f"allowed: {', '.join(sorted(_ALLOWED_FUNCS))}"
                 )
             if not node.args:
-                _refuse("Call", f"{node.func.id}() needs at least one argument")
-            if node.func.id == "round":
+                _not_allowed(f"{fname}() needs at least one argument")
+            if fname == "round":
                 if len(node.args) > 2:
-                    _refuse("Call", "round() takes at most 2 arguments")
+                    _not_allowed("round() takes at most 2 arguments")
                 if len(node.args) == 2:
                     dec = node.args[1]
                     if (
                         not isinstance(dec, ast.Constant)
                         or type(dec.value) is not int
                     ):
-                        _refuse(
-                            "Call",
-                            "round() second argument must be an integer constant",
+                        _not_allowed(
+                            "round() second argument must be an integer constant"
                         )
-            elif node.func.id in ("min", "max"):
+            elif fname in ("min", "max"):
                 pass  # one or more args
             else:
-                expected = _FUNC_ARITY[node.func.id]
+                expected = _FUNC_ARITY[fname]
                 if len(node.args) != expected:
-                    _refuse(
-                        "Call",
-                        f"{node.func.id}() takes {expected} argument"
-                        f"{'' if expected == 1 else 's'}, got {len(node.args)}",
+                    _not_allowed(
+                        f"{fname}() takes {expected} argument"
+                        f"{'' if expected == 1 else 's'}, got {len(node.args)}"
                     )
             for arg in node.args:
                 walk(arg)
             return
-        # Named refusals for common injection / disallowed constructs.
-        for typ, label in (
-            (ast.Attribute, "Attribute"),
-            (ast.Subscript, "Subscript"),
-            (ast.Lambda, "Lambda"),
-            (ast.List, "List"),
-            (ast.Tuple, "Tuple"),
-            (ast.Dict, "Dict"),
-            (ast.Set, "Set"),
-            (ast.BoolOp, "BoolOp"),
-            (ast.IfExp, "IfExp"),
-            (ast.ListComp, "ListComp"),
-            (ast.GeneratorExp, "GeneratorExp"),
-            (ast.DictComp, "DictComp"),
-            (ast.SetComp, "SetComp"),
-            (ast.Await, "Await"),
-            (ast.Yield, "Yield"),
-            (ast.Starred, "Starred"),
-            (ast.JoinedStr, "JoinedStr"),
-            (ast.FormattedValue, "FormattedValue"),
-        ):
+        for typ, label in _REFUSED_NODES:
             if isinstance(node, typ):
                 _refuse(label)
         _refuse(type(node).__name__)
@@ -246,14 +416,18 @@ def _check_expr(expr: str, declared_vars: set[str]) -> ast.Expression:
     return tree
 
 
-def _column_names(tree: ast.AST) -> set[str]:
-    cols: set[str] = set()
+def _column_refs(tree: ast.AST) -> dict[str, str]:
+    """Map env key -> DataFrame column for every column the expression reads."""
+    cols: dict[str, str] = {}
 
     class Visitor(ast.NodeVisitor):
         def visit_Name(self, node: ast.Name) -> None:
             if node.id.startswith(_VAR_PREFIX) or node.id in _ALLOWED_CONSTANTS:
                 return
-            cols.add(node.id)
+            if node.id.startswith(_COL_PREFIX):
+                cols[node.id] = node.id[len(_COL_PREFIX) :]
+            else:
+                cols[node.id] = node.id
 
         def visit_Call(self, node: ast.Call) -> None:
             # Function name is not a column; only walk args.
@@ -378,6 +552,22 @@ def _eval_compare(node: ast.Compare, env: dict[str, np.ndarray], n: int) -> np.n
     return out
 
 
+def _logical(values: list[np.ndarray], combine) -> np.ndarray:
+    """Element-wise boolean op on truthiness (!= 0) -> 0/1; any NaN -> NaN."""
+    out = combine([v != 0 for v in values]).astype(float)
+    for v in values:
+        out[np.isnan(v)] = np.nan
+    return out
+
+
+def _safe_div(op, a: np.ndarray, b: np.ndarray, n: int) -> np.ndarray:
+    """``op(a, b)`` with NaN where ``|b|`` is ~0 (``/``, ``//``, ``%``)."""
+    out = np.full(n, np.nan, dtype=float)
+    ok = np.abs(b) >= _DIV_EPS
+    op(a, b, out=out, where=ok)
+    return out
+
+
 def _eval_node(node: ast.AST, env: dict[str, np.ndarray], n: int) -> np.ndarray:
     if isinstance(node, ast.Expression):
         return _eval_node(node.body, env, n)
@@ -387,7 +577,13 @@ def _eval_node(node: ast.AST, env: dict[str, np.ndarray], n: int) -> np.ndarray:
         return env[node.id]
     if isinstance(node, ast.UnaryOp):
         a = _eval_node(node.operand, env, n)
+        if isinstance(node.op, (ast.Not, ast.Invert)):
+            return _logical([a], lambda m: ~m[0])
         return -a if isinstance(node.op, ast.USub) else np.asarray(a, dtype=float)
+    if isinstance(node, ast.BoolOp):
+        values = [_eval_node(v, env, n) for v in node.values]
+        reduce = np.logical_and if isinstance(node.op, ast.And) else np.logical_or
+        return _logical(values, reduce.reduce)
     if isinstance(node, ast.BinOp):
         a = _eval_node(node.left, env, n)
         b = _eval_node(node.right, env, n)
@@ -398,10 +594,15 @@ def _eval_node(node: ast.AST, env: dict[str, np.ndarray], n: int) -> np.ndarray:
         if isinstance(node.op, ast.Mult):
             return a * b
         if isinstance(node.op, ast.Div):
-            out = np.full(n, np.nan, dtype=float)
-            ok = np.abs(b) >= _DIV_EPS
-            np.divide(a, b, out=out, where=ok)
-            return out
+            return _safe_div(np.divide, a, b, n)
+        if isinstance(node.op, ast.FloorDiv):
+            return _safe_div(np.floor_divide, a, b, n)
+        if isinstance(node.op, ast.Mod):
+            return _safe_div(np.mod, a, b, n)
+        if isinstance(node.op, ast.BitAnd):
+            return _logical([a, b], np.logical_and.reduce)
+        if isinstance(node.op, ast.BitOr):
+            return _logical([a, b], np.logical_or.reduce)
         with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
             return np.power(a, b)
     if isinstance(node, ast.Compare):
@@ -440,10 +641,10 @@ def formula(df: pd.DataFrame, params: FormulaParams, state: dict) -> pd.DataFram
         name: np.full(n, value, dtype=float)
         for name, value in _CONSTANT_VALUES.items()
     }
-    for col in _column_names(tree):
+    for key, col in _column_refs(tree).items():
         if col not in df.columns:
             raise KeyParamsError(f"formula: unknown column {col!r}")
-        env[col] = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+        env[key] = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
     frozen = state.get("variables", {})
     for var in params.variables:
         key = f"{_VAR_PREFIX}{var.name}"
