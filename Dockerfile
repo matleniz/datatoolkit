@@ -25,11 +25,13 @@ RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin dtk \
     && mkdir /data \
     && chown dtk:dtk /data
 
-USER dtk
+COPY docker/entrypoint.sh /usr/local/bin/dtk-entrypoint
+
 VOLUME /data
 EXPOSE 8765
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/keys', timeout=4)"]
 
+ENTRYPOINT ["dtk-entrypoint"]
 CMD ["dtk-api", "--host", "0.0.0.0", "--port", "8765"]

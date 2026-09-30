@@ -75,6 +75,35 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker rm -f dtk
+      - name: Root-owned bind mount (daemon-created dir)
+        run: |
+          sudo mkdir data-root
+          sudo chown root:root data-root
+          docker run -d --name dtk-root -p 127.0.0.1:8766:8765 -v "$PWD/data-root:/data" dtk-engine:smoke
+          status=starting
+          for _ in $(seq 1 45); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' dtk-root)
+            echo "health: $status"
+            if [ "$status" = healthy ]; then break; fi
+            sleep 2
+          done
+          [ "$status" = healthy ]
+          curl -fsS -X PUT --data-binary @smoke.csv localhost:8766/api/uploads/smoke.csv
+          f=$(ls data-root/uploads/*/smoke.csv)
+          stat -c '%u %n' "$f"
+          [ "$(stat -c %u "$f")" = 1000 ]
+          # PID 1 is dtk-api itself (setpriv execs into it)
+          docker exec dtk-root cat /proc/1/cmdline | tr '\0' ' ' | tee cmdline; echo
+          grep -q dtk-api cmdline
+          uid=$(docker exec dtk-root awk '/^Uid:/{print $2}' /proc/1/status)
+          echo "dtk-api uid: $uid"
+          [ "$uid" = 1000 ]
+      - name: Logs on failure (root scenario)
+        if: failure()
+        run: docker logs dtk-root
+      - name: Cleanup (root scenario)
+        if: always()
+        run: docker rm -f dtk-root
 
   publish:
     needs: smoke
