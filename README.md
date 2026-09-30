@@ -10,6 +10,16 @@ Install (no front, no streamlit):
 uv pip install git+https://github.com/matleniz/datatoolkit
 ```
 
+Docker (HTTP API, image `ghcr.io/matleniz/datatoolkit-engine`): workspaces and
+uploads are stored under `DTK_HOME=/data`, so mount a volume there (the
+container runs as uid 1000, make sure the mounted dir is writable by it):
+
+```bash
+docker build -t dtk-engine .
+docker run -d -p 127.0.0.1:8765:8765 -v dtk-data:/data dtk-engine
+curl localhost:8765/api/keys
+```
+
 Notebook (`dtk_engine.api`: DataFrame in, `Result` or DataFrame out; a
 `Result` renders itself in Jupyter):
 
