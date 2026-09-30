@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -14,7 +15,67 @@ env:
   IMAGE: ghcr.io/matleniz/datatoolkit-engine
 
 jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: dtk-engine:smoke
+          cache-from: type=gha,scope=smoke
+          cache-to: type=gha,mode=max,scope=smoke
+      - name: Run container
+        run: |
+          mkdir data
+          sudo chown 1000:1000 data
+          docker run -d --name dtk -p 127.0.0.1:8765:8765 -v "$PWD/data:/data" dtk-engine:smoke
+      - name: Wait for healthy
+        run: |
+          for _ in $(seq 1 45); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' dtk)
+            echo "health: $status"
+            [ "$status" = healthy ] && exit 0
+            sleep 2
+          done
+          docker logs dtk
+          exit 1
+      - name: Key list
+        run: curl -fsS localhost:8765/api/keys | grep -q dataset_overview
+      - name: Upload ~2 MB CSV
+        run: |
+          python3 -c "
+          import random
+          random.seed(0)
+          print('id,x,y,label')
+          for i in range(60000):
+              print(f'{i},{random.random():.6f},{random.random():.6f},{random.choice(\"abc\")}')
+          " > smoke.csv
+          ls -l smoke.csv
+          curl -fsS -X PUT --data-binary @smoke.csv localhost:8765/api/uploads/smoke.csv | tee upload.json
+      - name: Check upload ownership
+        run: |
+          f=$(ls data/uploads/*/smoke.csv)
+          stat -c '%u %n' "$f"
+          [ "$(stat -c %u "$f")" = 1000 ]
+      - name: Run dataset_overview on the upload
+        run: |
+          path=$(python3 -c "import json; print(json.load(open('upload.json'))['path'])")
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d "{\"params\": {\"source\": {\"kind\": \"csv\", \"path\": \"$path\"}}}" \
+            localhost:8765/api/keys/dataset_overview/run | tee run.json | head -c 500
+      - name: Logs on failure
+        if: failure()
+        run: docker logs dtk
+      - name: Cleanup
+        if: always()
+        run: docker rm -f dtk
+
   publish:
+    needs: smoke
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
