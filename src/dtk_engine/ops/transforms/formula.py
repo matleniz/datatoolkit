@@ -3,6 +3,12 @@
 Variables are statistics fitted on train and frozen for apply (test never
 contributes). The expression is parsed with ``ast`` after rewriting ``@name`` to
 a reserved identifier; evaluation is vectorised with numpy — never ``eval``.
+
+Python-flavoured spellings (MAT-241) are translated onto the same whitelist
+before the walk: ``np.f(x)`` -> ``f(x)``, ``a if c else b`` -> ``where(c, a, b)``,
+``df.col`` / ``df["col"]`` -> column; ``and``/``or``/``not``/``&``/``|``/``~``
+are element-wise on truthiness (!= 0) and return 0/1. Any other attribute,
+subscript or method call is refused with a message naming the construct.
 """
 
 from __future__ import annotations
@@ -67,16 +73,9 @@ _CMPOPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)
 _STATS = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
 _CONSTANT_VALUES = {"pi": float(np.pi)}
 _NP_MODULES = frozenset({"np", "numpy"})
-# np.<name> -> canonical whitelist name.
+# np.<name> -> canonical whitelist name (same function, numpy spelling).
 _NP_FUNCS: dict[str, str] = {
-    **{
-        f: f
-        for f in (
-            "log", "log1p", "log2", "log10", "exp", "sqrt", "abs", "round",
-            "floor", "ceil", "sign", "square", "sin", "cos", "tanh", "clip",
-            "where",
-        )
-    },
+    **{f: f for f in _ALLOWED_FUNCS - {"min", "max", "isnull"}},
     "minimum": "min",
     "maximum": "max",
     "isnan": "isnull",
