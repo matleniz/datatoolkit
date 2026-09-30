@@ -34,14 +34,17 @@ jobs:
           docker run -d --name dtk -p 127.0.0.1:8765:8765 -v "$PWD/data:/data" dtk-engine:smoke
       - name: Wait for healthy
         run: |
+          status=starting
           for _ in $(seq 1 45); do
             status=$(docker inspect --format '{{.State.Health.Status}}' dtk)
             echo "health: $status"
-            [ "$status" = healthy ] && exit 0
+            if [ "$status" = healthy ]; then break; fi
             sleep 2
           done
-          docker logs dtk
-          exit 1
+          if [ "$status" != healthy ]; then
+            docker logs dtk
+            exit 1
+          fi
       - name: Key list
         run: curl -fsS localhost:8765/api/keys | grep -q dataset_overview
       - name: Upload ~2 MB CSV
