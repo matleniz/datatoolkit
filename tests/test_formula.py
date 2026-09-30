@@ -102,25 +102,23 @@ def test_nan_propagation_and_divide_by_zero():
 
 
 @pytest.mark.parametrize(
-    "expr",
+    ("expr", "message"),
     [
-        "a.__class__",
-        "a[0]",
-        "(lambda x: x)(a)",
-        "round(a, ndigits=1)",
-        '"hello"',
-        "__import__('os')",
-        "eval(a)",
-        "[a]",
-        "a if a else b",
-        "a and b",
-        "a ^ b",
-        "a is b",
-        "a in b",
+        ("a.__class__", "dunder attribute access \\(__class__\\)"),
+        ("a[0]", 'subscript is only allowed as df\\["column"\\]'),
+        ("(lambda x: x)(a)", "calling the result of an expression"),
+        ("round(a, ndigits=1)", "keyword arguments is not allowed"),
+        ('"hello"', "text constant 'hello'"),
+        ("__import__('os')", "unknown function __import__\\(\\)"),
+        ("eval(a)", "unknown function eval\\(\\)"),
+        ("[a]", "a list literal is not allowed"),
+        ("a ^ b", "\\^ \\(use \\*\\* for powers\\) is not allowed"),
+        ("a is b", "'is' is not allowed"),
+        ("a in b", "'in' is not allowed"),
     ],
 )
-def test_refuses_disallowed_constructs(expr):
-    with pytest.raises(KeyParamsError, match="formula"):
+def test_refuses_disallowed_constructs(expr, message):
+    with pytest.raises(KeyParamsError, match=f"formula: {message}"):
         _parse(name="y", expr=expr)
 
 
@@ -258,3 +256,215 @@ def test_round_refuses_non_constant_or_non_integer_decimals():
         KeyParamsError, match="round\\(\\) second argument must be an integer constant"
     ):
         _parse(name="y", expr="round(a, 1.5)")
+
+
+# --- MAT-241: Python-flavoured syntax, mapped onto the same whitelist ---------
+
+_PY = pd.DataFrame(
+    {
+        "a": [2.0, -3.5, 7.0, 0.0],
+        "b": [3.0, 2.0, -2.0, 5.0],
+        "Age": [10.0, 18.0, 40.0, 70.0],
+        "Nom col": [1.0, 2.0, 3.0, 4.0],
+    }
+)
+_A = _PY["a"].to_numpy()
+_B = _PY["b"].to_numpy()
+_AGE = _PY["Age"].to_numpy()
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        # numpy namespace -> whitelist
+        ("np.log1p(np.abs(a))", np.log1p(np.abs(_A))),
+        ("numpy.sqrt(b ** 2)", np.sqrt(_B**2)),
+        ("np.log2(Age) + np.log10(Age) + np.log(Age)",
+         np.log2(_AGE) + np.log10(_AGE) + np.log(_AGE)),
+        ("np.exp(a / 10)", np.exp(_A / 10)),
+        ("np.round(a / 3, 2)", np.round(_A / 3, 2)),
+        ("np.floor(a) + np.ceil(b)", np.floor(_A) + np.ceil(_B)),
+        ("np.sign(a) * np.square(b)", np.sign(_A) * np.square(_B)),
+        ("np.sin(a) + np.cos(b) + np.tanh(a)",
+         np.sin(_A) + np.cos(_B) + np.tanh(_A)),
+        ("np.clip(a, -1, 3)", np.clip(_A, -1, 3)),
+        ("np.where(a > 0, a, b)", np.where(_A > 0, _A, _B)),
+        ("np.minimum(a, b) + np.maximum(a, b)",
+         np.minimum(_A, _B) + np.maximum(_A, _B)),
+        ("np.isnan(a)", np.zeros(4)),
+        ("np.pi * a", np.pi * _A),
+        ("numpy.pi", np.full(4, np.pi)),
+        # conditional expression -> where (nested)
+        ("a if a > b else b", np.where(_A > _B, _A, _B)),
+        ("0 if Age < 18 else (1 if Age < 65 else 2)",
+         np.where(_AGE < 18, 0.0, np.where(_AGE < 65, 1.0, 2.0))),
+        # boolean logic, element-wise -> 0/1
+        ("Age >= 18 and a > 0", ((_AGE >= 18) & (_A > 0)).astype(float)),
+        ("Age < 18 or Age > 65", ((_AGE < 18) | (_AGE > 65)).astype(float)),
+        ("not a", (_A == 0).astype(float)),
+        ("(a > 0) & (b > 0)", ((_A > 0) & (_B > 0)).astype(float)),
+        ("(a > 0) | (b < 0)", ((_A > 0) | (_B < 0)).astype(float)),
+        ("~(a > 0)", (~(_A > 0)).astype(float)),
+        ("18 <= Age < 65", ((_AGE >= 18) & (_AGE < 65)).astype(float)),
+        ("a > 0 and b > 0 and Age > 30",
+         ((_A > 0) & (_B > 0) & (_AGE > 30)).astype(float)),
+        # arithmetic operators
+        ("a ** 2", _A**2),
+        ("Age % 7", np.mod(_AGE, 7)),
+        ("a % b", np.mod(_A, _B)),
+        ("a // b", np.floor_divide(_A, _B)),
+        # builtins, element-wise
+        ("abs(a)", np.abs(_A)),
+        ("round(a / 3, 1)", np.round(_A / 3, 1)),
+        ("min(a, b)", np.minimum(_A, _B)),
+        ("max(a, b, 0)", np.maximum(np.maximum(_A, _B), 0)),
+        # column access
+        ('df["Nom col"] * 2', _PY["Nom col"].to_numpy() * 2),
+        ("df.Age - df['a']", _AGE - _A),
+        ('np.log(df["Age"]) if df.a > 0 else -1',
+         np.where(_A > 0, np.log(_AGE), -1.0)),
+    ],
+)
+def test_python_style_accepted(expr, expected):
+    out = _run(_PY, name="y", expr=expr)
+    assert out["y"].to_numpy() == pytest.approx(np.asarray(expected, dtype=float))
+
+
+@pytest.mark.parametrize(
+    ("expr", "message"),
+    [
+        ("(lambda x: x + 1)", "lambda is not allowed in a formula"),
+        ("import os", "import is not allowed in a formula"),
+        ("from os import path", "import is not allowed in a formula"),
+        ("a.__class__", r"dunder attribute access \(__class__\)"),
+        ("df.__class__", r"dunder attribute access \(__class__\)"),
+        ("np.__dict__", r"dunder attribute access \(__dict__\)"),
+        ("a.apply(f)", r"method calls like \.apply\(\.\.\.\) are not allowed"),
+        ('df["a"].fillna(0)', r"method calls like \.fillna\(\.\.\.\) are not allowed"),
+        ("[x for x in a]", "a comprehension is not allowed in a formula"),
+        ("min(x for x in a)", "a comprehension is not allowed in a formula"),
+        ("df.eval('a + b')", r"method calls like df\.eval\(\.\.\.\) are not allowed"),
+        ("getattr(a, 'b')", r"unknown function getattr\(\) is not allowed"),
+        ("np.random.rand(3)", r"np\.random\.rand is not allowed in a formula"),
+        ("np.random", r"np\.random is not allowed in a formula"),
+        ("np.e", r"np\.e is not allowed in a formula"),
+        ("np.log", r"np\.log must be called, e\.g\. np\.log\(x\)"),
+        ("np.mean(a)", r"np\.mean is not allowed in a formula"),
+        ("torch.sin(a)", r"method calls like \.sin\(\.\.\.\) are not allowed"),
+        ("torch.x", r"only allowed as np\.<function> or df\.<column> \(got torch\.x\)"),
+        ("open('f')", r"unknown function open\(\) is not allowed"),
+        ("a.b", r"attribute access is only allowed as np\.<function> or df\.<column>"),
+        ("df.a.b", r"attribute access is only allowed as np\.<function>"),
+        ("a[0]", r'subscript is only allowed as df\["column"\]'),
+        ("df[0]", r'df\[\.\.\.\] needs a column name in quotes'),
+        ("df[a]", r'df\[\.\.\.\] needs a column name in quotes'),
+        ("df['a':'b']", r'df\[\.\.\.\] needs a column name in quotes'),
+        ("log(a)(b)", "calling the result of an expression is not allowed"),
+        ("np.log(a).real", "attribute access is only allowed"),
+        ("__builtins__", "dunder name __builtins__ is not allowed"),
+        ("(x := a)", r"assignment \(:=\) is not allowed"),
+        ("f'{a}'", "an f-string is not allowed"),
+        ("True", "constant True is not allowed"),
+        ("np.minimum(a)", r"np\.minimum\(\) takes 2 arguments, got 1"),
+        ("np.round(a, decimals=2)", "keyword arguments is not allowed"),
+        ("a @ b", "@ .*is not allowed"),
+    ],
+)
+def test_python_style_refused_with_named_message(expr, message):
+    with pytest.raises(KeyParamsError, match=message):
+        _parse(name="y", expr=expr)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        # classic sandbox escapes
+        "().__class__.__bases__[0].__subclasses__()",
+        "a.__class__.__mro__",
+        "df.__init__.__globals__",
+        "np.__builtins__",
+        "np.log.__self__",
+        "log.__globals__",
+        "(1).__class__",
+        '"".__class__',
+        # subscript on anything but df
+        "np['log']",
+        "a['x']",
+        "(a + b)['x']",
+        '{"a": 1}["a"]',
+        # calls on the result of a call / attribute chains
+        "log(a)(b)",
+        "where(a, b, a)()",
+        "np.log(a).__class__",
+        "df.a.apply(log)",
+        "getattr(np, 'log')(a)",
+        "vars()",
+        "globals()",
+        "exec('1')",
+        "compile('1', '', 'eval')",
+    ],
+)
+def test_security_escapes_refused(expr):
+    with pytest.raises(KeyParamsError, match="formula: "):
+        _parse(name="y", expr=expr)
+
+
+def test_df_column_access_edge_cases():
+    df = pd.DataFrame({"pi": [2.0], "log": [3.0], "a@b": [5.0], "x": [7.0]})
+    # df["pi"] / df.log are columns, not the constant / function.
+    out = _run(df, name="y", expr='df["pi"] + df.log + pi * 0')
+    assert out["y"].iloc[0] == pytest.approx(5.0)
+    # "@" inside a column name is not a variable.
+    out = _run(df, name="y", expr='df["a@b"] + 1')
+    assert out["y"].iloc[0] == 6.0
+    # Bare name and df.x read the same column.
+    out = _run(df, name="y", expr='x - df.x + df["x"]')
+    assert out["y"].iloc[0] == 7.0
+    with pytest.raises(KeyParamsError, match="unknown column 'Nope col'"):
+        _run(df, name="y", expr='df["Nope col"] + 1')
+    with pytest.raises(KeyParamsError, match="unknown column 'nope'"):
+        _run(df, name="y", expr="df.nope")
+
+
+def test_python_style_nan_semantics():
+    df = pd.DataFrame({"a": [1.0, np.nan, 0.0], "b": [0.0, 1.0, 1.0]})
+    out = _run(df, name="y", expr="a and b")
+    assert out["y"].iloc[0] == 0.0 and np.isnan(out["y"].iloc[1])
+    out = _run(df, name="y", expr="not a")
+    assert out["y"].iloc[2] == 1.0 and np.isnan(out["y"].iloc[1])
+    out = _run(df, name="y", expr="1 if a > 0 else 2")
+    assert out["y"].iloc[0] == 1.0 and np.isnan(out["y"].iloc[1])
+    # % and // by ~0 -> NaN, like /.
+    out = _run(df, name="y", expr="a % b")
+    assert np.isnan(out["y"].iloc[0])
+    out = _run(df, name="y", expr="a // b")
+    assert np.isnan(out["y"].iloc[0])
+
+
+def test_python_style_equals_legacy_form():
+    """Python and mini-language spellings give identical results."""
+    df = pd.DataFrame({"Age": [5.0, 30.0, np.nan, 80.0], "Fare": [1.0, 0.0, 3.0, 9.0]})
+    pairs = [
+        ("where(Age < 18, 1, 0)", "1 if Age < 18 else 0"),
+        ("log1p(Fare)", "np.log1p(df.Fare)"),
+        ("isnull(Age)", "np.isnan(Age)"),
+        ("min(Age, Fare)", "np.minimum(Age, Fare)"),
+        ("sin(pi / 2) * Age", "np.sin(np.pi / 2) * df['Age']"),
+    ]
+    for legacy, python in pairs:
+        a = _run(df, name="y", expr=legacy)["y"].to_numpy()
+        b = _run(df, name="y", expr=python)["y"].to_numpy()
+        np.testing.assert_array_equal(a, b)
+
+
+def test_python_style_variables_and_pipeline_replay():
+    train = pd.DataFrame({"Age": [10.0, 20.0, 30.0]})
+    test = pd.DataFrame({"Age": [5.0, 25.0]})
+    params = {
+        "name": "y",
+        "expr": "1 if df['Age'] > @mu and not np.isnan(Age) else 0",
+        "variables": [{"name": "mu", "stat": "mean", "column": "Age"}],
+    }
+    assert _fit_apply(train, test, **params)["y"].tolist() == [0.0, 1.0]
+    pipe = Pipeline([("f", DtkTransformer("formula", **params))]).fit(train)
+    assert pipe.transform(test)["y"].tolist() == [0.0, 1.0]
