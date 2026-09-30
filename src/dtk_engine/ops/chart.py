@@ -39,7 +39,29 @@ SCATTER_MATRIX_MAX = 6
 _HISTFUNC = {"count": "count", "mean": "avg", "sum": "sum"}
 _AGG_FN = {"count": "size", "mean": "mean", "sum": "sum", "median": "median"}
 
+# Numeric color columns with at most this many distinct values are treated as
+# categorical (discrete legend / traces instead of a continuous coloraxis).
+DISCRETE_COLOR_MAX_UNIQUE = 10
+
 OP = "chart"
+
+
+def _should_cast_color_discrete(series: pd.Series) -> bool:
+    """True when color is bool or low-cardinality numeric (<= 10 distinct values)."""
+    if pd.api.types.is_bool_dtype(series):
+        return True
+    if pd.api.types.is_numeric_dtype(series):
+        return series.nunique(dropna=True) <= DISCRETE_COLOR_MAX_UNIQUE
+    return False
+
+
+def _format_discrete_color(series: pd.Series) -> pd.Series:
+    """Format low-cardinality numeric or boolean series to clean string labels."""
+    if pd.api.types.is_float_dtype(series):
+        valid = series.dropna()
+        if len(valid) > 0 and (valid % 1 == 0).all():
+            return series.map(lambda v: str(int(v)) if pd.notna(v) else np.nan)
+    return series.astype(str)
 
 
 def sample_frame(
@@ -76,6 +98,14 @@ def build_figure(
     absent = [c for c in cols if c not in df.columns]
     if absent:
         raise KeyParamsError(f"{OP}: columns not in the frame {absent}")
+
+    if color is not None:
+        series = df[color]
+        if _should_cast_color_discrete(series) and not (
+            chart == "scatter_matrix" and columns and color in columns
+        ):
+            df = df.copy()
+            df[color] = _format_discrete_color(series)
 
     if chart == "histogram":
         fig = _histogram(df, x=x, y=y, color=color, facet_row=facet_row,

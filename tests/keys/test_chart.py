@@ -132,6 +132,79 @@ def test_dataset_source_version(tmp_path, monkeypatch):
     assert res["figures"][0]["plotly"]["data"]
 
 
+def test_binary_color_discrete_traces_and_no_coloraxis():
+    """Binary / low-cardinality numeric color gets discrete traces and no coloraxis (MAT-251)."""
+    res = run_key(
+        "chart",
+        {
+            "chart": "scatter",
+            "x": "Age",
+            "y": "Fare",
+            "color": "Survived",
+            "trendline": True,
+        },
+    )
+    fig = res["figures"][0]["plotly"]
+    layout = fig.get("layout", {})
+    # No continuous colorbar / coloraxis
+    assert "coloraxis" not in layout
+
+    # Points are split into discrete traces per category ('0' and '1')
+    # and trendline OLS overlays match the category groups.
+    trace_names = [t.get("name") for t in fig["data"]]
+    assert trace_names == ["0", "1", "OLS (0)", "OLS (1)"]
+
+
+def test_continuous_numeric_color_unchanged():
+    """High-cardinality numeric color preserves continuous coloraxis and single trace (MAT-251)."""
+    res = run_key(
+        "chart",
+        {
+            "chart": "scatter",
+            "x": "Age",
+            "y": "Fare",
+            "color": "Fare",
+        },
+    )
+    fig = res["figures"][0]["plotly"]
+    layout = fig.get("layout", {})
+    assert "coloraxis" in layout
+    assert len(fig["data"]) == 1
+
+
+def test_color_cardinality_threshold():
+    """Columns with <= 10 unique values are discrete; > 10 stay continuous (MAT-251)."""
+    # Exactly 10 unique values -> discrete
+    df10 = pd.DataFrame(
+        {"x": range(20), "y": range(20), "c10": [i % 10 for i in range(20)]}
+    )
+    res10 = api.chart(df10, chart="scatter", x="x", y="y", color="c10")
+    fig10 = res10.figures[0].plotly
+    assert "coloraxis" not in fig10.get("layout", {})
+    assert len(fig10["data"]) == 10
+
+    # 11 unique values -> continuous
+    df11 = pd.DataFrame(
+        {"x": range(22), "y": range(22), "c11": [i % 11 for i in range(22)]}
+    )
+    res11 = api.chart(df11, chart="scatter", x="x", y="y", color="c11")
+    fig11 = res11.figures[0].plotly
+    assert "coloraxis" in fig11.get("layout", {})
+    assert len(fig11["data"]) == 1
+
+
+def test_boolean_color_discrete():
+    """Boolean column treated as discrete categorical color (MAT-251)."""
+    df_bool = pd.DataFrame(
+        {"x": [1, 2, 3, 4], "y": [1, 2, 3, 4], "flag": [True, False, True, False]}
+    )
+    res_bool = api.chart(df_bool, chart="scatter", x="x", y="y", color="flag")
+    fig_bool = res_bool.figures[0].plotly
+    assert "coloraxis" not in fig_bool.get("layout", {})
+    assert len(fig_bool["data"]) == 2
+    assert {t.get("name") for t in fig_bool["data"]} == {"True", "False"}
+
+
 def test_errors():
     with pytest.raises(KeyParamsError, match="not in the frame"):
         run_key("chart", {"chart": "histogram", "x": "nope"})
@@ -139,3 +212,4 @@ def test_errors():
         run_key("chart", {"chart": "scatter", "x": "Age"})
     with pytest.raises(KeyParamsError):
         run_key("chart", {"chart": "not_a_chart", "x": "Age"})
+
