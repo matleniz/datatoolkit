@@ -31,17 +31,13 @@ OutlierMethod = Literal["all", "iqr", "zscore", "isolation_forest"]
 
 class Params(SourceParams):
     columns: list[str] = columns_field(
-        "Numeric columns to screen (empty = every numeric column but ids / "
-        "constants)",
+        "Numeric columns to screen (empty = every numeric column but ids / constants)",
         dtype="numeric",
     )
     method: OutlierMethod = Field(
-        default="all",
-        description="Which detector(s) to run: all | iqr | zscore | isolation_forest",
+        default="all", description="Which detector(s) to run: all | iqr | zscore | isolation_forest"
     )
-    iqr_k: float = Field(
-        default=IQR_K, gt=0, description="IQR fence multiplier (1.5 = Tukey)"
-    )
+    iqr_k: float = Field(default=IQR_K, gt=0, description="IQR fence multiplier (1.5 = Tukey)")
     z_threshold: float = Field(
         default=Z_THRESHOLD, gt=0, description="Flag values with |z| above this"
     )
@@ -85,38 +81,24 @@ def outliers_result(
     method: OutlierMethod = "all",
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.outliers``)."""
-    if columns:
-        picked, _ = pick_columns(
-            df,
-            columns,
-            "outliers",
-            required=is_numeric,
-            requirement="must be numeric",
-        )
-    else:
-        picked = numeric_columns(df)
+    picked = _pick(df, columns)
     run_iqr = method in ("all", "iqr")
-    run_z = method in ("all", "zscore")
     run_if = method in ("all", "isolation_forest")
-    # Univariate table always built (empty columns ok); zero out unused detectors.
-    table = univariate_outliers(df, picked, iqr_k, z_threshold)
-    if not run_iqr:
-        table = table.assign(n_iqr=0, pct_iqr=0.0, lower_fence=float("nan"), upper_fence=float("nan"))
-    if not run_z:
-        table = table.assign(n_z=0, pct_z=0.0)
+    table = _univariate_table(df, picked, iqr_k, z_threshold, run_iqr, method)
     scores = (
         isolation_forest(df, picked, contamination, random_state)
         if run_if
         else pd.DataFrame({"score": [], "flagged": []}, dtype=float)
     )
-    flagged = flagged_rows(df, scores, picked) if run_if else pd.DataFrame(
-        columns=["row", "score", *picked]
+    flagged = (
+        flagged_rows(df, scores, picked)
+        if run_if
+        else pd.DataFrame(columns=["row", "score", *picked])
     )
     n_flagged = int(scores["flagged"].sum()) if len(scores) else 0
     boxes = box_stats(df, picked, iqr_k) if run_iqr else pd.DataFrame(columns=BOX_FIELDS)
-    headline = _headline(picked, table, boxes, n_flagged, run_iqr)
     result = Result(
-        headline=headline,
+        headline=_headline(picked, table, boxes, n_flagged, run_iqr),
         metrics={
             "n_rows": len(df),
             "n_numeric_columns": len(picked),
@@ -132,28 +114,7 @@ def outliers_result(
     result.add_table("flagged_rows", flagged)
     if run_iqr:
         result.add_table("box_stats", boxes)
-    hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
-    has_main = False
-    if run_iqr and len(picked) == 1:
-        col = picked[0]
-        result.add_figure(
-            f"{col}: box plot" + (" with outliers" if len(hit) else ""),
-            lambda: _single_box(df, col, boxes.iloc[0]),
-            main=True,
-        )
-        has_main = True
-    elif run_iqr and len(hit):
-        result.add_figure(
-            "% outliers per column (IQR)",
-            lambda: _pct_bars(hit),
-            main=True,
-        )
-        top = boxes.set_index("column").loc[hit["column"].head(MULTIPLES)]
-        result.add_figure(
-            "Box plots of the most affected columns",
-            lambda: _multiples(df, top.reset_index()),
-        )
-        has_main = True
+    has_main = _add_iqr_figures(result, df, picked, table, boxes) if run_iqr else False
     if run_if and len(scores):
         with plotly_lock:
             fig = px.histogram(
@@ -164,6 +125,48 @@ def outliers_result(
             )
         result.add_figure("IsolationForest scores", fig, main=not has_main)
     return result
+
+
+def _pick(df: pd.DataFrame, columns: list[str] | None) -> list[str]:
+    if not columns:
+        return numeric_columns(df)
+    picked, _ = pick_columns(
+        df, columns, "outliers", required=is_numeric, requirement="must be numeric"
+    )
+    return picked
+
+
+def _univariate_table(df, picked, iqr_k, z_threshold, run_iqr, method) -> pd.DataFrame:
+    # Always built (empty columns ok); zero out unused detectors.
+    table = univariate_outliers(df, picked, iqr_k, z_threshold)
+    if not run_iqr:
+        table = table.assign(
+            n_iqr=0, pct_iqr=0.0, lower_fence=float("nan"), upper_fence=float("nan")
+        )
+    if method not in ("all", "zscore"):
+        table = table.assign(n_z=0, pct_z=0.0)
+    return table
+
+
+def _add_iqr_figures(result, df, picked, table, boxes) -> bool:
+    """IQR figures (single box plot or per-column bars); True when a main one is added."""
+    hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
+    if len(picked) == 1:
+        col = picked[0]
+        result.add_figure(
+            f"{col}: box plot" + (" with outliers" if len(hit) else ""),
+            lambda: _single_box(df, col, boxes.iloc[0]),
+            main=True,
+        )
+        return True
+    if not len(hit):
+        return False
+    result.add_figure("% outliers per column (IQR)", lambda: _pct_bars(hit), main=True)
+    top = boxes.set_index("column").loc[hit["column"].head(MULTIPLES)]
+    result.add_figure(
+        "Box plots of the most affected columns", lambda: _multiples(df, top.reset_index())
+    )
+    return True
 
 
 MULTIPLES = 6
@@ -218,10 +221,7 @@ def _single_box(df: pd.DataFrame, col: str, row: pd.Series) -> go.Figure:
                 annotation_position="top",
             )
     fig.update_layout(
-        xaxis_title=col,
-        yaxis_title=None,
-        yaxis_showticklabels=False,
-        showlegend=False,
+        xaxis_title=col, yaxis_title=None, yaxis_showticklabels=False, showlegend=False
     )
     return fig
 
@@ -289,42 +289,47 @@ def _multiples(df: pd.DataFrame, top: pd.DataFrame) -> go.Figure:
 
 
 def _headline(
-    picked: list[str],
-    table: pd.DataFrame,
-    boxes: pd.DataFrame,
-    n_rows_flagged: int,
-    run_iqr: bool,
+    picked: list[str], table: pd.DataFrame, boxes: pd.DataFrame, n_rows_flagged: int, run_iqr: bool
 ) -> str:
-    if not picked:
-        return ""
-    if run_iqr:
-        hit = table[table["n_iqr"] > 0]
-        if hit.empty:
-            if len(picked) == 1:
-                b = boxes.iloc[0]
-                return (
-                    f"No outliers outside the IQR fences in {picked[0]} "
-                    f"(fences {_fmt(b['lower_fence'])}–{_fmt(b['upper_fence'])})"
-                )
-            return "No outliers outside the IQR fences"
-        top = hit.sort_values("pct_iqr", ascending=False).iloc[0]
-        if len(picked) == 1:
-            col, n = top["column"], int(top["n_iqr"])
-            b = boxes.iloc[0]
-            where = []
-            if b["n_above"]:
-                where.append(f"above {_fmt(b['upper_fence'])}")
-            if b["n_below"]:
-                where.append(f"below {_fmt(b['lower_fence'])}")
-            return (
-                f"{n} outlier{'s' if n > 1 else ''} in {col} "
-                f"({top['pct_iqr']:.1f} %), {' and '.join(where)}"
-            )
-        k = len(hit)
-        return (
-            f"{k} column{'s' if k > 1 else ''} with outliers; "
-            f"most: {top['column']} ({top['pct_iqr']:.1f} %)"
-        )
-    if n_rows_flagged == 0:
-        return "No anomalous rows flagged"
-    return f"{n_rows_flagged} anomalous row{'s' if n_rows_flagged > 1 else ''} flagged"
+    hit = table[table["n_iqr"] > 0]
+    top = hit.sort_values("pct_iqr", ascending=False).iloc[0] if len(hit) else None
+    single = len(picked) == 1
+    rules = [
+        (not picked, lambda: ""),
+        (
+            run_iqr and hit.empty and single,
+            lambda: (
+                f"No outliers outside the IQR fences in {picked[0]} "
+                f"(fences {_fmt(boxes.iloc[0]['lower_fence'])}"
+                f"–{_fmt(boxes.iloc[0]['upper_fence'])})"
+            ),
+        ),
+        (run_iqr and hit.empty, lambda: "No outliers outside the IQR fences"),
+        (run_iqr and single, lambda: _single_hit_headline(top, boxes.iloc[0])),
+        (
+            run_iqr,
+            lambda: (
+                f"{len(hit)} column{'s' if len(hit) > 1 else ''} with outliers; "
+                f"most: {top['column']} ({top['pct_iqr']:.1f} %)"
+            ),
+        ),
+        (n_rows_flagged == 0, lambda: "No anomalous rows flagged"),
+        (
+            True,
+            lambda: f"{n_rows_flagged} anomalous row{'s' if n_rows_flagged > 1 else ''} flagged",
+        ),
+    ]
+    return next(msg() for ok, msg in rules if ok)
+
+
+def _single_hit_headline(top: pd.Series, b: pd.Series) -> str:
+    n = int(top["n_iqr"])
+    where = []
+    if b["n_above"]:
+        where.append(f"above {_fmt(b['upper_fence'])}")
+    if b["n_below"]:
+        where.append(f"below {_fmt(b['lower_fence'])}")
+    return (
+        f"{n} outlier{'s' if n > 1 else ''} in {top['column']} "
+        f"({top['pct_iqr']:.1f} %), {' and '.join(where)}"
+    )
