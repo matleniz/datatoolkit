@@ -62,13 +62,12 @@ def _drop_phase(train, test, target, features, semantic, recs, infos) -> list[st
             infos[col].action = "drop" if rec.op == "drop_columns" else rec.op
     if test is not None:
         for col in (str(c) for c in test.columns if c not in train.columns):
-            advice = "only in test: the model never saw it; drop it on test"
             recs.append(
                 Rec(
                     col,
                     "drop",
                     "warning",
-                    advice,
+                    "only in test: the model never saw it; drop it on test",
                     "drop_columns",
                     "test",
                     {"columns": [col]},

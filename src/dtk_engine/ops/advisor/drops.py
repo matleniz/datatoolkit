@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from functools import cached_property
 
 import pandas as pd
@@ -134,124 +135,67 @@ def drop_missing_rec(column: str, pct: float) -> Rec:
     )
 
 
+@dataclass
 class _Col:
     """One column's inputs to the drop rules; the costly facts are lazy."""
 
-    def __init__(self, col, train, test, semantic, target):
-        self.col, self.train, self.test = col, train, test
-        self.semantic, self.target = semantic, target
+    col: str
+    train: pd.DataFrame
+    test: pd.DataFrame | None
+    semantic: str
+    target: str | None
 
     @cached_property
     def corr(self) -> float | None:
         return _target_corr(self.train, self.col, self.target) if self.target else None
 
     @cached_property
-    def pct_missing(self) -> float:
+    def pct(self) -> float:
         isna = self.train[self.col].isna().mean()
         return round(100 * float(isna), 2) if len(self.train) else 0.0
 
 
-def _drop(category: str, severity: str, advice):
-    """Rule builder: a ``drop_columns`` rec; ``advice`` is a str or ``f(col)``."""
-    return lambda c: drop_columns_rec(
-        c.col, category, severity, advice if isinstance(advice, str) else advice(c)
-    )
-
-
-def _text_rec(c: _Col) -> Rec:
+def _free_text(c: _Col) -> Rec | str:
     return (
         _free_text_variant_rec(c.col, c.train)
         or _free_text_date_rec(c.col, c.train)
-        or _drop(
-            "drop",
-            "info",
-            "free text: no text-feature op yet; drop it or engineer features first",
-        )(c)
+        or "free text: no text-feature op yet; drop it or engineer features first"
     )
 
 
-# (predicate, rec builder), in priority order: the first predicate that holds wins.
+# (applies, category, severity, advice): the first row whose predicate holds wins.
+# ``advice`` is a str, or ``f(col ctx)`` returning a str or a ready-made Rec.
 _DROP_RULES = (
-    (
-        lambda c: c.test is not None and c.col not in c.test.columns,
-        _drop(
-            "leak",
-            "warning",
-            "only in train: not available at prediction time (a label, or "
-            "something computed after the fact); drop it",
-        ),
-    ),
-    (
-        lambda c: c.semantic == "id_like",
-        _drop(
-            "leak",
-            "warning",
-            "identifier: unique per row, a model can only memorise it (and it may "
-            "encode collection order); drop it",
-        ),
-    ),
-    (
-        lambda c: c.semantic == "nested",
-        _drop(
-            "drop",
-            "warning",
-            "lists / dicts per cell (nested JSON or Parquet): no op reads it; drop "
-            "it, or flatten it into scalar columns first (pandas.json_normalize, "
-            "explode)",
-        ),
-    ),
-    (
-        lambda c: c.semantic == "binary",
-        _drop(
-            "drop",
-            "warning",
-            "raw bytes per cell (geometry WKB, blob): no op reads it; drop it, "
-            "or decode it into scalar columns first (e.g. x / y of a geometry)",
-        ),
-    ),
-    (
-        lambda c: c.target is not None and _names_target(c.col, c.target),
-        _drop(
-            "leak",
-            "warning",
-            lambda c: (
-                f"name derives from the target {c.target!r} (e.g. a group "
-                "aggregate of the label): it leaks each row's own label; drop it"
-            ),
-        ),
-    ),
-    (
-        lambda c: c.corr is not None and abs(c.corr) >= TARGET_CORR,
-        _drop(
-            "leak",
-            "warning",
-            lambda c: (
-                f"correlation {c.corr:.3f} with the target {c.target!r}: a "
-                "near-copy of the label (derived from it?); drop it unless it is truly "
-                "known before the outcome"
-            ),
-        ),
-    ),
-    (
-        lambda c: c.pct_missing >= DROP_PCT,
-        lambda c: drop_missing_rec(c.col, c.pct_missing),
-    ),
-    (
-        lambda c: c.semantic == "constant",
-        _drop("drop", "info", "constant: carries no information"),
-    ),
-    (
-        lambda c: c.semantic == "group_id",
-        _drop(
-            "leak",
-            "warning",
-            "entity key repeated over rows: use it as `groups` for GroupKFold "
-            "rather than as a feature (rows of one entity in train and "
-            "validation inflate the score)",
-        ),
-    ),
-    (lambda c: c.semantic == "text", _text_rec),
-)
+    (lambda c: c.test is not None and c.col not in c.test.columns, "leak", "warning",
+     ("only in train: not available at prediction time (a label, or "
+      "something computed after the fact); drop it")),
+    (lambda c: c.semantic == "id_like", "leak", "warning",
+     ("identifier: unique per row, a model can only memorise it (and it may "
+      "encode collection order); drop it")),
+    (lambda c: c.semantic == "nested", "drop", "warning",
+     ("lists / dicts per cell (nested JSON or Parquet): no op reads it; drop "
+      "it, or flatten it into scalar columns first (pandas.json_normalize, "
+      "explode)")),
+    (lambda c: c.semantic == "binary", "drop", "warning",
+     ("raw bytes per cell (geometry WKB, blob): no op reads it; drop it, "
+      "or decode it into scalar columns first (e.g. x / y of a geometry)")),
+    (lambda c: c.target is not None and _names_target(c.col, c.target), "leak", "warning",
+     lambda c: f"name derives from the target {c.target!r} (e.g. a group "
+     "aggregate of the label): it leaks each row's own label; drop it"),
+    (lambda c: c.corr is not None and abs(c.corr) >= TARGET_CORR, "leak", "warning",
+     lambda c: f"correlation {c.corr:.3f} with the target {c.target!r}: a "
+     "near-copy of the label (derived from it?); drop it unless it is truly "
+     "known before the outcome"),
+    (lambda c: c.pct >= DROP_PCT, "drop", "warning",
+     lambda c: drop_missing_rec(c.col, c.pct)),
+    (lambda c: c.semantic == "constant", "drop", "info",
+     "constant: carries no information"),
+    (lambda c: c.semantic == "group_id", "leak", "warning",
+     ("entity key repeated over rows: use it as `groups` for GroupKFold "
+      "rather than as a feature (rows of one entity in train and "
+      "validation inflate the score)")),
+    (lambda c: c.semantic == "text", "drop", "info", _free_text),
+)  # fmt: skip
 
 
 def column_drop_rec(
@@ -262,7 +206,14 @@ def column_drop_rec(
     target: str | None,
 ) -> Rec | None:
     c = _Col(col, train, test, semantic, target)
-    return next((build(c) for when, build in _DROP_RULES if when(c)), None)
+    for when, category, severity, advice in _DROP_RULES:
+        if when(c):
+            if callable(advice):
+                advice = advice(c)
+            if isinstance(advice, Rec):
+                return advice
+            return drop_columns_rec(col, category, severity, advice)
+    return None
 
 
 def _names_target(col: str, target: str) -> bool:
