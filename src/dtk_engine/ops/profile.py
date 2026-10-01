@@ -121,27 +121,22 @@ def _group_band(n_unique: int, ratio: float) -> bool:
     return n_unique >= GROUP_MIN_UNIQUE and GROUP_MIN_RATIO <= ratio < ID_UNIQUE_RATIO
 
 
-def _numeric_kind(
-    series: pd.Series, values: pd.Series, n_unique: int, ratio: float
-) -> str:
+def _numeric_kind(series: pd.Series, values: pd.Series, n_unique: int) -> str:
+    ratio = n_unique / len(values)
     if n_unique == 2 and set(values.unique()) <= {0, 1}:
         return "boolean"
     if pdt.is_integer_dtype(series):
         density = _range_density(values, n_unique)
-        if (
-            len(values) >= ID_MIN_NON_NULL
-            and ratio >= ID_UNIQUE_RATIO
-            and density >= ID_RANGE_DENSITY
-        ):
+        enough = len(values) >= ID_MIN_NON_NULL
+        if enough and ratio >= ID_UNIQUE_RATIO and density >= ID_RANGE_DENSITY:
             return "id_like"
         if _group_band(n_unique, ratio) and density >= GROUP_RANGE_DENSITY:
             return "group_id"
     return "numeric"
 
 
-def _text_kind(
-    series: pd.Series, values: pd.Series, n_unique: int, ratio: float
-) -> str:
+def _text_kind(series: pd.Series, values: pd.Series, n_unique: int) -> str:
+    ratio = n_unique / len(values)
     strings = values.astype(str)
     if _parses_as_datetime(strings):
         return "datetime"
@@ -174,10 +169,9 @@ def semantic_type(series: pd.Series) -> str:
         return "boolean"
     if pdt.is_datetime64_any_dtype(series):
         return "datetime"
-    ratio = n_unique / len(values)
     if pdt.is_numeric_dtype(series):
-        return _numeric_kind(series, values, n_unique, ratio)
-    return _text_kind(series, values, n_unique, ratio)
+        return _numeric_kind(series, values, n_unique)
+    return _text_kind(series, values, n_unique)
 
 
 def pct_numeric_parsable(series: pd.Series) -> float:
@@ -249,11 +243,7 @@ def numeric_text_format(series: pd.Series) -> dict | None:
     # marker that would trip up the plain parse (currency, '%', ',-'/'.-', a
     # comma, or a thousands separator).
     has_marker = bool(
-        with_symbol.any()
-        or percent.any()
-        or with_whole_unit.any()
-        or has_comma
-        or has_space
+        with_symbol.any() or percent.any() or with_whole_unit.any() or has_comma or has_space
     )
     if not has_marker:
         return None

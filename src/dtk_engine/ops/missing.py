@@ -114,14 +114,6 @@ def _nonzero(masks) -> dict[str, int]:
     return {label: c for label, mask in masks if (c := int(mask.sum()))}
 
 
-def _text_sentinel_hits(text: pd.Series) -> dict[str, int]:
-    lowered = text.str.lower()
-    return _nonzero(
-        [(repr(s) if s == "" else s, lowered == s) for s in sorted(STRING_SENTINELS)]
-        + [(s, text.str.startswith(s)) for s in DATE_SENTINELS]
-    )
-
-
 def _numeric_sentinel_hits(numbers: pd.Series) -> dict[str, int]:
     hits = _nonzero((str(s), numbers == s) for s in NUMERIC_SENTINELS)
     zeros = int((numbers == 0).sum())
@@ -143,8 +135,13 @@ def _sentinel_hits(series: pd.Series) -> dict[str, int]:
     if pdt.is_numeric_dtype(series) and not pdt.is_bool_dtype(series):
         return _numeric_sentinel_hits(non_null.astype(float))
     text = non_null.astype(str).str.strip()
+    lowered = text.str.lower()
+    hits = _nonzero(
+        [(repr(s) if s == "" else s, lowered == s) for s in sorted(STRING_SENTINELS)]
+        + [(s, text.str.startswith(s)) for s in DATE_SENTINELS]
+    )
     numbers = pd.to_numeric(text, errors="coerce").dropna()
-    return {**_text_sentinel_hits(text), **_numeric_sentinel_hits(numbers)}
+    return {**hits, **_numeric_sentinel_hits(numbers)}
 
 
 def sentinel_counts(df: pd.DataFrame) -> pd.DataFrame:

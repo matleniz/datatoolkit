@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
 import pandas as pd
 from pandas.api import types as pdt
@@ -111,61 +112,39 @@ def _fuzzy_clusters(
 
 
 def _exact_groups(counts: pd.Series, keys: pd.Series) -> dict[str, list[str]]:
-    """Exact clusters: normalised key -> original forms, most frequent first
-    (counts.index is already sorted by count desc); keys ordered by total count."""
+    """Normalised key -> original forms (most frequent first), keys by total count."""
     groups: dict[str, list[str]] = {}
     for form in counts.index:
         groups.setdefault(keys[form], []).append(form)
-    key_count = {k: sum(int(counts[f]) for f in forms) for k, forms in groups.items()}
-    return {k: groups[k] for k in sorted(groups, key=lambda k: -key_count[k])}
+    by_total = sorted(groups.items(), key=lambda kv: -sum(int(counts[f]) for f in kv[1]))
+    return dict(by_total)
 
 
 def _fuzzy_representatives(
-    counts: pd.Series,
-    exact_groups: dict[str, list[str]],
-    threshold: float,
-    max_distinct: int,
-    max_cardinality_ratio: float,
+    counts: pd.Series, keys: list[str], threshold: float, max_distinct: int, max_ratio: float
 ) -> dict[str, tuple[str, float]]:
     """Normalised key -> (representative key, similarity) over every exact key."""
-    distinct_keys = list(exact_groups)
-    if len(counts) / int(counts.sum()) > max_cardinality_ratio:
-        eligible: list[str] = []
-    else:
-        eligible = [k for k in distinct_keys if _fuzzy_eligible(k)]
-    if len(eligible) > max_distinct:
-        return {k: (k, 100.0) for k in distinct_keys}
-    rep = _fuzzy_clusters(eligible, threshold)
-    for k in distinct_keys:
-        rep.setdefault(k, (k, 100.0))
-    return rep
+    ok = len(counts) / int(counts.sum()) <= max_ratio
+    eligible = [k for k in keys if ok and _fuzzy_eligible(k)]
+    rep = {} if len(eligible) > max_distinct else _fuzzy_clusters(eligible, threshold)
+    return {k: rep.get(k, (k, 100.0)) for k in keys}
 
 
 def _variant_rows(
-    col: str,
-    forms: list[str],
-    counts: pd.Series,
-    keys: pd.Series,
-    fuzzy_rep: dict[str, tuple[str, float]],
-) -> list[dict]:
+    col: str, forms: list[str], counts: pd.Series, keys: pd.Series, fuzzy_rep: dict
+) -> Iterator[dict]:
     canonical = max(forms, key=lambda f: int(counts[f]))
-    rows = []
     for form in forms:
         key = keys[form]
-        method = "exact" if normalize(canonical) == key else "fuzzy"
-        rows.append(
-            {
-                "column": col,
-                "canonical": canonical,
-                "variant": form,
-                "count": int(counts[form]),
-                "similarity": 100.0
-                if method == "exact"
-                else round(fuzzy_rep[key][1], 1),
-                "method": method,
-            }
-        )
-    return rows
+        exact = normalize(canonical) == key
+        yield {
+            "column": col,
+            "canonical": canonical,
+            "variant": form,
+            "count": int(counts[form]),
+            "similarity": 100.0 if exact else round(fuzzy_rep[key][1], 1),
+            "method": "exact" if exact else "fuzzy",
+        }
 
 
 def variants(
@@ -198,10 +177,7 @@ def variants(
         keys = pd.Series([normalize(v) for v in counts.index], index=counts.index)
         exact_groups = _exact_groups(counts, keys)
         fuzzy_rep = _fuzzy_representatives(
-            counts,
-            exact_groups,
-            fuzzy_threshold,
-            fuzzy_max_distinct,
+            counts, list(exact_groups), fuzzy_threshold, fuzzy_max_distinct,
             fuzzy_max_cardinality_ratio,
         )
         # Final clusters: representative normalised key -> member normalised keys.
