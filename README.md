@@ -76,7 +76,9 @@ call above analyses those files, not your data. Always pass a `source` spec.
 a target column). A `Result` table with `kind: "steps"` holds workspace steps
 (`op`, `target`, `params` per row) that a front can apply as is.
 `transform_schema(op)` params may carry `x-dtk-when` (`{"strategy": "formula"}`:
-the param only applies for that sibling value, see `params.py`).
+the param only applies for that sibling value, or one of a list, see
+`params.py`) and `x-dtk-semantic` (`"group_id"`: prefill with the column of that
+semantic type; `workspace_rows` column meta carries each column's `semantic`).
 
 `impute` with `strategy="formula"` fills one numeric column from an expression
 of other columns (the `formula` op's language, no `@variables`), only on its
@@ -86,6 +88,23 @@ missing rows; nothing is learned, so train and test are filled the same way:
 from dtk_engine import api
 api.transform(df, "impute", columns=["age_at_diagnosis"], strategy="formula",
               expr="age - years_since_diagnosis")
+```
+
+Entity-aware fills (rows of one entity, e.g. a patient's visits): the formula
+language has `group_mean(x, by=patient_id)`, `group_prev(x, by=..., order=age)`
+(last earlier value) and `group_interp(x, by=..., order=age)` (linear between
+the entity's neighbours), usable in `formula` and `impute(strategy="formula")`.
+`impute` also offers them as strategies (`group_mean` / `group_prev` /
+`group_interp` with `by`, `order`, several columns, and an optional train-fitted
+`fallback`), and `ffill` takes `by`. Each frame (train, test) is filled from the
+entity's own rows in that frame:
+
+```python
+from dtk_engine import DtkTransformer
+imp = DtkTransformer("impute", columns=["ledd", "on", "off"],
+                     strategy="group_interp", by="patient_id", order="age",
+                     fallback="median").fit(X_train)
+X_test_filled = imp.transform(X_test)
 ```
 
 Add a transform op: pick its family module in `src/dtk_engine/ops/transforms/`

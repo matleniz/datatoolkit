@@ -8,6 +8,7 @@ from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
 
 from dtk_engine import DtkTransformer
 from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.ops.transforms.impute import GROUP_STRATEGIES
 from dtk_engine.transform_registry import get_transform
 from dtk_engine.workspace import Step
 from dtk_engine.workspace.replay import replay
@@ -282,3 +283,166 @@ def test_impute_schema_shows_expr_only_for_formula():
     assert "formula" in props["strategy"]["enum"]
     assert props["expr"]["x-dtk-when"] == {"strategy": "formula"}
     assert props["fill_value"]["x-dtk-when"] == {"strategy": "constant"}
+
+
+# --- impute group strategies + ffill by (datatoolkit-issues#8) ----------------
+
+
+def _visit_frames():
+    """Train: a has a gap at age 57.5; b has a single observed visit."""
+    train = pd.DataFrame(
+        {
+            "pid": ["a", "a", "a", "b", "b"],
+            "age": [56.9, 58.9, 57.5, 30.0, 31.0],
+            "ledd": [885.0, 835.0, np.nan, np.nan, 10.0],
+            "arm": ["on", None, None, "off", None],
+        }
+    )
+    # Test: patient c only exists here; d has nothing observed.
+    test = pd.DataFrame(
+        {
+            "pid": ["c", "c", "c", "d"],
+            "age": [40.0, 42.0, 41.0, 70.0],
+            "ledd": [100.0, 300.0, np.nan, np.nan],
+            "arm": ["off", None, None, None],
+        },
+        index=[9, 9, 8, 8],  # duplicated index labels
+    )
+    return train, test
+
+
+GROUP = {"columns": ["ledd"], "by": "pid", "order": "age"}
+
+
+@pytest.mark.parametrize(
+    ("strategy", "train_ledd", "test_ledd"),
+    [
+        ("group_mean", [885, 835, 860, 10, 10], [100, 300, 200, None]),
+        ("group_prev", [885, 835, 885, None, 10], [100, 300, 100, None]),
+        ("group_interp", [885, 835, 870, None, 10], [100, 300, 200, None]),
+    ],
+)
+def test_impute_group_strategies_fill_within_entity(strategy, train_ledd, test_ledd):
+    train, test = _visit_frames()
+    t, p, state = _fit("impute", train, **GROUP, strategy=strategy)
+    assert state == {"fill": {}}  # nothing learned without a fallback
+
+    def as_float(values):
+        return [np.nan if v is None else float(v) for v in values]
+
+    np.testing.assert_allclose(t.apply(train, p, state)["ledd"], as_float(train_ledd))
+    out = t.apply(test, p, state)  # test's own rows: patient c is new
+    np.testing.assert_allclose(out["ledd"], as_float(test_ledd))
+    assert out.index.tolist() == [9, 9, 8, 8]
+    assert test["ledd"].isna().sum() == 2  # input untouched
+
+
+def test_impute_group_fallback_learned_on_train():
+    train, test = _visit_frames()
+    params = {**GROUP, "strategy": "group_interp", "fallback": "median"}
+    t, p, state = _fit("impute", train, **params)
+    assert state == {"fill": {"ledd": 835.0}}  # train median
+    assert t.apply(train, p, state)["ledd"].tolist() == [885, 835, 870, 835, 10]
+    assert t.apply(test, p, state)["ledd"].tolist() == [100, 300, 200, 835]
+    steps = [Step(op="impute", target="both", params=params)]
+    assert replay(steps, "test", test, train).equals(t.apply(test, p, state))
+    tr = DtkTransformer("impute", **params).fit(train)
+    assert tr.transform(test).equals(t.apply(test, p, state))
+
+
+def test_impute_group_prev_any_dtype_and_dates():
+    train, _ = _visit_frames()
+    train["visit"] = pd.to_datetime(
+        ["2020-01-01", "2020-03-01", "2020-02-01", None, "2021-01-01"]
+    )
+    t, p, state = _fit(
+        "impute", train, columns=["arm"], strategy="group_prev", by="pid", order="visit"
+    )
+    out = t.apply(train, p, state)["arm"].tolist()
+    # Row 3 has no visit date: not ordered, so neither filled nor a source.
+    assert out[:3] == ["on", "on", "on"] and out[3] == "off" and pd.isna(out[4])
+
+
+def test_impute_group_strategies_through_formula_and_api():
+    from dtk_engine import api
+
+    train, _ = _visit_frames()
+    via_strategy = api.transform(train, "impute", **GROUP, strategy="group_interp")
+    via_formula = api.transform(
+        train,
+        "impute",
+        columns=["ledd"],
+        strategy="formula",
+        expr="group_interp(ledd, by=pid, order=age)",
+    )
+    assert via_strategy.equals(via_formula)
+
+
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        ({"strategy": "group_mean", "by": None}, "needs by"),
+        ({"strategy": "group_prev", "order": None}, "needs order"),
+        ({"strategy": "group_interp", "columns": ["ledd", "age"]}, "cannot be filled"),
+        ({"strategy": "group_mean", "columns": ["pid"]}, "cannot be filled"),
+        ({"strategy": "group_mean", "fallback": "max"}, "fallback"),
+    ],
+)
+def test_impute_group_invalid_params(params, match):
+    with pytest.raises(KeyParamsError, match=match):
+        get_transform("impute").parse({**GROUP, **params})
+
+
+def test_impute_group_numeric_only_for_mean_and_interp():
+    train, _ = _visit_frames()
+    for strategy in ("group_mean", "group_interp"):
+        with pytest.raises(ValueError, match="numeric"):
+            _fit(
+                "impute",
+                train,
+                columns=["arm"],
+                strategy=strategy,
+                by="pid",
+                order="age",
+            )
+
+
+def test_ffill_by_stays_within_entity():
+    df = pd.DataFrame(
+        {
+            "t": [1, 2, 3, 4, 5, 6],
+            "pid": ["a", "b", "a", "b", None, None],
+            "v": [1.0, np.nan, np.nan, 7.0, 9.0, np.nan],
+        },
+        index=[0, 0, 1, 1, 2, 2],
+    )
+    t, p, state = _fit("ffill", df, sort_by="t", by="pid")
+    out = t.apply(df, p, state)
+    # b's first row is not filled from a's 1.0; rows without pid form one group.
+    np.testing.assert_allclose(out["v"], [1.0, np.nan, 1.0, 7.0, 9.0, 9.0])
+    assert out["pid"].tolist() == df["pid"].tolist()  # by is never filled
+    assert out.index.tolist() == df.index.tolist()
+    tr = DtkTransformer("ffill", sort_by="t", by="pid").fit(df)
+    assert tr.transform(df).equals(out)
+
+
+def test_ffill_by_params():
+    for params in (
+        {"sort_by": "t", "by": "t"},
+        {"sort_by": "t", "by": "pid", "columns": ["pid"]},
+    ):
+        with pytest.raises(KeyParamsError):
+            get_transform("ffill").parse(params)
+
+
+def test_group_params_schema_allows_studio_prefill():
+    from dtk_engine import transform_schema
+
+    impute = transform_schema("impute")["properties"]
+    assert impute["by"]["x-dtk-widget"] == "column"
+    assert impute["by"]["x-dtk-semantic"] == "group_id"
+    assert impute["by"]["x-dtk-when"] == {"strategy": list(GROUP_STRATEGIES)}
+    assert impute["order"]["x-dtk-when"] == {"strategy": ["group_prev", "group_interp"]}
+    assert impute["fallback"]["x-dtk-when"] == {"strategy": list(GROUP_STRATEGIES)}
+    ffill = transform_schema("ffill")["properties"]
+    assert ffill["by"]["x-dtk-semantic"] == "group_id"
