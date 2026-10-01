@@ -29,7 +29,6 @@ from sklearn.linear_model import LassoCV, LinearRegression, LogisticRegression
 
 from dtk_engine.ops._memo import memo_frame
 
-TASKS = ("classification", "regression")
 # task "auto": an integer-valued numeric target with at most this many distinct
 # values is a class label, not a quantity.
 MAX_CLASSES = 10

@@ -7,7 +7,6 @@ from pydantic import BaseModel, ValidationError, model_validator
 
 from dtk_engine.errors import (
     KeyParamsError,
-    concise_validation_message,
     key_params_from_validation,
     message_from_validation_details,
     validation_error_details,
@@ -33,14 +32,13 @@ def test_validation_error_details_and_concise_message():
     assert details == [
         {"loc": [], "msg": "sample: name is bad", "type": "value_error"}
     ]
-    assert concise_validation_message(caught.value) == "sample: name is bad"
     assert message_from_validation_details(details) == "sample: name is bad"
 
 
 def test_validation_error_with_loc_joined():
     with pytest.raises(ValidationError) as caught:
         _Sample.model_validate({"__nope__": True})
-    msg = concise_validation_message(caught.value)
+    msg = message_from_validation_details(validation_error_details(caught.value))
     assert "name: Field required" in msg
     assert "__nope__: Extra inputs are not permitted" in msg
     assert "; " in msg

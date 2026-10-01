@@ -1,10 +1,12 @@
+from typing import get_args
+
 import pytest
 from pydantic import ValidationError
 
 from dtk_engine.contract import get_workspace, save_workspace
 from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.errors import KeyParamsError
-from dtk_engine.workspace.models import VARIABLE_STATS, VariableSpec, Workspace
+from dtk_engine.workspace.models import VariableSpec, VariableStat, Workspace
 
 
 def _base_ws(name="w_vars", **kw):
@@ -20,7 +22,7 @@ def _base_ws(name="w_vars", **kw):
     }
 
 
-@pytest.mark.parametrize("stat", VARIABLE_STATS)
+@pytest.mark.parametrize("stat", get_args(VariableStat))
 def test_variable_spec_valid_stats(stat):
     spec = VariableSpec(name="v_stat", stat=stat, column="Age")
     assert spec.name == "v_stat"

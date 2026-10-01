@@ -11,7 +11,6 @@ from dtk_engine.sources.spec import FileSourceSpec
 # A workspace name is also its file name: no path separators, no leading dot.
 NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
 VARIABLE_NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
-VARIABLE_STATS = ("mean", "median", "std", "min", "max", "q25", "q75", "count")
 VariableStat = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
 
 

@@ -59,13 +59,8 @@ def validation_error_details(exc: ValidationError) -> list[dict[str, Any]]:
     return out
 
 
-def concise_validation_message(exc: ValidationError) -> str:
-    """Join issues as ``"<loc>: <msg>"`` (or just ``msg`` when loc is empty)."""
-    return message_from_validation_details(validation_error_details(exc))
-
-
 def message_from_validation_details(details: list[dict[str, Any]]) -> str:
-    """Join ``[{loc, msg, type}, ...]`` the same way as ``concise_validation_message``."""
+    """Join ``[{loc, msg, type}, ...]`` as ``"<loc>: <msg>"`` (just ``msg`` when loc is empty)."""
     parts: list[str] = []
     for item in details:
         loc = item.get("loc") or []

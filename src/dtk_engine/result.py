@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import functools
+import contextlib
 import html
 import json
 import threading
-import types
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -16,7 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 from dtk_engine.ops.profile import as_text, object_kind
 
 
-class PlotlyLock:
+class _PlotlyLock(contextlib.ContextDecorator):
     """Process-wide re-entrant lock protecting Plotly figure construction & serialization.
 
     Plotly's figure construction and template cascade are not thread-safe:
@@ -24,36 +23,16 @@ class PlotlyLock:
     causing intermittent ``ValueError: Invalid value`` in ``_index_is``.
     """
 
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
+    _lock = threading.RLock()
 
-    def __enter__(self) -> bool:
-        return self._lock.__enter__()
+    def __enter__(self) -> None:
+        self._lock.acquire()
 
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: types.TracebackType | None,
-    ) -> bool | None:
-        return self._lock.__exit__(exc_type, exc_val, exc_tb)
-
-    def __call__(self, fn: Callable[..., Any]) -> Callable[..., Any]:
-        @functools.wraps(fn)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            with self._lock:
-                return fn(*args, **kwargs)
-
-        return wrapper
-
-    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        return self._lock.acquire(blocking, timeout)
-
-    def release(self) -> None:
+    def __exit__(self, *exc: object) -> None:
         self._lock.release()
 
 
-plotly_lock = PlotlyLock()
+plotly_lock = _PlotlyLock()
 
 # Rows of each table shown by _repr_html_ (the Result keeps them all).
 HTML_TABLE_ROWS = 10
