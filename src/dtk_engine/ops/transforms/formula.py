@@ -431,12 +431,13 @@ class _Compiler:
 
 
 def _compile_expr(
-    expr: str, declared_vars: set[str]
+    expr: str, declared_vars: set[str] | None
 ) -> tuple[Compiled, dict[str, str]]:
     """Parse, normalize, whitelist-check and compile ``expr``.
 
     Returns the evaluator and its env key -> column map. Raises ValueError
-    naming the refused construct.
+    naming the refused construct. ``declared_vars`` None: the caller has no
+    ``variables`` param, so any ``@name`` is refused.
     """
     rewritten = _rewrite_vars(expr)
     try:
@@ -449,7 +450,12 @@ def _compile_expr(
         raise ValueError(f"formula: invalid expression ({exc.msg})") from exc
     compiler = _Compiler()
     run = compiler.compile(_Normalizer().visit(tree))
-    unknown = compiler.used_vars - declared_vars
+    if declared_vars is None and compiler.used_vars:
+        _not_allowed(
+            f"@variables are not available here (got {sorted(compiler.used_vars)}); "
+            "use a formula step to compute them"
+        )
+    unknown = compiler.used_vars - (declared_vars or set())
     if unknown:
         raise ValueError(
             "formula: unknown @variable "
@@ -501,7 +507,26 @@ def _fit_formula(df: pd.DataFrame, params: FormulaParams) -> dict:
 )
 def formula(df: pd.DataFrame, params: FormulaParams, state: dict) -> pd.DataFrame:
     """Add a float column from a safe expression; @variables reuse train values."""
-    run, cols = _compile_expr(params.expr, {v.name for v in params.variables})
+    frozen = state.get("variables", {})
+    values = {v.name: frozen.get(v.name) for v in params.variables}
+    return df.assign(**{params.name: evaluate(df, params.expr, values)})
+
+
+def check_expr(expr: str) -> None:
+    """Validate an expression without ``@variables`` (ValueError naming the
+    refused construct); for ops reusing the formula language (``impute``)."""
+    _compile_expr(expr, None)
+
+
+def evaluate(
+    df: pd.DataFrame, expr: str, variables: dict[str, float | None] | None = None
+) -> np.ndarray:
+    """Evaluate ``expr`` on ``df`` as a float array (NaN where undefined).
+
+    ``variables``: frozen ``@name`` values (None -> NaN); None refuses any
+    ``@name``. Unknown column -> KeyParamsError.
+    """
+    run, cols = _compile_expr(expr, None if variables is None else set(variables))
     n = len(df)
     env: dict[str, np.ndarray] = {
         name: np.full(n, value, dtype=float)
@@ -511,14 +536,11 @@ def formula(df: pd.DataFrame, params: FormulaParams, state: dict) -> pd.DataFram
         if col not in df.columns:
             raise KeyParamsError(f"formula: unknown column {col!r}")
         env[key] = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
-    frozen = state.get("variables", {})
-    for var in params.variables:
-        key = f"{_VAR_PREFIX}{var.name}"
-        value = frozen.get(var.name)
+    for name, value in (variables or {}).items():
         fill = np.nan if value is None else float(value)
-        env[key] = np.full(n, fill, dtype=float)
+        env[f"{_VAR_PREFIX}{name}"] = np.full(n, fill, dtype=float)
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
         result = run(env, n)
     result = np.asarray(result, dtype=float)
     result[~np.isfinite(result)] = np.nan
-    return df.assign(**{params.name: result})
+    return result

@@ -1,6 +1,9 @@
 """Imputation ops (fill missing values, fitted on train).
 
-``impute`` stores the learned fill values (medians, means, modes) in its state.
+``impute`` stores the learned fill values (medians, means, modes) in its state;
+strategy ``formula`` is stateless instead (the expression is the state, as in
+the ``formula`` op): it is evaluated on each frame and fills only that frame's
+missing cells.
 ``impute_knn`` / ``impute_iterative`` are model-based: their fitted sklearn
 imputer *is* the training matrix (KNN) or a chain of regressors (iterative), which
 is not JSON. Their state is therefore the training matrix of the imputed
@@ -22,6 +25,7 @@ from sklearn.impute import IterativeImputer, KNNImputer
 
 from dtk_engine.ops._util import py as _py
 from dtk_engine.ops._util import require_numeric as _numeric
+from dtk_engine.ops.transforms.formula import check_expr, evaluate
 from dtk_engine.params import column_field, columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
@@ -56,55 +60,104 @@ class ImputeParams(TransformParams):
     columns: list[str] = columns_field(
         "Columns to fill", source="step", required=True, min_length=1
     )
-    strategy: Literal["median", "mean", "most_frequent", "constant"] = Field(
+    strategy: Literal["median", "mean", "most_frequent", "constant", "formula"] = Field(
         default="median",
         description="Fill value learned on train: median / mean (numeric), "
-        "most_frequent (any), constant (fill_value)",
+        "most_frequent (any), constant (fill_value); formula: the value of "
+        "expr on the same row (one numeric column, nothing learned)",
     )
     fill_value: str | float | int | None = Field(
         default=None,
         description='strategy "constant": the value; default "MISSING" for '
         "non-numeric columns, 0 for numeric ones",
+        json_schema_extra={"x-dtk-when": {"strategy": "constant"}},
+    )
+    expr: str | None = Field(
+        default=None,
+        description='strategy "formula": expression over other columns (formula '
+        "syntax, no @variables); a row where it is undefined stays missing",
+        json_schema_extra={"x-dtk-when": {"strategy": "formula"}},
     )
     add_indicator: bool = Field(
         default=False,
         description="Add a binary <col>_was_missing column next to each column",
     )
 
+    @model_validator(mode="after")
+    def _check_formula(self) -> ImputeParams:
+        if self.strategy != "formula":
+            return self
+        if not self.expr or not self.expr.strip():
+            raise ValueError('impute: strategy "formula" needs an expr')
+        if len(self.columns) != 1:
+            raise ValueError('impute: strategy "formula" fills exactly one column')
+        check_expr(self.expr)
+        return self
+
+
+def _mode(s: pd.Series):
+    return _py(s.mode(dropna=True).iloc[0])  # ties -> smallest, as SimpleImputer
+
+
+_FITTED_FILLS = {
+    "median": lambda s: float(s.median()),
+    "mean": lambda s: float(s.mean()),
+    "most_frequent": _mode,
+}
+
+
+def _fill_value(df: pd.DataFrame, col: str, params: ImputeParams):
+    s = df[col]
+    numeric = pd.api.types.is_numeric_dtype(s)
+    if params.strategy == "constant":
+        value = params.fill_value
+        if value is None:
+            value = 0 if numeric else CATEGORICAL_FILL
+    else:
+        if params.strategy in ("median", "mean"):
+            _numeric(df, [col], f"impute strategy {params.strategy!r}")
+        if s.isna().all():
+            raise ValueError(f"impute: column {col!r} is entirely missing on fit")
+        value = _FITTED_FILLS[params.strategy](s)
+    if numeric and isinstance(value, str):
+        raise ValueError(f"impute: string fill {value!r} on numeric column {col!r}")
+    return value
+
 
 def _fit_impute(df: pd.DataFrame, params: ImputeParams) -> dict:
-    fill = {}
-    for col in params.columns:
-        s = df[col]
-        if params.strategy == "constant":
-            if params.fill_value is not None:
-                value = params.fill_value
-            else:
-                value = 0 if pd.api.types.is_numeric_dtype(s) else CATEGORICAL_FILL
-        else:
-            if params.strategy in ("median", "mean"):
-                _numeric(df, [col], f"impute strategy {params.strategy!r}")
-            if s.isna().all():
-                raise ValueError(f"impute: column {col!r} is entirely missing on fit")
-            if params.strategy == "median":
-                value = float(s.median())
-            elif params.strategy == "mean":
-                value = float(s.mean())
-            else:  # ties -> smallest value, as sklearn's SimpleImputer
-                value = _py(s.mode(dropna=True).iloc[0])
-        if pd.api.types.is_numeric_dtype(s) and isinstance(value, str):
-            raise ValueError(f"impute: string fill {value!r} on numeric column {col!r}")
-        fill[col] = value
-    return {"fill": fill}
+    if params.strategy == "formula":
+        _numeric(df, params.columns, 'impute strategy "formula"')
+        return {"fill": {}}
+    return {"fill": {col: _fill_value(df, col, params) for col in params.columns}}
 
 
-@transform("impute", params_model=ImputeParams, fit=_fit_impute, title="Impute")
+def _fills(df: pd.DataFrame, params: ImputeParams, state: dict) -> dict:
+    """Column -> fill (a scalar, or a per-row array for strategy formula)."""
+    if params.strategy == "formula":
+        _numeric(df, params.columns, 'impute strategy "formula"')
+        return {params.columns[0]: evaluate(df, params.expr)}
+    return state["fill"]
+
+
+@transform(
+    "impute",
+    params_model=ImputeParams,
+    fit=_fit_impute,
+    title="Impute",
+    description="Fill missing values with a statistic learned on train (median, "
+    "mean, mode, constant) or with a formula of other columns.",
+)
 def impute(df: pd.DataFrame, params: ImputeParams, state: dict) -> pd.DataFrame:
-    """Fill missing values with a statistic learned on train (median, mean, mode, constant)."""
+    """Fill missing values: a train statistic, a constant, or a formula."""
     out = df.copy()
+    fills = _fills(df, params, state)
     for col in params.columns:
         missing = out[col].isna()
-        out[col] = out[col].fillna(state["fill"][col])
+        fill = fills[col]
+        if isinstance(fill, np.ndarray):  # positional: safe with a duplicated index
+            out[col] = out[col].mask(missing, fill) if missing.any() else out[col]
+        else:
+            out[col] = out[col].fillna(fill)
         if params.add_indicator:
             name = f"{col}{INDICATOR_SUFFIX}"
             if name in out.columns:
