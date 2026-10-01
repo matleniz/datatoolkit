@@ -107,44 +107,16 @@ def build_figure(
             df = df.copy()
             df[color] = _format_discrete_color(series)
 
-    if chart == "histogram":
-        fig = _histogram(df, x=x, y=y, color=color, facet_row=facet_row,
-                         facet_col=facet_col, bins=bins, agg=agg)
-    elif chart == "box":
-        _require_x(chart, x)
-        fig = px.box(
-            df, x=x, y=y, color=color, facet_row=facet_row, facet_col=facet_col
-        )
-    elif chart == "violin":
-        _require_x(chart, x)
-        fig = px.violin(
-            df, x=x, y=y, color=color, facet_row=facet_row, facet_col=facet_col
-        )
-    elif chart in ("bar", "count"):
-        fig = _bar_or_count(
-            df, chart=chart, x=x, y=y, color=color,
-            facet_row=facet_row, facet_col=facet_col, agg=agg,
-        )
-    elif chart == "scatter":
-        fig = _scatter(
-            df, x=x, y=y, color=color, facet_row=facet_row, facet_col=facet_col,
-            size=size, trendline=trendline,
-        )
-    elif chart == "line":
-        fig = _line(
-            df, x=x, y=y, color=color, facet_row=facet_row, facet_col=facet_col,
-            agg=agg,
-        )
-    elif chart in ("heatmap", "density_heatmap"):
-        fig = _density_heatmap(
-            df, x=x, y=y, facet_row=facet_row, facet_col=facet_col, bins=bins
-        )
-    elif chart == "pie":
-        fig = _pie(df, x=x, y=y, color=color, agg=agg)
-    elif chart == "scatter_matrix":
-        fig = _scatter_matrix(df, columns=columns or [], color=color)
-    else:  # pragma: no cover — Literal exhaustiveness
+    spec = _BUILDERS.get(chart)
+    if spec is None:  # pragma: no cover — Literal exhaustiveness
         raise KeyParamsError(f"{OP}: unknown chart type {chart!r}")
+    builder, names = spec
+    args = {
+        "chart": chart, "x": x, "y": y, "color": color, "facet_row": facet_row,
+        "facet_col": facet_col, "size": size, "columns": columns or [],
+        "agg": agg, "trendline": trendline, "bins": bins,
+    }
+    fig = builder(df, **{name: args[name] for name in names.split()})
 
     if log_x:
         fig.update_xaxes(type="log")
@@ -179,6 +151,12 @@ def _require_x(chart: ChartType, x: str | None) -> None:
 def _require_xy(chart: ChartType, x: str | None, y: str | None) -> None:
     if x is None or y is None:
         raise KeyParamsError(f"{OP}: chart {chart!r} requires x and y")
+
+
+def _box_violin(df, *, chart, x, y, color, facet_row, facet_col):
+    _require_x(chart, x)
+    plot = getattr(px, chart)
+    return plot(df, x=x, y=y, color=color, facet_row=facet_row, facet_col=facet_col)
 
 
 def _histogram(df, *, x, y, color, facet_row, facet_col, bins, agg):
@@ -359,3 +337,20 @@ def _add_one_ols(
     fig.add_trace(
         go.Scatter(x=xs, y=ys, mode="lines", name=name, showlegend=True)
     )
+
+
+# chart type -> (builder, the arguments it takes from build_figure's)
+_XYCF = "x y color facet_row facet_col"
+_BUILDERS = {
+    "histogram": (_histogram, f"{_XYCF} bins agg"),
+    "box": (_box_violin, f"chart {_XYCF}"),
+    "violin": (_box_violin, f"chart {_XYCF}"),
+    "bar": (_bar_or_count, f"chart {_XYCF} agg"),
+    "count": (_bar_or_count, f"chart {_XYCF} agg"),
+    "scatter": (_scatter, f"{_XYCF} size trendline"),
+    "line": (_line, f"{_XYCF} agg"),
+    "heatmap": (_density_heatmap, "x y facet_row facet_col bins"),
+    "density_heatmap": (_density_heatmap, "x y facet_row facet_col bins"),
+    "pie": (_pie, "x y color agg"),
+    "scatter_matrix": (_scatter_matrix, "columns color"),
+}
