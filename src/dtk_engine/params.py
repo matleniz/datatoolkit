@@ -15,6 +15,10 @@ source instead of a free-text field). A field built by ``columns_field`` /
 - ``x-dtk-dtype``: ``"any"`` or ``"numeric"`` (offer only numeric columns).
 
 An empty ``columns`` list means "every eligible column" (each key caps it).
+
+Any param may also carry ``x-dtk-when``: ``{sibling param: value}``, i.e. the
+param only matters (a front shows it) when every listed sibling has that value,
+e.g. ``impute.expr`` -> ``{"strategy": "formula"}``.
 """
 
 from typing import Any, Literal

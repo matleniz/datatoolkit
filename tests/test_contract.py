@@ -341,6 +341,31 @@ def test_preview_workspace_impute_both_uses_train_median(tmp_path, monkeypatch):
     assert not home.exists()
 
 
+def test_workspace_impute_formula_save_and_preview(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
+    (tmp_path / "train.csv").write_text("age,years,dx\n60,5,\n70,,61\n")
+    (tmp_path / "test.csv").write_text("age,years,dx\n50,3,\n65,1,40\n")
+    step = {
+        "op": "impute",
+        "target": "both",
+        "params": {"columns": ["dx"], "strategy": "formula", "expr": "age - years"},
+    }
+    ws = {
+        "name": "w",
+        "datasets": {
+            "train": {"x": {"kind": "csv", "path": str(tmp_path / "train.csv")}},
+            "test": {"x": {"kind": "csv", "path": str(tmp_path / "test.csv")}},
+        },
+        "steps": [step],
+    }
+    assert save_workspace(ws)["steps"][0]["params"]["expr"] == "age - years"
+    assert [r["dx"] for r in preview_workspace(ws, "train")["head"]] == [55, 61]
+    assert [r["dx"] for r in preview_workspace(ws, "test")["head"]] == [47, 40]
+    bad = {**step, "params": {**step["params"], "expr": "age +* years"}}
+    with pytest.raises(KeyParamsError, match="invalid expression"):
+        save_workspace({**ws, "steps": [bad]})
+
+
 def test_preview_workspace_errors():
     with pytest.raises(KeyParamsError):
         preview_workspace({"name": "w"}, "train")

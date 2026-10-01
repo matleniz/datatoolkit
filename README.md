@@ -75,6 +75,18 @@ call above analyses those files, not your data. Always pass a `source` spec.
 `list_keys()` / `list_transforms()` flag `needs_target` (the key or op requires
 a target column). A `Result` table with `kind: "steps"` holds workspace steps
 (`op`, `target`, `params` per row) that a front can apply as is.
+`transform_schema(op)` params may carry `x-dtk-when` (`{"strategy": "formula"}`:
+the param only applies for that sibling value, see `params.py`).
+
+`impute` with `strategy="formula"` fills one numeric column from an expression
+of other columns (the `formula` op's language, no `@variables`), only on its
+missing rows; nothing is learned, so train and test are filled the same way:
+
+```python
+from dtk_engine import api
+api.transform(df, "impute", columns=["age_at_diagnosis"], strategy="formula",
+              expr="age - years_since_diagnosis")
+```
 
 Add a transform op: pick its family module in `src/dtk_engine/ops/transforms/`
 (`cleaning`, `impute`, `encode`, `scale`, `features`, `selection`, `formula`,
