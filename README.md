@@ -98,3 +98,8 @@ uv sync --extra api
 uv run pytest
 uv run ruff check .
 ```
+
+`ruff` also enforces complexity (`C90` max 10, `PLR09xx`), `SIM`, `PERF` and
+`B`. `tests/test_layers.py` enforces the layer contract: http → contract →
+api | pipeline → workspace → keys → ops → sources (a module may import its own
+layer or a lower one, never a higher one).

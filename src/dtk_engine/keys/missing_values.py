@@ -129,11 +129,11 @@ def missing_result(
     if test_work is not None:
         spikes = value_spikes_vs_train(work, test_work)
         metrics["n_test_spikes"] = len(spikes)
-        for s in spikes.itertuples():
-            issues.append(
-                f"{s.column}: value {s.value} is {s.pct_test}% of test "
-                f"({s.n_test} rows) vs {s.pct_train}% of train (imputed on test?)"
-            )
+        issues.extend(
+            f"{s.column}: value {s.value} is {s.pct_test}% of test "
+            f"({s.n_test} rows) vs {s.pct_train}% of train (imputed on test?)"
+            for s in spikes.itertuples()
+        )
 
     headline = _headline(metrics["n_columns_with_missing"], rates)
     result = Result(headline=headline, metrics=metrics, text="\n".join(issues))
@@ -218,7 +218,7 @@ def _bars_figure(missing_cols: pd.DataFrame):
         )
         return fig
     severity_order = [_severity_label(p) for p in (DROP_PCT, REVIEW_PCT, 0)]
-    severity_colors = dict(zip(severity_order, ("#ef4444", "#f59e0b", "#3b82f6")))
+    severity_colors = dict(zip(severity_order, ("#ef4444", "#f59e0b", "#3b82f6"), strict=True))
     fig = px.bar(
         missing_cols,
         x="pct_missing",

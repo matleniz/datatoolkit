@@ -344,7 +344,7 @@ def test_find_issues_drift_tables():
     cols = compare_columns(df, df)
     issues = find_issues(df, df, cols, overlap(df, df, []), (), numeric, categorical)
     drift = issues[issues["check"] == "drift"]
-    assert list(zip(drift["severity"], drift["column"])) == [
+    assert list(zip(drift["severity"], drift["column"], strict=True)) == [
         ("warning", "warn"),
         ("warning", "c"),
         ("info", "info"),

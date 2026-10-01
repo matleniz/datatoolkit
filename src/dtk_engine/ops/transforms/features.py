@@ -197,11 +197,8 @@ def _bin_fit(df: pd.DataFrame, params: BinParams) -> dict:
 def bin_column(df: pd.DataFrame, params: BinParams, state: dict) -> pd.DataFrame:
     """Bin a numeric column by explicit edges (cut) or train quantiles (qcut)."""
     x = df[params.column]
-    if params.mode == "cut":
-        edges = params.edges
-    else:
-        # Open-ended outer bins so values outside the train range still land somewhere.
-        edges = [-np.inf, *state["edges"], np.inf]
+    # qcut: open-ended outer bins so values outside the train range still land somewhere.
+    edges = params.edges if params.mode == "cut" else [-np.inf, *state["edges"], np.inf]
     labels = params.labels
     if labels is not None and len(labels) != len(edges) - 1:
         raise ValueError(

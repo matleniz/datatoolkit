@@ -37,4 +37,7 @@ packages = ["src/dtk_engine"]
 testpaths = ["tests"]
 
 [tool.ruff.lint]
-extend-select = ["I"]
+extend-select = ["I", "C90", "PLR0911", "PLR0912", "PLR0915", "SIM", "PERF", "B", "RUF100"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10

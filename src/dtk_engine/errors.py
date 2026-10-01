@@ -47,16 +47,14 @@ def _issue_msg(err: dict[str, Any]) -> str:
 
 def validation_error_details(exc: ValidationError) -> list[dict[str, Any]]:
     """``[{loc, msg, type}, ...]`` from a pydantic ``ValidationError``."""
-    out: list[dict[str, Any]] = []
-    for err in exc.errors():
-        out.append(
-            {
-                "loc": list(err.get("loc", ())),
-                "msg": _issue_msg(err),
-                "type": err.get("type", ""),
-            }
-        )
-    return out
+    return [
+        {
+            "loc": list(err.get("loc", ())),
+            "msg": _issue_msg(err),
+            "type": err.get("type", ""),
+        }
+        for err in exc.errors()
+    ]
 
 
 def message_from_validation_details(details: list[dict[str, Any]]) -> str:
