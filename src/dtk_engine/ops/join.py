@@ -127,23 +127,6 @@ def _join_on_key(x: pd.DataFrame, y: pd.DataFrame, key: str) -> pd.DataFrame:
     return out
 
 
-def merge_match_stats(
-    x: pd.DataFrame, merge_df: pd.DataFrame, key: str
-) -> dict[str, int]:
-    """Report ``{'matched': int, 'total': int}`` for merging ``merge_df`` onto ``x`` on ``key``."""
-    missing = [
-        side
-        for side, df in (("X", x), ("merge table", merge_df))
-        if key not in df.columns
-    ]
-    if missing:
-        raise MergeJoinError(
-            f"merge on key: column {key!r} not in {' and '.join(missing)}"
-        )
-    matched = int(x[key].isin(merge_df[key]).sum())
-    return {"matched": matched, "total": len(x)}
-
-
 def merge_table(
     x: pd.DataFrame,
     merge_df: pd.DataFrame,

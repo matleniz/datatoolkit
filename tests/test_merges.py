@@ -14,11 +14,11 @@ from dtk_engine.contract import (
     workspace_rows,
 )
 from dtk_engine.errors import KeyParamsError
-from dtk_engine.ops.join import merge_match_stats, merge_table
+from dtk_engine.ops.join import merge_table
 from dtk_engine.sources.dataset import workspace_frame
 from dtk_engine.workspace.models import MergeSpec, Workspace
 
-# --- Ops: merge_table & merge_match_stats ---
+# --- Ops: merge_table ---
 
 
 def test_merge_table_preserves_rows_order_and_index():
@@ -78,9 +78,6 @@ def test_merge_table_matched_counts_reporting():
     x = pd.DataFrame({"id": [1, 2, 3, 99], "val": ["a", "b", "c", "d"]})
     merge_df = pd.DataFrame({"id": [1, 2, 3], "extra": ["e1", "e2", "e3"]})
 
-    stats = merge_match_stats(x, merge_df, key="id")
-    assert stats == {"matched": 3, "total": 4}
-
     out, stats_out = merge_table(x, merge_df, key="id", return_stats=True)
     assert stats_out == {"matched": 3, "total": 4}
     assert len(out) == 4
@@ -92,8 +89,6 @@ def test_merge_table_missing_key_in_x():
 
     with pytest.raises(KeyParamsError, match="column 'id' not in X"):
         merge_table(x, merge_df, key="id")
-    with pytest.raises(KeyParamsError, match="column 'id' not in X"):
-        merge_match_stats(x, merge_df, key="id")
 
 
 def test_merge_table_missing_key_in_merge_df():
@@ -102,8 +97,6 @@ def test_merge_table_missing_key_in_merge_df():
 
     with pytest.raises(KeyParamsError, match="column 'id' not in merge table"):
         merge_table(x, merge_df, key="id")
-    with pytest.raises(KeyParamsError, match="column 'id' not in merge table"):
-        merge_match_stats(x, merge_df, key="id")
 
 
 def test_merge_table_duplicated_keys_in_merge_df_refused():
