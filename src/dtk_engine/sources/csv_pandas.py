@@ -165,26 +165,33 @@ def find_bad_record(
         for _ in range(header or 0):
             next(rows, None)
         first = next(rows, None)
-        if first is None:
-            return None
-        expected = len(first)
-        if not locate:
+        if first is not None:
+            expected = len(first)
+            if locate:
+                return _first_wide_record(reader, rows, expected)
             # Fast path in C: the widest record; walk again only to locate it.
-            if max(map(len, rows), default=0) <= expected:
-                return None
-            return find_bad_record(text, sep, header, locate=True)
-        for row in rows:
-            if len(row) > expected:
-                return reader.line_num, f"{len(row)} fields, expected {expected}"
+            if max(map(len, rows), default=0) > expected:
+                return find_bad_record(text, sep, header, locate=True)
     except csv.Error as exc:
-        message = str(exc)
-        if "field larger than field limit" in message:
-            return None  # a huge field is not malformed; let pandas read it
-        for pattern, reason in _CSV_ERRORS:
-            if pattern in message:
-                message = reason
-        return reader.line_num, message
+        return _csv_error_record(reader, exc)
     return None
+
+
+def _first_wide_record(reader, rows, expected: int) -> tuple[int, str] | None:
+    for row in rows:
+        if len(row) > expected:
+            return reader.line_num, f"{len(row)} fields, expected {expected}"
+    return None
+
+
+def _csv_error_record(reader, exc: csv.Error) -> tuple[int, str] | None:
+    message = str(exc)
+    if "field larger than field limit" in message:
+        return None  # a huge field is not malformed; let pandas read it
+    for pattern, reason in _CSV_ERRORS:
+        if pattern in message:
+            message = reason
+    return reader.line_num, message
 
 
 @reader("csv")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 import re
 from typing import Any, Literal
 
@@ -509,29 +510,23 @@ class FilterRowsParams(TransformParams):
     )
 
 
+_CONDITION_MASKS = {
+    "eq": operator.eq,
+    "ne": operator.ne,
+    "gt": operator.gt,
+    "ge": operator.ge,
+    "lt": operator.lt,
+    "le": operator.le,
+    "isin": lambda s, v: s.isin(v),
+    "notin": lambda s, v: ~s.isin(v),
+    "isna": lambda s, v: s.isna(),
+}
+
+
 def _condition_mask(df: pd.DataFrame, c: Condition) -> pd.Series:
     s = df[c.column]
-    match c.op:
-        case "eq":
-            return s == c.value
-        case "ne":
-            return s != c.value
-        case "gt":
-            return s > c.value
-        case "ge":
-            return s >= c.value
-        case "lt":
-            return s < c.value
-        case "le":
-            return s <= c.value
-        case "isin":
-            return s.isin(c.value)
-        case "notin":
-            return ~s.isin(c.value)
-        case "isna":
-            return s.isna()
-        case _:
-            return s.notna()
+    mask = _CONDITION_MASKS.get(c.op)
+    return mask(s, c.value) if mask else s.notna()  # notna: the last op
 
 
 @transform("filter_rows", params_model=FilterRowsParams, title="Filter rows")
