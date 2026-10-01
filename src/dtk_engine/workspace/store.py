@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
+import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,6 +16,32 @@ from pydantic import ValidationError
 
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.workspace.models import NAME_PATTERN, Workspace
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock(fh) -> None:
+        # Byte 0 of the lock file; LK_NBLCK fails at once when held: retry.
+        fh.seek(0)
+        while True:
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                time.sleep(0.01)
+
+    def _unlock(fh) -> None:
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _lock(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+
+    def _unlock(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 class WorkspaceNotFoundError(KeyError):
@@ -45,8 +72,8 @@ def default_root() -> Path:
 class JsonWorkspaceStore:
     """One ``<name>.json`` per workspace under ``root``.
 
-    Mutations (save / delete / rename / duplicate) take an exclusive flock on
-    ``root/.lock`` so a concurrent PUT cannot race a rename or delete and lose
+    Mutations (save / delete / rename / duplicate) take an exclusive lock on
+    ``root/.lock`` (``flock``; ``msvcrt.locking`` on Windows) so a concurrent PUT cannot race a rename or delete and lose
     an update (MAT-171). Reads stay lock-free: writes are atomic (tmp + replace).
     """
 
@@ -62,11 +89,11 @@ class JsonWorkspaceStore:
     def _exclusive(self) -> Iterator[None]:
         self.root.mkdir(parents=True, exist_ok=True)
         with open(self.root / ".lock", "a+", encoding="utf-8") as fh:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            _lock(fh)
             try:
                 yield
             finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                _unlock(fh)
 
     def list(self) -> list[str]:
         if not self.root.is_dir():
