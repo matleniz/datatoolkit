@@ -1,10 +1,11 @@
 # datatoolkit
 
 Engine of "keys" (typed analyses returning JSON), usable on its own from a
-notebook or a script. Spec lives in `~/datatoolkit-hub`. The Streamlit front
-lives in its own repo, [datatoolkit-streamlit](https://github.com/matleniz/datatoolkit-streamlit).
+notebook or a script. Spec lives in `~/datatoolkit-hub`. The web front (Studio)
+lives in its own repo, [datatoolkit-web](https://github.com/matleniz/datatoolkit-web),
+and talks to the engine over the HTTP API (`dtk-api`) only.
 
-Install (no front, no streamlit):
+Install (engine only, no front):
 
 ```bash
 uv pip install git+https://github.com/matleniz/datatoolkit
@@ -50,8 +51,12 @@ cross_val_score(pipe, X, y)
 workspace_pipeline("my_workspace")  # unfitted Pipeline from the workspace steps
 ```
 
-JSON contract (what fronts call): `run_key`, `list_keys`, `key_schema`,
-workspaces, `list_transforms`, `transform_schema`:
+JSON contract (what fronts call, `src/dtk_engine/contract.py`): `run_key`,
+`list_keys`, `key_schema`, `list_transforms`, `transform_schema`, workspaces
+(`list_workspaces`, `get_workspace`, `save_workspace`, rename / duplicate /
+delete, `export_workspace`) and the studio reads (`source_columns`,
+`preview_workspace`, `preview_step`, `workspace_rows`, `column_profiles`,
+`align_report`):
 
 ```python
 from dtk_engine import run_key, Result
@@ -68,7 +73,8 @@ a target column). A `Result` table with `kind: "steps"` holds workspace steps
 (`op`, `target`, `params` per row) that a front can apply as is.
 
 Add a transform op: pick its family module in `src/dtk_engine/ops/transforms/`
-(`cleaning`, `impute`, `encode`, `scale`, `features`) and register it with
+(`cleaning`, `impute`, `encode`, `scale`, `features`, `selection`, `formula`,
+`align`) and register it with
 `@transform(op, params_model=..., fit=...)` (see `drop_columns` in
 `cleaning.py` and the protocol in `transform_registry.py`).
 
@@ -82,7 +88,8 @@ uv run dtk-api --host 0.0.0.0 --port 8765
 
 CORS allows the Vite dev origins (`http://localhost:5173`,
 `http://127.0.0.1:5173`); add more via `DTK_CORS_ORIGINS` (comma-separated).
-Uploads land under `$DTK_UPLOAD_DIR` (default `$DTK_HOME/uploads`).
+Uploads land under `$DTK_UPLOAD_DIR` (default `$DTK_HOME/uploads`), workspaces
+under `$DTK_HOME/workspaces`; `DTK_HOME` defaults to `~/.datatoolkit`.
 
 Develop:
 
