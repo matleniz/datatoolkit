@@ -58,7 +58,10 @@ def test_category_shift_compares_as_strings():
     assert shift["n_unseen_categories"] == 2
     assert shift["unseen_categories"] == "1, Q"
     assert shift["unseen_category_counts"] == "Q (2), 1 (1)"
-    assert shift["_only_in_test"] == [{"value": "Q", "count": 2}, {"value": "1", "count": 1}]
+    assert shift["_only_in_test"] == [
+        {"value": "Q", "count": 2},
+        {"value": "1", "count": 1},
+    ]
     assert shift["pct_test_rows_unseen"] == 75.0
     assert shift["train_only_categories"] == "C"
     assert shift["near_match_hint"] is None
@@ -325,3 +328,30 @@ def test_find_issues_without_drift_tables_unchanged():
     columns = compare_columns(train, train)
     out = find_issues(train, train, columns, overlap(train, train, []))
     assert "drift" not in set(out["check"])
+
+
+def test_find_issues_drift_tables():
+    df = pd.DataFrame({"a": [1.0, 2.0]})
+    numeric = pd.DataFrame(
+        {
+            "column": ["warn", "info", "calm", "skip"],
+            "psi": [0.5, 0.15, 0.0, 9.0],
+            "smd": [0.6, 0.0, 0.0, 9.0],
+            "ks": [0.0, 0.0, 0.0, 9.0],
+            "pct_test_below_train_p1": [0.0, 0.0, 0.0, 0.0],
+            "pct_test_above_train_p99": [0.0, 0.0, 0.0, 0.0],
+            "skipped": [None, None, None, "constant"],
+        }
+    )
+    categorical = pd.DataFrame({"column": ["c", "c", "d"], "tvd": [0.5, 0.5, 0.0]})
+    cols = compare_columns(df, df)
+    issues = find_issues(df, df, cols, overlap(df, df, []), (), numeric, categorical)
+    drift = issues[issues["check"] == "drift"]
+    assert list(zip(drift["severity"], drift["column"])) == [
+        ("warning", "warn"),
+        ("warning", "c"),
+        ("info", "info"),
+    ]
+    assert drift.iloc[0]["message"] == "distribution drift: PSI 0.50, SMD +0.60"
+    assert drift.iloc[2]["message"] == "distribution drift: PSI 0.15"
+    assert drift.iloc[1]["message"].endswith("distance 0.50")
