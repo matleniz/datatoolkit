@@ -231,7 +231,7 @@ def _strongest_pairs(corr: pd.DataFrame) -> pd.DataFrame:
 
 def _pairs_bar(pairs: pd.DataFrame):
     pairs = pairs.iloc[::-1]  # strongest on top of a horizontal bar chart
-    label = [f"{_short(a)} × {_short(b)}" for a, b in zip(pairs["a"], pairs["b"])]
+    label = [f"{_short(a)} × {_short(b)}" for a, b in zip(pairs["a"], pairs["b"], strict=True)]
     sign = np.where(pairs["corr"] >= 0, "positive", "negative")
     fig = px.bar(
         x=pairs["abs"],

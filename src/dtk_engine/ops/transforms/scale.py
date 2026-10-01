@@ -51,7 +51,7 @@ def _fit_scale(df: pd.DataFrame, params: ScaleParams) -> dict:
     if empty:
         raise ValueError(f"scale: columns entirely missing in the fit frame {empty}")
     return {
-        col: dict(zip(("center", "scale"), _center_scale(df[col], params.method)))
+        col: dict(zip(("center", "scale"), _center_scale(df[col], params.method), strict=True))
         for col in params.columns
     }
 

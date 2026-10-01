@@ -16,5 +16,5 @@ No front here: the Streamlit front lives in `matleniz/datatoolkit-streamlit`
   `HOWTO/add-a-key.md` the recipe. Contradiction → `propose-doc-change`.
 - Setup: `uv sync`
 - Tests: `uv run pytest`
-- Lint: `uv run ruff check .`
+- Lint: `uv run ruff check .` (incl. complexity ≤ 10); layer contract: `tests/test_layers.py`
 - Gate: `fleet gate` must be clean before any PR.

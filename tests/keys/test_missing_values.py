@@ -115,7 +115,7 @@ def test_sort_and_threshold():
 def test_headline_mentions_worst_column():
     res = run_key("missing_values", {})
     assert "Cabin 88 %" in res["headline"]
-    assert "2 columns have missing values; 1 above 30 % (Cabin 88 %)" == res["headline"]
+    assert res["headline"] == "2 columns have missing values; 1 above 30 % (Cabin 88 %)"
 
     clean = api.missing(pd.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]}))
     assert clean.headline == "No missing values"
