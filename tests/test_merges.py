@@ -15,7 +15,7 @@ from dtk_engine.contract import (
 )
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.join import merge_table
-from dtk_engine.sources.dataset import workspace_frame
+from dtk_engine.workspace.dataset import workspace_frame
 from dtk_engine.workspace.models import MergeSpec, Workspace
 
 # --- Ops: merge_table ---

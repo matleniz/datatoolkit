@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from dtk_engine.cache import memoize
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.advisor.cleaning import sentinel_rec, type_rec, variant_rec
 from dtk_engine.ops.advisor.common import (
@@ -49,6 +50,7 @@ __all__ = [
 ]
 
 
+@memoize(max_entries=16)
 def advise(
     train: pd.DataFrame,
     test: pd.DataFrame | None = None,

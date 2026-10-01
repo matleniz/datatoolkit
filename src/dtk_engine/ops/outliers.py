@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
-from dtk_engine.ops._memo import memo_frame
+from dtk_engine.cache import memo_frame
 from dtk_engine.ops._util import pct as _pct
 from dtk_engine.ops.profile import columns_of_type
 

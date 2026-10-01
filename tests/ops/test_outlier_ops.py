@@ -59,9 +59,10 @@ def test_numeric_columns_skip_ids_and_text():
 
 
 def test_isolation_forest_memoized_on_content(monkeypatch):
-    from dtk_engine.ops import _memo, outliers
+    from dtk_engine import cache
+    from dtk_engine.ops import outliers
 
-    _memo._CACHE.clear()
+    cache._FITS.clear()
     calls = []
     real = outliers._isolation_forest
     monkeypatch.setattr(
@@ -76,4 +77,4 @@ def test_isolation_forest_memoized_on_content(monkeypatch):
     isolation_forest(df.assign(x=df["x"] + 1), ["x", "y"], 0.1, 0)  # other data
     isolation_forest(df.set_axis(df.index + 1), ["x", "y"], 0.1, 0)  # other index
     assert len(calls) == 4
-    _memo._CACHE.clear()
+    cache._FITS.clear()

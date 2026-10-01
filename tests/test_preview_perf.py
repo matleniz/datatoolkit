@@ -12,7 +12,7 @@ import pytest
 from dtk_engine import preview_step
 from dtk_engine.sources import registry
 from dtk_engine.transform_registry import Transform
-from dtk_engine.workspace import replay_cache
+from dtk_engine.workspace import dataset
 from dtk_engine.workspace.inspect import _diff_cells, _raw_role
 from dtk_engine.workspace.models import Step, Workspace
 from dtk_engine.workspace.replay import replay_fitted
@@ -48,10 +48,10 @@ PENDING = {
 @pytest.fixture(autouse=True)
 def _fresh_caches():
     registry._RAW_CACHE.clear()
-    replay_cache._CACHE.clear()
+    dataset._FRAMES.clear()
     yield
     registry._RAW_CACHE.clear()
-    replay_cache._CACHE.clear()
+    dataset._FRAMES.clear()
 
 
 def _frame(n: int, seed: int) -> pd.DataFrame:

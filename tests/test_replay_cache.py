@@ -7,25 +7,31 @@ import os
 import pandas as pd
 import pytest
 
-from dtk_engine import align_report, column_profiles, preview_step, workspace_rows
+from dtk_engine import (
+    align_report,
+    column_profiles,
+    contract,
+    preview_step,
+    workspace_rows,
+)
+from dtk_engine.cache import LRU
 from dtk_engine.errors import SourceError
 from dtk_engine.sources import registry
-from dtk_engine.sources._cache import FrameLRU
 from dtk_engine.sources.registry import load
 from dtk_engine.sources.spec import CsvSource, SqlSource
 from dtk_engine.transform_registry import get_transform
-from dtk_engine.workspace import replay_cache, shape_cache
+from dtk_engine.workspace import dataset
 
 
 @pytest.fixture(autouse=True)
 def _fresh_caches():
     registry._RAW_CACHE.clear()
-    replay_cache._CACHE.clear()
-    shape_cache.clear()
+    dataset._FRAMES.clear()
+    contract._SHAPES.clear()
     yield
     registry._RAW_CACHE.clear()
-    replay_cache._CACHE.clear()
-    shape_cache.clear()
+    dataset._FRAMES.clear()
+    contract._SHAPES.clear()
 
 
 def _bump(path, seconds=5):
@@ -176,14 +182,14 @@ def test_preview_step_and_align_report_reuse(tmp_path, read_counter):
 
 
 def test_frame_lru_bounds():
-    lru = FrameLRU(max_entries=2, max_bytes=10**9)
+    lru = LRU(max_entries=2, max_bytes=10**9)
     for k in "abc":
         lru.put(k, pd.DataFrame({"a": [1]}))
     assert len(lru) == 2 and lru.get("a") is None and lru.get("c") is not None
-    tiny = FrameLRU(max_entries=10, max_bytes=1)
+    tiny = LRU(max_entries=10, max_bytes=1)
     tiny.put("a", pd.DataFrame({"a": [1]}))
     assert len(tiny) == 0
-    small = FrameLRU(max_entries=10, max_bytes=300)
+    small = LRU(max_entries=10, max_bytes=300)
     for k in "abcd":
         small.put(k, pd.DataFrame({"a": range(10)}))
     assert small._bytes <= 300

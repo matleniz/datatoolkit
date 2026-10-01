@@ -75,9 +75,10 @@ def test_pca_variance_components():
 
 
 def test_feature_scores_memoized_on_content(monkeypatch):
-    from dtk_engine.ops import _memo, selection
+    from dtk_engine import cache
+    from dtk_engine.ops import selection
 
-    _memo._CACHE.clear()
+    cache._FITS.clear()
     calls = []
     real = selection._feature_scores
     monkeypatch.setattr(
@@ -93,4 +94,4 @@ def test_feature_scores_memoized_on_content(monkeypatch):
     feature_scores(df, "y", "classification", ["a", "b"], random_state=1)
     feature_scores(df.assign(y=1 - df["y"]), "y", "classification", ["a", "b"])
     assert len(calls) == 3
-    _memo._CACHE.clear()
+    cache._FITS.clear()
