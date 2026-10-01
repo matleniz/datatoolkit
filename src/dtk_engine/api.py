@@ -73,6 +73,7 @@ SUFFIX_KINDS = {
     ".tsv": "csv",
     ".parquet": "parquet",
     ".xlsx": "excel",
+    ".xls": "excel",  # routed so the reader can say "only .xlsx is supported"
     ".json": "json",
     ".jsonl": "json",
     ".ndjson": "json",

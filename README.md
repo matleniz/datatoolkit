@@ -35,6 +35,10 @@ api.list_transforms()  # registered transform ops
 api.transform(train, "drop_columns", columns=["Name"])  # DataFrame out
 ```
 
+Sources: csv/tsv, parquet, `.xlsx`, json/jsonl, sql. Legacy `.xls` is not
+supported (no extra dependency): loading one raises a `SourceError` asking for
+`.xlsx`; re-save the file as `.xlsx`.
+
 scikit-learn: every transform op is a fit / transform estimator (fitted on the
 training fold, pandas in / out), and a workspace's `both` steps form a pipeline:
 
