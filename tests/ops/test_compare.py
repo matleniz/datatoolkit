@@ -58,10 +58,7 @@ def test_category_shift_compares_as_strings():
     assert shift["n_unseen_categories"] == 2
     assert shift["unseen_categories"] == "1, Q"
     assert shift["unseen_category_counts"] == "Q (2), 1 (1)"
-    assert shift["_only_in_test"] == [
-        {"value": "Q", "count": 2},
-        {"value": "1", "count": 1},
-    ]
+    assert shift["_only_in_test"] == [{"value": "Q", "count": 2}, {"value": "1", "count": 1}]
     assert shift["pct_test_rows_unseen"] == 75.0
     assert shift["train_only_categories"] == "C"
     assert shift["near_match_hint"] is None

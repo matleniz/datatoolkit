@@ -121,7 +121,11 @@ def column_kind(series: pd.Series, name: str | None = None) -> str:
     else:
         obj = object_kind(series.dropna())
         kind = KIND_BINARY if obj == "binary" else KIND_TEXT
-    if kind == KIND_TEXT and name is not None and _name_looks_like_id(name):
+    if (
+        kind == KIND_TEXT
+        and name is not None
+        and _name_looks_like_id(name)
+    ):
         values = series.dropna()
         if len(values) > 0:
             ratio = hashable(values).nunique() / len(values)
@@ -144,11 +148,7 @@ def _with_rids(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _raw_role(ws: Workspace, role: str, labeled: bool = True) -> pd.DataFrame:
     return cached_frame(
-        ws,
-        "raw_rid",
-        role,
-        [],
-        labeled,
+        ws, "raw_rid", role, [], labeled,
         lambda: _with_rids(raw_workspace_frame(ws, role, labeled)),
     )
 
@@ -220,9 +220,7 @@ def _resolve_columns(
     if not columns:
         return None
     if not isinstance(columns, list) or any(not isinstance(c, str) for c in columns):
-        raise KeyParamsError(
-            f"{op}: columns must be a list of strings, got {columns!r}"
-        )
+        raise KeyParamsError(f"{op}: columns must be a list of strings, got {columns!r}")
     absent = [c for c in columns if c not in df.columns]
     if absent:
         raise KeyParamsError(f"{op}: columns not in the frame {absent}")
@@ -341,9 +339,7 @@ def _numbers_as_text(series: pd.Series) -> bool:
         return False
     if not values.map(lambda v: isinstance(v, str)).all():
         return False
-    return bool(
-        values.map(lambda v: bool(_NUMBER_AS_TEXT_RE.fullmatch(v.strip()))).all()
-    )
+    return bool(values.map(lambda v: bool(_NUMBER_AS_TEXT_RE.fullmatch(v.strip()))).all())
 
 
 def _currency_as_text(series: pd.Series) -> dict | None:
@@ -525,7 +521,9 @@ def preview_step(ws: Workspace, step: dict | Step, role: str) -> dict:
     test = None
     if ws.datasets.test is not None and (target != "train" or role == "test"):
         test = prefix if role == "test" else _replay_role(ws, "test", ws.steps)
-    train_after, test_after, last = replay_step(parsed_step, len(ws.steps), train, test)
+    train_after, test_after, last = replay_step(
+        parsed_step, len(ws.steps), train, test
+    )
     after = train_after if role == "train" else test_after
     if after is None:
         raise SourceError(f"workspace {ws.name!r} has no {role} dataset")
