@@ -2,7 +2,6 @@
 
 from pydantic import Field
 
-from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.chart import (
     DEFAULT_SAMPLE_SIZE,
     Agg,
@@ -11,14 +10,13 @@ from dtk_engine.ops.chart import (
     sample_frame,
 )
 from dtk_engine.ops.profile import HIST_BINS
-from dtk_engine.params import KeyParams, column_field, columns_field
+from dtk_engine.params import SourceParams, column_field, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result, plotly_lock
-from dtk_engine.sources import CsvSource, SourceSpec, load
+from dtk_engine.sources import load
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     chart: ChartType = Field(
         default="histogram",
         description="Chart type: histogram, box, violin, bar, count, scatter, "

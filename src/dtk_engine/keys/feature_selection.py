@@ -6,7 +6,6 @@ import pandas as pd
 import plotly.express as px
 from pydantic import Field
 
-from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.advisor import advise
 from dtk_engine.ops.selection import (
@@ -21,14 +20,13 @@ from dtk_engine.ops.selection import (
     resolve_task,
     suggested_steps,
 )
-from dtk_engine.params import KeyParams, column_field, columns_field
+from dtk_engine.params import SourceParams, column_field, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result, plotly_lock
-from dtk_engine.sources import CsvSource, SourceSpec, load
+from dtk_engine.sources import load
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     target: str = column_field("Survived", "Target column of `source`")
     task: Literal["auto", "classification", "regression"] = Field(
         default="auto",

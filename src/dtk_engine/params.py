@@ -21,6 +21,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from dtk_engine.demo_data import TRAIN_CSV
+from dtk_engine.sources.spec import CsvSource, SourceSpec
+
 ColumnDtype = Literal["any", "numeric"]
 
 
@@ -28,6 +31,12 @@ class KeyParams(BaseModel):
     """Unknown or misspelled params raise instead of being silently ignored."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+class SourceParams(KeyParams):
+    """Params of a key analysing one ``source`` (default: the demo train CSV)."""
+
+    source: SourceSpec = CsvSource(path=TRAIN_CSV)
 
 
 def _hints(widget: str, source: str, dtype: ColumnDtype) -> dict[str, str]:

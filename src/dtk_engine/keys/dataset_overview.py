@@ -4,7 +4,6 @@ import pandas as pd
 import plotly.express as px
 from pydantic import Field
 
-from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.profile import (
     category_summary,
     category_values,
@@ -17,14 +16,13 @@ from dtk_engine.ops.profile import (
     numeric_stats,
     text_stats,
 )
-from dtk_engine.params import KeyParams
+from dtk_engine.params import SourceParams
 from dtk_engine.registry import key
 from dtk_engine.result import Result, plotly_lock
-from dtk_engine.sources import CsvSource, SourceSpec, load
+from dtk_engine.sources import load
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     head_rows: int = Field(default=5, ge=1, le=1000, description="Rows shown in `head`")
 
 

@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pydantic import Field, model_validator
 
-from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
+from dtk_engine.demo_data import TEST_CSV
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.columns import is_numeric, pick_columns, value_kind
 from dtk_engine.ops.distribution import (
@@ -25,7 +25,7 @@ from dtk_engine.ops.distribution import (
     sample_scatter,
     vs_by_correlations,
 )
-from dtk_engine.params import KeyParams, column_field, columns_field
+from dtk_engine.params import SourceParams, column_field, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import CsvSource, SourceSpec, load
@@ -37,8 +37,7 @@ BinsSpec = int | Literal["auto"]
 NormSpec = Literal["count", "density", "share"]
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     columns: list[str] = columns_field(
         f"Columns to describe (empty = every numeric / categorical / boolean "
         f"column, first {MAX_COLUMNS})"

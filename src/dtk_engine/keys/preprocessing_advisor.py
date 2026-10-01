@@ -5,18 +5,16 @@ from typing import Literal
 import pandas as pd
 from pydantic import Field
 
-from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.advisor import advise
-from dtk_engine.params import KeyParams, column_field
+from dtk_engine.params import SourceParams, column_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
-from dtk_engine.sources import CsvSource, SourceSpec, load
+from dtk_engine.sources import SourceSpec, load
 
 ModelFamily = Literal["tree", "linear", "distance", "neural"]
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     test: SourceSpec | None = Field(
         default=None,
         description="Optional test source: columns only in train (leak), unseen "

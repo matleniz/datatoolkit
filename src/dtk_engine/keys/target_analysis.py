@@ -9,7 +9,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pydantic import Field
 
-from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.columns import pick_columns, value_kind
 from dtk_engine.ops.distribution import MISSING_LABEL, OTHER_LABEL, TOP_K, natural_key
@@ -26,10 +25,10 @@ from dtk_engine.ops.target import (
     labeled_rows,
     numeric_by_class,
 )
-from dtk_engine.params import KeyParams, column_field, columns_field
+from dtk_engine.params import SourceParams, column_field, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result, plotly_lock
-from dtk_engine.sources import CsvSource, SourceSpec, load
+from dtk_engine.sources import load
 
 # Features analysed when none are picked (the first eligible ones).
 MAX_COLUMNS = 30
@@ -39,8 +38,7 @@ MIN_GROUP_SHARE = 0.05
 RANKING_SHOWN = 30
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     target: str = column_field("Survived", "Label column of `source`")
     columns: list[str] = columns_field(
         f"Features to analyse (empty = every numeric / categorical / boolean "
