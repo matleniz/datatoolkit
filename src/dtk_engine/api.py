@@ -25,7 +25,6 @@ from pathlib import Path
 import pandas as pd
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from dtk_engine.contract import list_transforms, preview_workspace
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.keys.chart import chart_result
 from dtk_engine.keys.column_distribution import distribution_result
@@ -39,10 +38,13 @@ from dtk_engine.keys.outliers import outliers_result
 from dtk_engine.keys.preprocessing_advisor import advisor_result
 from dtk_engine.keys.target_analysis import target_result
 from dtk_engine.keys.train_test_check import check_result
+from dtk_engine.ops import transforms  # noqa: F401  (registers every transform op)
 from dtk_engine.result import Result
 from dtk_engine.sources import SourceSpec
 from dtk_engine.sources import load as load_spec
 from dtk_engine.transform_registry import get_transform
+from dtk_engine.transform_registry import transform_catalog as list_transforms
+from dtk_engine.workspace.dataset import preview as preview_workspace
 from dtk_engine.workspace.export import export_workspace as _export_workspace
 
 __all__ = [

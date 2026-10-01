@@ -144,3 +144,17 @@ def get_transform(op: str) -> Transform:
 
 def all_transforms() -> list[Transform]:
     return [_TRANSFORMS[op] for op in sorted(_TRANSFORMS)]
+
+
+def transform_catalog() -> list[dict]:
+    """Registered transform ops as JSON; ``needs_target``: fit reads the column
+    named by the op's ``target`` param (supervised op)."""
+    return [
+        {
+            "op": t.op,
+            "title": t.title,
+            "description": t.description,
+            "needs_target": t.needs_target,
+        }
+        for t in all_transforms()
+    ]

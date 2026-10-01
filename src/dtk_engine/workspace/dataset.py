@@ -13,17 +13,24 @@ dataset, a directory) make the call uncacheable: it computes every time.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 import pandas as pd
+from pydantic import ValidationError
 
 from dtk_engine.cache import LRU, digest, stamps
-from dtk_engine.errors import SourceError
+from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.ops.join import LabelJoinError, join_labels, merge_table
 from dtk_engine.sources.registry import load, reader
 from dtk_engine.sources.spec import DatasetSource
 from dtk_engine.workspace.models import Step, Workspace
-from dtk_engine.workspace.replay import needs_train, replay, resolve_version
+from dtk_engine.workspace.replay import (
+    needs_train,
+    replay,
+    resolve_version,
+    validate_steps,
+)
 from dtk_engine.workspace.store import JsonWorkspaceStore, WorkspaceNotFoundError
 
 _FRAMES = LRU(max_entries=64, max_bytes=750 * 1024 * 1024)
@@ -107,6 +114,37 @@ def workspace_frame(
         return replay(steps, role, frame, train)
 
     return cached_frame(ws, "replay", role, steps, labeled, compute)
+
+
+def parse_workspace(ws: dict) -> Workspace:
+    """Workspace model + every step's op and params (nothing is read).
+
+    Invalid shape or step params -> KeyParamsError; unknown op ->
+    UnknownTransformError.
+    """
+    try:
+        parsed = Workspace.model_validate(ws)
+    except ValidationError as exc:
+        raise KeyParamsError(str(exc)) from exc
+    validate_steps(parsed.steps)
+    return parsed
+
+
+def preview(ws: dict, role: str, head_rows: int = 5) -> dict:
+    """Replay an unsaved workspace dict in memory (nothing is written to the store).
+
+    Validates like ``parse_workspace``; returns ``{shape: [rows, cols], columns,
+    head: records}`` for ``role`` ("train" | "test") with its steps applied.
+    """
+    parsed = parse_workspace(ws)
+    if role not in ("train", "test"):
+        raise KeyParamsError(f"role must be 'train' or 'test', got {role!r}")
+    df = workspace_frame(parsed, role)
+    return {
+        "shape": [len(df), df.shape[1]],
+        "columns": [str(c) for c in df.columns],
+        "head": json.loads(df.head(head_rows).to_json(orient="records")),
+    }
 
 
 @reader("dataset")

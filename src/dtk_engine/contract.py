@@ -14,7 +14,6 @@ Contract surface (fronts call these; inputs/outputs are plain JSON)::
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path, PurePath
 
@@ -27,12 +26,11 @@ from .ops import transforms  # noqa: F401  (registers every transform op)
 from .ops.columns import is_numeric
 from .registry import all_keys, get_key
 from .sources import SourceSpec, load
-from .transform_registry import all_transforms, get_transform
+from .transform_registry import get_transform, transform_catalog
 from .workspace import JsonWorkspaceStore, Workspace
 from .workspace import inspect as _inspect
-from .workspace.dataset import workspace_frame, workspace_key
+from .workspace.dataset import parse_workspace, preview, workspace_frame, workspace_key
 from .workspace.export import export_workspace as _export
-from .workspace.replay import validate_steps
 
 _SHAPES = LRU(max_entries=256)
 
@@ -155,15 +153,7 @@ def source_columns(spec: dict) -> list[dict]:
 def list_transforms() -> list[dict]:
     """Registered transform ops; ``needs_target``: fit reads the column named by
     the op's ``target`` param (supervised op)."""
-    return [
-        {
-            "op": t.op,
-            "title": t.title,
-            "description": t.description,
-            "needs_target": t.needs_target,
-        }
-        for t in all_transforms()
-    ]
+    return transform_catalog()
 
 
 def transform_schema(op: str) -> dict:
@@ -200,24 +190,10 @@ def get_workspace(name: str) -> dict:
     return JsonWorkspaceStore().get(name).model_dump(mode="json")
 
 
-def _parse_workspace(ws: dict) -> Workspace:
-    """Workspace model + every step's op and params (nothing is read).
-
-    Invalid shape or step params -> KeyParamsError; unknown op ->
-    UnknownTransformError.
-    """
-    try:
-        parsed = Workspace.model_validate(ws)
-    except ValidationError as exc:
-        raise KeyParamsError(str(exc)) from exc
-    validate_steps(parsed.steps)
-    return parsed
-
-
 def save_workspace(workspace: dict) -> dict:
     """Validate (shape, step ops and params) and store (create or overwrite);
     returns the normalized dict."""
-    parsed = _parse_workspace(workspace)
+    parsed = parse_workspace(workspace)
     JsonWorkspaceStore().save(parsed)
     return parsed.model_dump(mode="json")
 
@@ -228,15 +204,7 @@ def preview_workspace(ws: dict, role: str, head_rows: int = 5) -> dict:
     Validates like ``save_workspace``; returns ``{shape: [rows, cols], columns,
     head: records}`` for ``role`` ("train" | "test") with its steps applied.
     """
-    parsed = _parse_workspace(ws)
-    if role not in ("train", "test"):
-        raise KeyParamsError(f"role must be 'train' or 'test', got {role!r}")
-    df = workspace_frame(parsed, role)
-    return {
-        "shape": [len(df), df.shape[1]],
-        "columns": [str(c) for c in df.columns],
-        "head": json.loads(df.head(head_rows).to_json(orient="records")),
-    }
+    return preview(ws, role, head_rows)
 
 
 def delete_workspace(name: str) -> None:
@@ -298,7 +266,7 @@ def workspace_rows(
     to those names in that order; unknown names raise ``KeyParamsError``.
     """
     return _inspect.workspace_rows(
-        _parse_workspace(ws),
+        parse_workspace(ws),
         role,
         version=version,
         offset=offset,
@@ -320,7 +288,7 @@ def column_profiles(
     order; unknown names raise ``KeyParamsError``. ``None`` / empty = all.
     """
     return _inspect.column_profiles(
-        _parse_workspace(ws), role, version=version, columns=columns
+        parse_workspace(ws), role, version=version, columns=columns
     )
 
 
@@ -331,7 +299,7 @@ def preview_step(ws: dict, step: dict, role: str) -> dict:
     Invalid step -> KeyParamsError / UnknownTransformError (like
     ``save_workspace``); a step failing on the data -> SourceError naming it.
     """
-    return _inspect.preview_step(_parse_workspace(ws), step, role)
+    return _inspect.preview_step(parse_workspace(ws), step, role)
 
 
 def align_report(ws: dict) -> dict:
@@ -348,4 +316,4 @@ def align_report(ws: dict) -> dict:
     informational for rare new categories). Those fields are ``null`` / ``[]``
     / ``False`` on other statuses.
     """
-    return _inspect.align_report(_parse_workspace(ws))
+    return _inspect.align_report(parse_workspace(ws))
