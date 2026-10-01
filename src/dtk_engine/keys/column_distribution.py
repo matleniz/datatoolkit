@@ -180,75 +180,32 @@ def distribution_result(
     ``by`` splits by any column (top-k + other or quantile bins), independent of
     ``target``; mutually exclusive with ``by_label``.
     """
-    op = "column_distribution"
-    if by is not None and by_label:
-        raise KeyParamsError(f"{op}: pass by or by_label, not both")
-    if by is not None and by not in df.columns:
-        raise KeyParamsError(f"{op}: by {by!r} not in the frame")
-    if by_label:
-        if target is None:
-            raise KeyParamsError(f"{op}: by_label needs a target column")
-        if target not in df.columns:
-            raise KeyParamsError(f"{op}: target {target!r} not in the frame")
+    _check_split(df, by, by_label, target)
     exclude = [c for c in (by, target if by_label else None) if c is not None]
     picked, n_capped = pick_columns(
-        df, columns or [], op, exclude=exclude, cap=MAX_COLUMNS
+        df, columns or [], _OP, exclude=exclude, cap=MAX_COLUMNS
     )
     frames = {"train": df, "test": test} if test is not None else {"all": df}
-    if by is not None:
-        group_col, binner = by, by_binner(df[by], top_k, target_bins)
-    elif by_label:
-        group_col, binner = target, label_binner(df[target], target_bins)
-    else:
-        group_col, binner = None, None
+    group_col, binner = _group_spec(df, by, by_label, target, top_k, target_bins)
     data = grouped_frame(frames, picked, group_col, binner)
     kinds = {c: value_kind(df[c]) for c in picked}
-    by_numeric = by is not None and is_numeric(df[by])
-
-    hists, summaries, counts, figures = [], [], [], []
-    for col in picked:
-        if kinds[col] == "numeric":
-            try:
-                hist, summary = numeric_distribution(
-                    data,
-                    col,
-                    bins,
-                    bin_edges,
-                    range_min_pct,
-                    range_max_pct,
-                    log_x,
-                )
-            except ValueError as exc:
-                raise KeyParamsError(f"{op}: {exc}") from exc
-            hists.append(hist)
-            summaries.append(summary)
-            figures.append((col, "numeric", hist))
-        else:
-            table = categorical_distribution(data, col, top_k)
-            counts.append(table)
-            figures.append((col, "categorical", table))
+    opts = (bins, bin_edges, range_min_pct, range_max_pct, log_x)
+    figures, hists, summaries, counts = _describe_all(data, picked, kinds, top_k, opts)
 
     groups = group_order(data[GROUP])
     absent = [c for c in picked if c not in test.columns] if test is not None else []
-    headline = _headline(
-        picked,
-        kinds,
-        "train_vs_test" if test is not None else "none",
-        by,
-        by_label,
-        target,
-        summaries,
-        counts,
-    )
+    compare = "train_vs_test" if test is not None else "none"
     result = Result(
-        headline=headline,
+        headline=_headline(
+            picked, kinds, compare, by, by_label, target, summaries, counts
+        ),
         metrics={
             "n_columns": len(picked),
             "n_numeric": sum(k == "numeric" for k in kinds.values()),
             "n_categorical": sum(k == "categorical" for k in kinds.values()),
             "n_columns_capped": n_capped,
             "n_groups": len(groups),
-            "compare": "train_vs_test" if test is not None else "none",
+            "compare": compare,
             "by_label": target if by_label else "none",
             "by": by if by is not None else "none",
             "n_missing_in_test": len(absent),
@@ -260,6 +217,56 @@ def distribution_result(
         },
         text=_text(n_capped, absent),
     )
+    _add_tables(result, data, groups, picked, kinds, summaries, hists, counts)
+    with plotly_lock:
+        _add_figures(result, figures, norm, cumulative, log_y)
+        if by is not None and is_numeric(df[by]):
+            _add_vs_by(result, df, [c for c in picked if kinds[c] == "numeric"], by)
+    return result
+
+
+_OP = "column_distribution"
+
+
+def _check_split(df, by, by_label, target) -> None:
+    if by is not None and by_label:
+        raise KeyParamsError(f"{_OP}: pass by or by_label, not both")
+    if by is not None and by not in df.columns:
+        raise KeyParamsError(f"{_OP}: by {by!r} not in the frame")
+    if by_label:
+        if target is None:
+            raise KeyParamsError(f"{_OP}: by_label needs a target column")
+        if target not in df.columns:
+            raise KeyParamsError(f"{_OP}: target {target!r} not in the frame")
+
+
+def _group_spec(df, by, by_label, target, top_k, target_bins):
+    if by is not None:
+        return by, by_binner(df[by], top_k, target_bins)
+    if by_label:
+        return target, label_binner(df[target], target_bins)
+    return None, None
+
+
+def _describe_all(data, picked, kinds, top_k, opts):
+    figures, hists, summaries, counts = [], [], [], []
+    for col in picked:
+        if kinds[col] == "numeric":
+            try:
+                hist, summary = numeric_distribution(data, col, *opts)
+            except ValueError as exc:
+                raise KeyParamsError(f"{_OP}: {exc}") from exc
+            hists.append(hist)
+            summaries.append(summary)
+            figures.append((col, "numeric", hist))
+        else:
+            table = categorical_distribution(data, col, top_k)
+            counts.append(table)
+            figures.append((col, "categorical", table))
+    return figures, hists, summaries, counts
+
+
+def _add_tables(result, data, groups, picked, kinds, summaries, hists, counts):
     result.add_table(
         "columns", pd.DataFrame({"column": picked, "kind": [kinds[c] for c in picked]})
     )
@@ -277,37 +284,31 @@ def distribution_result(
         result.add_table(
             "value_counts", pd.concat(counts, ignore_index=True), "categorical"
         )
-    with plotly_lock:
-        for i, (col, group, item) in enumerate(figures):
-            if group == "numeric":
-                fig = _histogram_figure(item, col, norm, cumulative, log_y)
-            else:
-                fig = _counts_figure(item, col)
-            result.add_figure(col, fig, group, main=(i == 0))
-        if by_numeric:
-            numeric_cols = [c for c in picked if kinds[c] == "numeric"]
-            if numeric_cols:
-                corr = vs_by_correlations(df, numeric_cols, by)
-                result.add_table("vs_by", corr, "numeric")
-                if len(corr) == 1:
-                    result.metrics["pearson"] = float(corr["pearson"].iloc[0])
-                    result.metrics["spearman"] = float(corr["spearman"].iloc[0])
-                for col in numeric_cols:
-                    sample = sample_scatter(df, col, by)
-                    if sample.empty:
-                        continue
-                    result.add_figure(
-                        f"{col} vs {by}",
-                        px.scatter(
-                            sample,
-                            x=by,
-                            y=col,
-                            labels={by: by, col: col},
-                            opacity=0.55,
-                        ),
-                        "numeric",
-                    )
-    return result
+
+
+def _add_figures(result, figures, norm, cumulative, log_y):
+    for i, (col, group, item) in enumerate(figures):
+        if group == "numeric":
+            fig = _histogram_figure(item, col, norm, cumulative, log_y)
+        else:
+            fig = _counts_figure(item, col)
+        result.add_figure(col, fig, group, main=(i == 0))
+
+
+def _add_vs_by(result: Result, df: pd.DataFrame, numeric_cols: list[str], by: str):
+    if not numeric_cols:
+        return
+    corr = vs_by_correlations(df, numeric_cols, by)
+    result.add_table("vs_by", corr, "numeric")
+    if len(corr) == 1:
+        result.metrics["pearson"] = float(corr["pearson"].iloc[0])
+        result.metrics["spearman"] = float(corr["spearman"].iloc[0])
+    for col in numeric_cols:
+        sample = sample_scatter(df, col, by)
+        if sample.empty:
+            continue
+        fig = px.scatter(sample, x=by, y=col, labels={by: by, col: col}, opacity=0.55)
+        result.add_figure(f"{col} vs {by}", fig, "numeric")
 
 
 def _y_column(norm: NormSpec, cumulative: bool) -> str:

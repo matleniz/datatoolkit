@@ -298,33 +298,37 @@ def _headline(
     if not picked:
         return ""
     if run_iqr:
-        hit = table[table["n_iqr"] > 0]
-        if hit.empty:
-            if len(picked) == 1:
-                b = boxes.iloc[0]
-                return (
-                    f"No outliers outside the IQR fences in {picked[0]} "
-                    f"(fences {_fmt(b['lower_fence'])}–{_fmt(b['upper_fence'])})"
-                )
-            return "No outliers outside the IQR fences"
-        top = hit.sort_values("pct_iqr", ascending=False).iloc[0]
-        if len(picked) == 1:
-            col, n = top["column"], int(top["n_iqr"])
-            b = boxes.iloc[0]
-            where = []
-            if b["n_above"]:
-                where.append(f"above {_fmt(b['upper_fence'])}")
-            if b["n_below"]:
-                where.append(f"below {_fmt(b['lower_fence'])}")
-            return (
-                f"{n} outlier{'s' if n > 1 else ''} in {col} "
-                f"({top['pct_iqr']:.1f} %), {' and '.join(where)}"
-            )
-        k = len(hit)
-        return (
-            f"{k} column{'s' if k > 1 else ''} with outliers; "
-            f"most: {top['column']} ({top['pct_iqr']:.1f} %)"
-        )
+        return _iqr_headline(picked, table, boxes)
     if n_rows_flagged == 0:
         return "No anomalous rows flagged"
     return f"{n_rows_flagged} anomalous row{'s' if n_rows_flagged > 1 else ''} flagged"
+
+
+def _iqr_headline(picked: list[str], table: pd.DataFrame, boxes: pd.DataFrame) -> str:
+    hit = table[table["n_iqr"] > 0]
+    if hit.empty:
+        if len(picked) == 1:
+            b = boxes.iloc[0]
+            return (
+                f"No outliers outside the IQR fences in {picked[0]} "
+                f"(fences {_fmt(b['lower_fence'])}–{_fmt(b['upper_fence'])})"
+            )
+        return "No outliers outside the IQR fences"
+    top = hit.sort_values("pct_iqr", ascending=False).iloc[0]
+    if len(picked) == 1:
+        col, n = top["column"], int(top["n_iqr"])
+        b = boxes.iloc[0]
+        where = []
+        if b["n_above"]:
+            where.append(f"above {_fmt(b['upper_fence'])}")
+        if b["n_below"]:
+            where.append(f"below {_fmt(b['lower_fence'])}")
+        return (
+            f"{n} outlier{'s' if n > 1 else ''} in {col} "
+            f"({top['pct_iqr']:.1f} %), {' and '.join(where)}"
+        )
+    k = len(hit)
+    return (
+        f"{k} column{'s' if k > 1 else ''} with outliers; "
+        f"most: {top['column']} ({top['pct_iqr']:.1f} %)"
+    )

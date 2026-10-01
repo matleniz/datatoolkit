@@ -81,8 +81,7 @@ def missing_result(
     """The key's Result on DataFrames (shared with ``dtk_engine.api.missing``)."""
     work, test_work = _scoped(df, test, columns)
     rates = missing_rates(work)
-    if threshold > 0:
-        rates = rates[rates["pct_missing"] >= threshold].reset_index(drop=True)
+    rates = rates[rates["pct_missing"] >= threshold]
     ascending = sort == "column"
     rates = rates.sort_values(sort, ascending=ascending, kind="stable").reset_index(
         drop=True
@@ -152,115 +151,12 @@ def missing_result(
         _suggested_steps(drop_candidates, target),
         kind="steps",
     )
-    missing_cols = rates[rates["n_missing"] > 0].copy()
-    if not missing_cols.empty:
-        missing_cols = missing_cols.sort_values(
-            "pct_missing", ascending=False, kind="stable"
-        ).reset_index(drop=True)
-        missing_cols["severity"] = missing_cols["pct_missing"].apply(_severity_label)
-        missing_cols["pct_label"] = missing_cols["pct_missing"].apply(
-            lambda p: f"{p:.0f}%" if p == int(p) else f"{p:.1f}%"
-        )
-        severity_order = [
-            f"≥ {DROP_PCT:.0f} % (drop)",
-            f"{REVIEW_PCT:.0f}–{DROP_PCT:.0f} % (indicator)",
-            f"< {REVIEW_PCT:.0f} %",
-        ]
-        severity_colors = {
-            f"≥ {DROP_PCT:.0f} % (drop)": "#ef4444",
-            f"{REVIEW_PCT:.0f}–{DROP_PCT:.0f} % (indicator)": "#f59e0b",
-            f"< {REVIEW_PCT:.0f} %": "#3b82f6",
-        }
-        fig_main = px.bar(
-            missing_cols,
-            x="pct_missing",
-            y="column",
-            color="severity",
-            text="pct_label",
-            orientation="h",
-            color_discrete_map=severity_colors,
-            category_orders={"severity": severity_order},
-            labels={"pct_missing": "% missing", "column": "", "severity": ""},
-        )
-        fig_main.update_traces(textposition="outside", cliponaxis=False)
-        fig_main.update_yaxes(
-            categoryorder="array",
-            categoryarray=list(reversed(missing_cols["column"].tolist())),
-        )
-        fig_main.update_xaxes(ticksuffix="%")
-        fig_main.update_layout(legend_title_text="")
-    else:
-        empty_df = pd.DataFrame(
-            {"column": pd.Series([], dtype=str), "pct_missing": pd.Series([], dtype=float)}
-        )
-        fig_main = px.bar(
-            empty_df,
-            x="pct_missing",
-            y="column",
-            orientation="h",
-            labels={"pct_missing": "% missing", "column": ""},
-        )
-        fig_main.update_layout(
-            xaxis_title="% missing",
-            yaxis_title="",
-            annotations=[
-                {
-                    "text": "No missing values",
-                    "xref": "paper",
-                    "yref": "paper",
-                    "x": 0.5,
-                    "y": 0.5,
-                    "showarrow": False,
-                    "font": {"size": 14},
-                }
-            ],
-        )
-
-    fig_matrix = None
-    if not missing_cols.empty:
-        cols_with_missing = [c for c in missing_cols["column"] if c in work.columns]
-        if cols_with_missing:
-            sample_work = (
-                work[cols_with_missing].sample(n=300, random_state=42).sort_index()
-                if len(work) > 300
-                else work[cols_with_missing]
-            )
-            matrix_mask = sample_work.isna().astype(int)
-            fig_matrix = px.imshow(
-                matrix_mask,
-                zmin=0,
-                zmax=1,
-                color_continuous_scale=[
-                    [0.0, "#f1f5f9"],
-                    [0.5, "#f1f5f9"],
-                    [0.5, "#ef4444"],
-                    [1.0, "#ef4444"],
-                ],
-                aspect="auto",
-                labels={"x": "Column", "y": "Row index", "color": ""},
-            )
-            fig_matrix.update_coloraxes(
-                colorbar={
-                    "tickvals": [0.25, 0.75],
-                    "ticktext": ["Present", "Missing"],
-                    "len": 0.4,
-                }
-            )
-            fig_matrix.update_traces(
-                hovertemplate="Column: %{x}<br>Row: %{y}<extra></extra>"
-            )
-
+    missing_cols = _missing_columns(rates)
+    fig_matrix = _matrix_figure(work, missing_cols)
     with plotly_lock:
-        result.add_figure(
-            "% missing per column",
-            fig_main,
-            main=True,
-        )
+        result.add_figure("% missing per column", _bars_figure(missing_cols), main=True)
         if fig_matrix is not None:
-            result.add_figure(
-                "Missingness matrix",
-                fig_matrix,
-            )
+            result.add_figure("Missingness matrix", fig_matrix)
         result.add_figure(
             "Missing fields per row",
             px.bar(
@@ -277,6 +173,104 @@ def missing_result(
                 px.imshow(matrix, zmin=0, zmax=1, aspect="auto"),
             )
     return result
+
+
+def _missing_columns(rates: pd.DataFrame) -> pd.DataFrame:
+    missing_cols = rates[rates["n_missing"] > 0].copy()
+    if missing_cols.empty:
+        return missing_cols
+    missing_cols = missing_cols.sort_values(
+        "pct_missing", ascending=False, kind="stable"
+    ).reset_index(drop=True)
+    missing_cols["severity"] = missing_cols["pct_missing"].apply(_severity_label)
+    missing_cols["pct_label"] = missing_cols["pct_missing"].apply(
+        lambda p: f"{p:.0f}%" if p == int(p) else f"{p:.1f}%"
+    )
+    return missing_cols
+
+
+def _bars_figure(missing_cols: pd.DataFrame):
+    if missing_cols.empty:
+        empty_df = pd.DataFrame(
+            {"column": pd.Series([], dtype=str), "pct_missing": pd.Series(dtype=float)}
+        )
+        fig = px.bar(
+            empty_df,
+            x="pct_missing",
+            y="column",
+            orientation="h",
+            labels={"pct_missing": "% missing", "column": ""},
+        )
+        fig.update_layout(
+            xaxis_title="% missing",
+            yaxis_title="",
+            annotations=[
+                {
+                    "text": "No missing values",
+                    "xref": "paper",
+                    "yref": "paper",
+                    "x": 0.5,
+                    "y": 0.5,
+                    "showarrow": False,
+                    "font": {"size": 14},
+                }
+            ],
+        )
+        return fig
+    severity_order = [_severity_label(p) for p in (DROP_PCT, REVIEW_PCT, 0)]
+    severity_colors = dict(zip(severity_order, ("#ef4444", "#f59e0b", "#3b82f6")))
+    fig = px.bar(
+        missing_cols,
+        x="pct_missing",
+        y="column",
+        color="severity",
+        text="pct_label",
+        orientation="h",
+        color_discrete_map=severity_colors,
+        category_orders={"severity": severity_order},
+        labels={"pct_missing": "% missing", "column": "", "severity": ""},
+    )
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    fig.update_yaxes(
+        categoryorder="array",
+        categoryarray=list(reversed(missing_cols["column"].tolist())),
+    )
+    fig.update_xaxes(ticksuffix="%")
+    fig.update_layout(legend_title_text="")
+    return fig
+
+
+def _matrix_figure(work: pd.DataFrame, missing_cols: pd.DataFrame):
+    cols_with_missing = [c for c in missing_cols.get("column", []) if c in work.columns]
+    if not cols_with_missing:
+        return None
+    sample_work = (
+        work[cols_with_missing].sample(n=300, random_state=42).sort_index()
+        if len(work) > 300
+        else work[cols_with_missing]
+    )
+    fig = px.imshow(
+        sample_work.isna().astype(int),
+        zmin=0,
+        zmax=1,
+        color_continuous_scale=[
+            [0.0, "#f1f5f9"],
+            [0.5, "#f1f5f9"],
+            [0.5, "#ef4444"],
+            [1.0, "#ef4444"],
+        ],
+        aspect="auto",
+        labels={"x": "Column", "y": "Row index", "color": ""},
+    )
+    fig.update_coloraxes(
+        colorbar={
+            "tickvals": [0.25, 0.75],
+            "ticktext": ["Present", "Missing"],
+            "len": 0.4,
+        }
+    )
+    fig.update_traces(hovertemplate="Column: %{x}<br>Row: %{y}<extra></extra>")
+    return fig
 
 
 def _severity_label(pct: float) -> str:
