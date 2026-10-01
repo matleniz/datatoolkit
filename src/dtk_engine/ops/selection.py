@@ -27,7 +27,7 @@ from sklearn.feature_selection import (
 )
 from sklearn.linear_model import LassoCV, LinearRegression, LogisticRegression
 
-from dtk_engine.ops._memo import memo_frame
+from dtk_engine.cache import memo_frame
 
 # task "auto": an integer-valued numeric target with at most this many distinct
 # values is a class label, not a quantity.

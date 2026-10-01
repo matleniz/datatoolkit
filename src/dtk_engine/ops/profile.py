@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
+from dtk_engine.cache import memoize
 from dtk_engine.ops._util import pct as _pct
 
 SEMANTIC_TYPES = (
@@ -120,6 +121,7 @@ def _group_band(n_unique: int, ratio: float) -> bool:
     return n_unique >= GROUP_MIN_UNIQUE and GROUP_MIN_RATIO <= ratio < ID_UNIQUE_RATIO
 
 
+@memoize()
 def semantic_type(series: pd.Series) -> str:
     """Classify a column into one of SEMANTIC_TYPES from its dtype and values."""
     values = series.dropna()
@@ -199,6 +201,7 @@ _WHOLE_UNIT_RE = re.compile(r"[.,]-$")
 NUMERIC_TEXT_RATIO = 0.8
 
 
+@memoize()
 def numeric_text_format(series: pd.Series) -> dict | None:
     """Best-effort ``{decimal, thousands, percent}`` for a text column of
     numbers-as-text (``'$1,250.00'``, ``'12,5 %'``, ``'1 250,00 EUR'``,
@@ -246,11 +249,6 @@ def numeric_text_format(series: pd.Series) -> dict | None:
     else:
         decimal, thousands = ".", (" " if has_space else None)
     return {"decimal": decimal, "thousands": thousands, "percent": bool(percent.any())}
-
-
-# Back-compat alias: MAT-168 renamed currency_format -> numeric_text_format
-# (broader than currency: also matches percents and EU amounts with no symbol).
-currency_format = numeric_text_format
 
 
 def _short(value: object) -> str:

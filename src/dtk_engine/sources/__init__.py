@@ -2,7 +2,6 @@
 
 from . import (  # noqa: F401  (registers the readers)
     csv_pandas,
-    dataset,
     excel,
     json_reader,
     parquet,

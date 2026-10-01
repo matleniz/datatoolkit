@@ -21,18 +21,20 @@ from pathlib import Path, PurePath
 from pydantic import TypeAdapter, ValidationError
 
 from . import keys  # noqa: F401  (registers every key)
+from .cache import LRU
 from .errors import KeyParamsError, SourceError, UnknownTransformError
 from .ops import transforms  # noqa: F401  (registers every transform op)
 from .ops.columns import is_numeric
 from .registry import all_keys, get_key
 from .sources import SourceSpec, load
-from .sources.dataset import workspace_frame
 from .transform_registry import all_transforms, get_transform
 from .workspace import JsonWorkspaceStore, Workspace
 from .workspace import inspect as _inspect
+from .workspace.dataset import workspace_frame, workspace_key
 from .workspace.export import export_workspace as _export
 from .workspace.replay import validate_steps
-from .workspace.shape_cache import cached_shape
+
+_SHAPES = LRU(max_entries=256)
 
 
 def _iso_mtime(path: Path) -> str:
@@ -62,7 +64,7 @@ def _target_summary(ws: Workspace) -> str | None:
 def _role_shape(ws: Workspace, role: str) -> list[int] | None:
     """``[rows, cols]`` of ``role`` after steps, or null if unloadable / absent.
 
-    Content-addressed via ``shape_cache`` (MAT-204): first call may replay;
+    Content-addressed (``_SHAPES``, MAT-204): first call may replay;
     later summaries with the same content hit the tiny shape tuple and skip
     ``workspace_frame`` (MAT-200).
     """
@@ -76,7 +78,7 @@ def _role_shape(ws: Workspace, role: str) -> list[int] | None:
             return None
         return [int(df.shape[0]), int(df.shape[1])]
 
-    return cached_shape(ws, role, compute)
+    return _SHAPES.memo(workspace_key(ws, "shape", role, ws.steps), compute)
 
 
 def _workspace_summary(store: JsonWorkspaceStore, name: str) -> dict:

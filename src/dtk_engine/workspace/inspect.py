@@ -18,6 +18,7 @@ import pandas as pd
 from pandas.api import types as pdt
 from pydantic import ValidationError
 
+from dtk_engine.cache import memoize
 from dtk_engine.errors import KeyParamsError, SourceError, key_params_from_validation
 from dtk_engine.ops._util import json_scalar, py
 from dtk_engine.ops.compare import schema_diff
@@ -40,7 +41,7 @@ from dtk_engine.ops.profile import (
 )
 from dtk_engine.ops.suggested import suggested_params as _suggested_params
 from dtk_engine.sources import load
-from dtk_engine.sources.dataset import raw_workspace_frame
+from dtk_engine.workspace.dataset import cached_frame, raw_workspace_frame
 from dtk_engine.workspace.models import Step, Workspace
 from dtk_engine.workspace.replay import (
     needs_train,
@@ -49,7 +50,6 @@ from dtk_engine.workspace.replay import (
     resolve_version,
     validate_steps,
 )
-from dtk_engine.workspace.replay_cache import cached_frame
 
 # Grid ``kind`` from ``ops.profile.semantic_type`` (plus dtype fallbacks for
 # ``constant``). Fronts use these labels; do not invent others.
@@ -368,6 +368,7 @@ def _skewed(series: pd.Series) -> bool:
     return float(values.mean()) > _SKEW_MEAN_OVER_MEDIAN * median
 
 
+@memoize()
 def _profile_one(name: str, series: pd.Series) -> dict:
     kind = column_kind(series, name)
     n_missing = int(series.isna().sum())

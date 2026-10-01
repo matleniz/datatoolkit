@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from dtk_engine import (
+    contract,
     delete_workspace,
     get_workspace,
     key_schema,
@@ -130,10 +131,9 @@ def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
         list_workspace_summaries,
         rename_workspace,
     )
-    from dtk_engine.workspace import shape_cache
 
     monkeypatch.setenv("DTK_HOME", str(tmp_path))
-    shape_cache.clear()
+    contract._SHAPES.clear()
     save_workspace(
         _workspace("alpha")
         | {
@@ -165,7 +165,7 @@ def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
         raise AssertionError("workspace_frame must not run when shape is cached")
 
     monkeypatch.setattr("dtk_engine.contract.workspace_frame", _boom)
-    monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", _boom)
+    monkeypatch.setattr("dtk_engine.workspace.dataset.workspace_frame", _boom)
     again = list_workspace_summaries()
     assert again[0]["train"]["shape"] == [41, 11]
     assert again[0]["test"]["shape"] == [20, 10]
@@ -197,11 +197,10 @@ def test_rename_duplicate_and_summaries(tmp_path, monkeypatch):
 def test_summaries_shape_cache_many_workspaces(tmp_path, monkeypatch):
     """Warm once, then many workspaces stay fast; step changes refresh shape."""
     from dtk_engine import list_workspace_summaries
-    from dtk_engine.sources.dataset import workspace_frame as real_frame
-    from dtk_engine.workspace import shape_cache
+    from dtk_engine.workspace.dataset import workspace_frame as real_frame
 
     monkeypatch.setenv("DTK_HOME", str(tmp_path))
-    shape_cache.clear()
+    contract._SHAPES.clear()
     for i in range(12):
         save_workspace(_workspace(f"ws{i:02d}"))
 
@@ -217,14 +216,14 @@ def test_summaries_shape_cache_many_workspaces(tmp_path, monkeypatch):
         raise AssertionError("workspace_frame must not run when shapes are cached")
 
     monkeypatch.setattr("dtk_engine.contract.workspace_frame", _counting)
-    monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", _counting)
+    monkeypatch.setattr("dtk_engine.workspace.dataset.workspace_frame", _counting)
     second = list_workspace_summaries()
     assert calls["n"] == 0
     assert [s["train"]["shape"] for s in second] == [[41, 12]] * 12
 
     # Restore frame loader so a step change can recompute.
     monkeypatch.setattr("dtk_engine.contract.workspace_frame", real_frame)
-    monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", real_frame)
+    monkeypatch.setattr("dtk_engine.workspace.dataset.workspace_frame", real_frame)
     save_workspace(
         _workspace("ws00")
         | {
@@ -243,7 +242,7 @@ def test_summaries_shape_cache_many_workspaces(tmp_path, monkeypatch):
     assert after["ws01"]["train"]["shape"] == [41, 12]
 
     monkeypatch.setattr("dtk_engine.contract.workspace_frame", _counting)
-    monkeypatch.setattr("dtk_engine.sources.dataset.workspace_frame", _counting)
+    monkeypatch.setattr("dtk_engine.workspace.dataset.workspace_frame", _counting)
     calls["n"] = 0
     assert {s["name"]: s["train"]["shape"] for s in list_workspace_summaries()}[
         "ws00"

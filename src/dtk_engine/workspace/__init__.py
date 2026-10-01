@@ -4,6 +4,7 @@ Replay lives in `dtk_engine.workspace.replay`, the transform registry in
 `dtk_engine.transform_registry`, the ops in `dtk_engine.ops.transforms`.
 """
 
+from dtk_engine.workspace import dataset  # noqa: F401  (registers the `dataset` reader)
 from dtk_engine.workspace.models import (
     Datasets,
     DatasetSpec,

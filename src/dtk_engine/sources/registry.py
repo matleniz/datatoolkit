@@ -7,11 +7,11 @@ from collections.abc import Callable
 import pandas as pd
 from pydantic import BaseModel
 
+from dtk_engine.cache import LRU, digest, stamps
 from dtk_engine.errors import SourceError
-from dtk_engine.sources._cache import FrameLRU, digest, stamps
 
-# Raw-source cache; see sources/_cache.py for the invalidation reasoning.
-_RAW_CACHE = FrameLRU(max_entries=32, max_bytes=500 * 1024 * 1024)
+# Raw-source cache; see dtk_engine/cache.py for the invalidation reasoning.
+_RAW_CACHE = LRU(max_entries=32, max_bytes=500 * 1024 * 1024)
 
 _READERS: dict[str, Callable[[BaseModel], pd.DataFrame]] = {}
 
@@ -36,12 +36,5 @@ def load(spec: BaseModel) -> pd.DataFrame:
     except KeyError:
         raise SourceError(f"no reader for source kind {kind!r}") from None
     stamp = stamps([spec])  # None: no path (sql, dataset) or stat failed -> no caching
-    if stamp is None:
-        return read(spec)
-    key = digest(spec.model_dump_json(), stamp)
-    hit = _RAW_CACHE.get(key)
-    if hit is not None:
-        return hit
-    df = read(spec)
-    _RAW_CACHE.put(key, df)
-    return df
+    key = stamp and digest(spec.model_dump_json(), stamp)
+    return _RAW_CACHE.memo(key, lambda: read(spec))

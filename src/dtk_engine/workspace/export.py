@@ -27,7 +27,7 @@ import pandas as pd
 
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
-from dtk_engine.sources.dataset import raw_workspace_frame
+from dtk_engine.workspace.dataset import raw_workspace_frame
 from dtk_engine.workspace.models import Workspace
 from dtk_engine.workspace.replay import replay_fitted
 from dtk_engine.workspace.store import JsonWorkspaceStore
