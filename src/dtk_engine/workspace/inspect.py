@@ -606,6 +606,84 @@ def _kinds_match(a: str, b: str) -> bool:
     return a in numericish and b in numericish
 
 
+def _value_set_fields(train_col: pd.Series, test_col: pd.Series) -> dict | None:
+    """Flag when a categorical / label column has test-only values."""
+    shift = category_shift(train_col, test_col)
+    if shift["n_unseen_categories"] == 0:
+        return None
+    near = shift["_near_matches"]
+    pct = shift["pct_test_rows_unseen"]
+    return {
+        "only_in_test": shift["_only_in_test"],
+        "pct_test_rows_unseen": pct,
+        "near_match_hint": shift["near_match_hint"],
+        "near_matches": near,
+        "blocking": value_mismatch_is_blocking(near, pct),
+    }
+
+
+def _align_row(
+    train: pd.DataFrame,
+    test: pd.DataFrame,
+    name: str,
+    *,
+    status: str,
+    similar: list[str] | None = None,
+    value_set: dict | None = None,
+) -> dict:
+    train_col = train[name] if name in train.columns else None
+    test_col = test[name] if name in test.columns else None
+    out = {
+        "train": _side_info(train, name),
+        "test": _side_info(test, name),
+        "status": status,
+        "numbers_as_text": any(
+            col is not None and _numbers_as_text(col) for col in (train_col, test_col)
+        ),
+        "train_mean": _mean(train_col) if train_col is not None else None,
+        "test_mean": _mean(test_col) if test_col is not None else None,
+        "similar": similar if similar is not None else [],
+        "only_in_test": None,
+        "pct_test_rows_unseen": None,
+        "near_match_hint": None,
+        "near_matches": [],
+        "blocking": False,
+    }
+    if value_set is not None:
+        out.update(value_set)
+    return out
+
+
+def _align_column(
+    train: pd.DataFrame,
+    test: pd.DataFrame,
+    name: str,
+    label: str | None,
+    test_only: list[str],
+) -> dict:
+    """The alignment row of one train column: its status decides the fields."""
+    if name not in test.columns:
+        if name == label:
+            return _align_row(train, test, name, status="label")
+        return _align_row(
+            train,
+            test,
+            name,
+            status="missing_in_test",
+            similar=_similar_names(name, test_only),
+        )
+    train_col, test_col = train[name], test[name]
+    if not _kinds_match(column_kind(train_col, name), column_kind(test_col, name)):
+        return _align_row(train, test, name, status="type_mismatch")
+    check_values = name == label or {
+        semantic_type(train_col),
+        semantic_type(test_col),
+    } & set(CATEGORY_TYPES)
+    value_set = _value_set_fields(train_col, test_col) if check_values else None
+    status = "match" if value_set is None else "value_mismatch"
+    return _align_row(train, test, name, status=status, value_set=value_set)
+
+
 def align_report(ws: Workspace) -> dict:
     """Train / test column alignment after every workspace step.
 
@@ -624,89 +702,12 @@ def align_report(ws: Workspace) -> dict:
     test = _replay_role(ws, "test", ws.steps)
 
     label = _label_name(ws)
-    diff = schema_diff(train, test)
-    test_only = list(diff["only_test"])
-    rows: list[dict] = []
-
-    def _row(
-        name: str,
-        *,
-        status: str,
-        similar: list[str] | None = None,
-        value_set: dict | None = None,
-    ) -> dict:
-        t_info = _side_info(train, name)
-        e_info = _side_info(test, name)
-        train_col = train[name] if name in train.columns else None
-        test_col = test[name] if name in test.columns else None
-        numbers_as_text = False
-        if train_col is not None:
-            numbers_as_text = numbers_as_text or _numbers_as_text(train_col)
-        if test_col is not None:
-            numbers_as_text = numbers_as_text or _numbers_as_text(test_col)
-        out = {
-            "train": t_info,
-            "test": e_info,
-            "status": status,
-            "numbers_as_text": numbers_as_text,
-            "train_mean": _mean(train_col) if train_col is not None else None,
-            "test_mean": _mean(test_col) if test_col is not None else None,
-            "similar": similar if similar is not None else [],
-            "only_in_test": None,
-            "pct_test_rows_unseen": None,
-            "near_match_hint": None,
-            "near_matches": [],
-            "blocking": False,
-        }
-        if value_set is not None:
-            out.update(value_set)
-        return out
-
-    def _value_set_fields(train_col: pd.Series, test_col: pd.Series) -> dict | None:
-        """Flag when a categorical / label column has test-only values."""
-        shift = category_shift(train_col, test_col)
-        if shift["n_unseen_categories"] == 0:
-            return None
-        near = shift["_near_matches"]
-        pct = shift["pct_test_rows_unseen"]
-        return {
-            "only_in_test": shift["_only_in_test"],
-            "pct_test_rows_unseen": pct,
-            "near_match_hint": shift["near_match_hint"],
-            "near_matches": near,
-            "blocking": value_mismatch_is_blocking(near, pct),
-        }
-
-    for name in map(str, train.columns):
-        if name in test.columns:
-            tk = column_kind(train[name], name)
-            ek = column_kind(test[name], name)
-            status = "match" if _kinds_match(tk, ek) else "type_mismatch"
-            value_set = None
-            if status == "match":
-                sem_train = semantic_type(train[name])
-                sem_test = semantic_type(test[name])
-                check_values = (
-                    name == label
-                    or {sem_train, sem_test} & set(CATEGORY_TYPES)
-                )
-                if check_values:
-                    value_set = _value_set_fields(train[name], test[name])
-                    if value_set is not None:
-                        status = "value_mismatch"
-            rows.append(_row(name, status=status, value_set=value_set))
-        elif name == label:
-            rows.append(_row(name, status="label"))
-        else:
-            rows.append(
-                _row(
-                    name,
-                    status="missing_in_test",
-                    similar=_similar_names(name, test_only),
-                )
-            )
-
-    for name in test_only:
-        rows.append(_row(name, status="extra_in_test"))
-
+    test_only = list(schema_diff(train, test)["only_test"])
+    rows = [
+        _align_column(train, test, name, label, test_only)
+        for name in map(str, train.columns)
+    ]
+    rows += [
+        _align_row(train, test, name, status="extra_in_test") for name in test_only
+    ]
     return {"columns": rows}
