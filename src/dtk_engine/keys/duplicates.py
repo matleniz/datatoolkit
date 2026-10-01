@@ -2,7 +2,6 @@
 
 import pandas as pd
 
-from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.duplicates import (
     GROUP_COLUMN,
     conflicts,
@@ -10,10 +9,10 @@ from dtk_engine.ops.duplicates import (
     duplicate_groups,
     exact_duplicates,
 )
-from dtk_engine.params import KeyParams, columns_field
+from dtk_engine.params import SourceParams, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result
-from dtk_engine.sources import CsvSource, SourceSpec, load
+from dtk_engine.sources import load
 
 SAMPLE_ROWS = 20
 
@@ -25,8 +24,7 @@ ADVICE = (
 )
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     subset: list[str] | None = columns_field(
         "Identity columns for partial duplicates; "
         "null = auto (id_like / group_id columns)",

@@ -7,7 +7,6 @@ import pandas as pd
 import plotly.express as px
 from pydantic import Field
 
-from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.errors import KeyParamsError
 from dtk_engine.ops.columns import is_numeric, numeric_feature, pick_columns
 from dtk_engine.ops.correlation import (
@@ -18,10 +17,10 @@ from dtk_engine.ops.correlation import (
     target_correlation,
     undefined_columns,
 )
-from dtk_engine.params import KeyParams, column_field, columns_field
+from dtk_engine.params import SourceParams, column_field, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result, plotly_lock
-from dtk_engine.sources import CsvSource, SourceSpec, load
+from dtk_engine.sources import load
 
 # Columns in the matrix when none are picked (the first numeric ones).
 MAX_COLUMNS = 50
@@ -33,8 +32,7 @@ TOP_PAIRS = 10
 LABEL_MAX = 18
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     columns: list[str] = columns_field(
         f"Numeric columns to correlate (empty = every numeric column but ids and the "
         f"target, first {MAX_COLUMNS})",

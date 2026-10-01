@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pydantic import Field
 
-from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.ops.columns import is_numeric, pick_columns
 from dtk_engine.ops.outliers import (
     ACTION_TABLE,
@@ -22,16 +21,15 @@ from dtk_engine.ops.outliers import (
     outlier_points,
     univariate_outliers,
 )
-from dtk_engine.params import KeyParams, columns_field
+from dtk_engine.params import SourceParams, columns_field
 from dtk_engine.registry import key
 from dtk_engine.result import Result, plotly_lock
-from dtk_engine.sources import CsvSource, SourceSpec, load
+from dtk_engine.sources import load
 
 OutlierMethod = Literal["all", "iqr", "zscore", "isolation_forest"]
 
 
-class Params(KeyParams):
-    source: SourceSpec = CsvSource(path=TRAIN_CSV)
+class Params(SourceParams):
     columns: list[str] = columns_field(
         "Numeric columns to screen (empty = every numeric column but ids / "
         "constants)",
