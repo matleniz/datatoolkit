@@ -468,3 +468,70 @@ def test_python_style_variables_and_pipeline_replay():
     assert _fit_apply(train, test, **params)["y"].tolist() == [0.0, 1.0]
     pipe = Pipeline([("f", DtkTransformer("formula", **params))]).fit(train)
     assert pipe.transform(test)["y"].tolist() == [0.0, 1.0]
+
+
+# --- group functions (datatoolkit-issues#8) -----------------------------------
+
+
+def _visits():
+    return pd.DataFrame(
+        {
+            "patient id": ["a", "a", "a", "b", "b"],
+            "age": [50.0, 52.0, 51.0, 30.0, 31.0],
+            "ledd": [100.0, 300.0, np.nan, 7.0, np.nan],
+        },
+        index=[0, 0, 1, 1, 2],  # duplicated index labels
+    )
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        ('group_mean(ledd, by=df["patient id"])', [200.0, 200.0, 200.0, 7.0, 7.0]),
+        ('group_prev(ledd, by="patient id", order=age)', [100, 300, 100, 7, 7]),
+        ('group_interp(ledd, by="patient id", order=age)', [100, 300, 200, 7, None]),
+        # order is an expression: reversed time carries values backward.
+        ('group_prev(ledd, by="patient id", order=-age)', [100, 300, 300, 7, None]),
+        # Composable: entity mean minus the row's value.
+        ('ledd - group_mean(ledd, by="patient id")', [-100, 100, None, 0, None]),
+    ],
+)
+def test_group_functions(expr, expected):
+    out = _run(_visits(), name="y", expr=expr)
+    expected = [np.nan if v is None else float(v) for v in expected]
+    np.testing.assert_allclose(out["y"].to_numpy(), expected)
+    assert out.index.tolist() == [0, 0, 1, 1, 2]
+
+
+def test_group_functions_are_computed_per_frame():
+    train = _visits()
+    test = pd.DataFrame(
+        {"patient id": ["a", "a"], "age": [60.0, 61.0], "ledd": [1.0, 3.0]}
+    )
+    out = _fit_apply(train, test, name="m", expr='group_mean(ledd, by="patient id")')
+    assert out["m"].tolist() == [2.0, 2.0]  # test's own rows, not train's
+
+
+@pytest.mark.parametrize(
+    ("expr", "match"),
+    [
+        ("group_mean(ledd)", "keyword arguments by="),
+        ("group_prev(ledd, by=age)", "by=, order="),
+        ("group_mean(ledd, by=age, order=age)", "keyword arguments by="),
+        ("group_mean(ledd, by=age + 1)", "must name a column"),
+        ("group_mean(ledd, by=pi)", "must name a column"),
+        ("group_mean(ledd, by=@v)", "must name a column"),
+        ("group_mean(ledd, **kw)", r"\*\*unpacking"),
+        ("np.group_mean(ledd, by=age)", "np.group_mean is not allowed"),
+        ("log(ledd, base=2)", "keyword arguments is not allowed"),
+        ("group_mean(ledd, age, by=age)", "takes 1 argument"),
+    ],
+)
+def test_group_function_errors(expr, match):
+    with pytest.raises(KeyParamsError, match=match):
+        _parse(name="y", expr=expr)
+
+
+def test_group_by_unknown_column():
+    with pytest.raises(KeyParamsError, match="unknown column 'nope'"):
+        _run(_visits(), name="y", expr="group_mean(ledd, by=nope)")

@@ -200,11 +200,14 @@ def _records(df: pd.DataFrame) -> list[dict]:
 
 
 def _column_meta(df: pd.DataFrame) -> list[dict]:
+    """``semantic`` (``ops.profile.semantic_type``, e.g. ``group_id``) lets a
+    front prefill an ``x-dtk-semantic`` param; ``kind`` merges it away."""
     return [
         {
             "name": str(c),
             "dtype": str(df[c].dtype),
             "kind": column_kind(df[c], str(c)),
+            "semantic": semantic_type(df[c]),
         }
         for c in df.columns
     ]
