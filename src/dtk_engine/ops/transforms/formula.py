@@ -35,12 +35,9 @@ _COL_PREFIX = "_dtk_col_"  # df.col / df["col"] references
 _VAR_TOKEN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)")
 _DIV_EPS = 1e-12
 
-_ALLOWED_CONSTANTS = frozenset({"pi"})
+_CONSTANTS = {"pi": float(np.pi)}  # name -> value; np.pi is normalized to pi
 _STATS = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
-_CONSTANT_VALUES = {"pi": float(np.pi)}
 _NP_MODULES = frozenset({"np", "numpy"})
-_NP_CONSTANTS: dict[str, str] = {"pi": "pi"}
-_NP_BINARY = ("minimum", "maximum")  # np spellings that take exactly 2 arguments
 
 
 def _where(cond: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -162,7 +159,7 @@ def _check_dunder(attr: str) -> None:
 
 
 def _np_allowed() -> str:
-    return ", ".join(f"np.{n}" for n in sorted(_NP_FUNCS) + sorted(_NP_CONSTANTS))
+    return ", ".join(f"np.{n}" for n in sorted(_NP_FUNCS) + sorted(_CONSTANTS))
 
 
 class _Normalizer(ast.NodeTransformer):
@@ -215,8 +212,8 @@ class _Normalizer(ast.NodeTransformer):
         if parts is not None and len(parts) == 2:
             root, attr = parts
             if root in _NP_MODULES:
-                if attr in _NP_CONSTANTS:
-                    return ast.Name(id=_NP_CONSTANTS[attr], ctx=ast.Load())
+                if attr in _CONSTANTS:
+                    return ast.Name(id=attr, ctx=ast.Load())
                 if attr in _NP_FUNCS:
                     _not_allowed(f"np.{attr} must be called, e.g. np.{attr}(x)")
                 _not_allowed(
@@ -369,7 +366,7 @@ class _Compiler:
             self.used_vars.add(key[len(_VAR_PREFIX) :])
         elif key.startswith("__") and key.endswith("__"):
             _refuse(f"dunder name {key}")
-        elif key not in _ALLOWED_CONSTANTS:
+        elif key not in _CONSTANTS:
             self.cols[key] = key.removeprefix(_COL_PREFIX)
         return lambda env, n: env[key]
 
@@ -508,7 +505,7 @@ def formula(df: pd.DataFrame, params: FormulaParams, state: dict) -> pd.DataFram
     n = len(df)
     env: dict[str, np.ndarray] = {
         name: np.full(n, value, dtype=float)
-        for name, value in _CONSTANT_VALUES.items()
+        for name, value in _CONSTANTS.items()
     }
     for key, col in cols.items():
         if col not in df.columns:
