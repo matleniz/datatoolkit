@@ -50,6 +50,84 @@ __all__ = [
 ]
 
 
+def _drop_phase(train, test, target, features, semantic, recs, infos) -> list[str]:
+    """Drops first: a dropped column gets no other advice. Returns the kept columns."""
+    kept = []
+    for col in features:
+        rec = column_drop_rec(col, train, test, semantic[col], target)
+        if rec is None:
+            kept.append(col)
+        else:
+            recs.append(rec)
+            infos[col].action = "drop" if rec.op == "drop_columns" else rec.op
+    if test is not None:
+        for col in (str(c) for c in test.columns if c not in train.columns):
+            recs.append(
+                Rec(
+                    col,
+                    "drop",
+                    "warning",
+                    "only in test: the model never saw it; drop it on test",
+                    "drop_columns",
+                    "test",
+                    {"columns": [col]},
+                )
+            )
+    return kept
+
+
+def _cleaning_phase(
+    train, test, kept, recs
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Cleaning, applied to working copies so later checks see clean columns."""
+    work_train, work_test = train, test
+    frames = [train] if test is None else [train, test]
+    text = set(text_columns(train))
+    for col in kept:
+        cleaning = [sentinel_rec(col, frames)]
+        if col in text:
+            cleaning.append(variant_rec(col, frames))
+        for rec in filter(None, cleaning):
+            recs.append(rec)
+            work_train, work_test = apply_rec(rec, work_train, work_test)
+        rec = type_rec(col, [f for f in (work_train, work_test) if f is not None])
+        if rec is not None:
+            recs.append(rec)
+            work_train, work_test = apply_rec(rec, work_train, work_test)
+    return work_train, work_test
+
+
+def _column_phase(
+    train, test, kept, semantic, family, recs, infos
+) -> dict[str, Rec | None]:
+    """Per-column drops once cleaned, missing and numeric advice. Returns the live
+    columns with their missing rec."""
+    live: dict[str, Rec | None] = {}
+    for col in kept:
+        info = infos[col] = summarize(train, col, semantic[col])
+        if semantic[col] == "constant":
+            recs.append(drop_columns_rec(col, "drop", "info", "constant once cleaned"))
+        elif info.pct_missing >= DROP_PCT:
+            recs.append(drop_missing_rec(col, info.pct_missing))
+        else:
+            live[col] = missing = missing_rec(col, semantic[col], train, test, info)
+            if missing is not None:
+                recs.append(missing)
+            if semantic[col] == "numeric":
+                recs += numeric_recs(col, train, test, family, info)
+            continue
+        info.action = "drop"
+    return live
+
+
+def _encoding_phase(train, test, live, semantic, family, recs, infos) -> None:
+    for col, missing in live.items():
+        info = infos[col]
+        recs += encoding_recs(col, semantic[col], train, test, family, missing, info)
+        ops = [r.op for r in recs if r.column == col and r.op != "drop_columns"]
+        info.action = ", ".join(ops) if ops else "keep"
+
+
 @memoize(max_entries=16)
 def advise(
     train: pd.DataFrame,
@@ -76,83 +154,18 @@ def advise(
     semantic = semantic_types(train)
     features = [str(c) for c in train.columns if c != target]
     infos = {c: summarize(train, c, semantic[c]) for c in features}
-    frames = [train] if test is None else [train, test]
 
-    # Drops first: a dropped column gets no other advice.
-    kept = []
-    for col in features:
-        rec = column_drop_rec(col, train, test, semantic[col], target)
-        if rec is None:
-            kept.append(col)
-        else:
-            recs.append(rec)
-            infos[col].action = "drop" if rec.op == "drop_columns" else rec.op
-    if test is not None:
-        for col in (str(c) for c in test.columns if c not in train.columns):
-            recs.append(
-                Rec(
-                    col,
-                    "drop",
-                    "warning",
-                    "only in test: the model never saw it; drop it on test",
-                    "drop_columns",
-                    "test",
-                    {"columns": [col]},
-                )
-            )
-
-    # Cleaning, applied to working copies so later checks see clean columns.
-    work_train, work_test = train, test
-    text = set(text_columns(train))
-    for col in kept:
-        cleaning = [sentinel_rec(col, frames)]
-        if col in text:
-            cleaning.append(variant_rec(col, frames))
-        for rec in filter(None, cleaning):
-            recs.append(rec)
-            work_train, work_test = apply_rec(rec, work_train, work_test)
-        rec = type_rec(col, [f for f in (work_train, work_test) if f is not None])
-        if rec is not None:
-            recs.append(rec)
-            work_train, work_test = apply_rec(rec, work_train, work_test)
-
+    kept = _drop_phase(train, test, target, features, semantic, recs, infos)
+    work_train, work_test = _cleaning_phase(train, test, kept, recs)
     semantic = semantic_types(work_train[kept])
-    for col in kept:
-        info = infos[col] = summarize(work_train, col, semantic[col])
-        if semantic[col] == "constant":
-            recs.append(drop_columns_rec(col, "drop", "info", "constant once cleaned"))
-            info.action = "drop"
-            continue
-        if info.pct_missing >= DROP_PCT:
-            recs.append(drop_missing_rec(col, info.pct_missing))
-            info.action = "drop"
-            continue
-        missing = missing_rec(col, semantic[col], work_train, work_test, info)
-        if missing is not None:
-            recs.append(missing)
-        if semantic[col] == "numeric":
-            recs += numeric_recs(col, work_train, work_test, model_family, info)
-        recs += encoding_recs(
-            col, semantic[col], work_train, work_test, model_family, missing, info
-        )
-        ops = [r.op for r in recs if r.column == col and r.op != "drop_columns"]
-        info.action = ", ".join(ops) if ops else "keep"
+    live = _column_phase(
+        work_train, work_test, kept, semantic, model_family, recs, infos
+    )
+    _encoding_phase(work_train, work_test, live, semantic, model_family, recs, infos)
 
     rows = sorted(enumerate(recs), key=lambda ir: (STAGES[ir[1].category], ir[0]))
     table = pd.DataFrame(
-        [
-            {
-                "order": i + 1,
-                "column": r.column,
-                "category": r.category,
-                "severity": r.severity,
-                "advice": r.advice,
-                "op": r.op,
-                "target": r.target,
-                "params": r.params,
-            }
-            for i, (_, r) in enumerate(rows)
-        ],
+        [{"order": i + 1, **vars(r)} for i, (_, r) in enumerate(rows)],
         columns=REC_FIELDS,
     )
     columns = pd.DataFrame([vars(infos[c]) for c in features], columns=COLUMN_FIELDS)

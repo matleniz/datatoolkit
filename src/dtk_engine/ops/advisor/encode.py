@@ -54,96 +54,19 @@ def _ordinal_order(values: list) -> list | None:
     return None
 
 
-def encoding_recs(
-    col: str,
-    semantic: str,
-    train: pd.DataFrame,
-    test: pd.DataFrame | None,
-    family: str | None,
-    missing_rec: Rec | None,
-    info: ColumnInfo,
-) -> list[Rec]:
-    if semantic == "datetime":
-        return [
-            Rec(
-                col,
-                "encoding",
-                "info",
-                "date/time: models need numbers, extract calendar parts "
-                "(then drop the raw column)",
-                "datetime_parts",
-                "both",
-                {"column": col},
-            ),
-            drop_columns_rec(
-                col, "encoding", "info", "raw date/time replaced by its parts"
-            ),
-        ]
-    if semantic == "boolean":
-        if pdt.is_bool_dtype(train[col]):
-            return [
-                Rec(
-                    col,
-                    "encoding",
-                    "info",
-                    "boolean: cast to 0/1",
-                    "cast",
-                    "both",
-                    {"dtypes": {col: "int64"}},
-                )
-            ]
-        return []
-    if semantic != "categorical":
-        return []
+def _datetime_recs(col: str) -> list[Rec]:
+    return [
+        Rec(
+            col, "encoding", "info",
+            "date/time: models need numbers, extract calendar parts "
+            "(then drop the raw column)",
+            "datetime_parts", "both", {"column": col},
+        ),
+        drop_columns_rec(col, "encoding", "info", "raw date/time replaced by its parts"),
+    ]  # fmt: skip
 
-    counts = train[col].value_counts()
-    fills_missing = (
-        missing_rec is not None and missing_rec.params["strategy"] == "constant"
-    )
-    n_unique = len(counts) + (1 if fills_missing else 0)
-    unseen: list = []
-    if test is not None and col in test.columns:
-        unseen = sorted(set(test[col].dropna().unique()) - set(counts.index), key=str)
-    unseen_note = (
-        f"; {len(unseen)} test categories unseen in train (e.g. {unseen[:3]})"
-        if unseen
-        else ""
-    )
 
-    order = _ordinal_order(list(counts.index))
-    if order is not None:
-        info.onehot_columns = 1
-        return [
-            Rec(
-                col,
-                "encoding",
-                "info",
-                f"ordinal hint: levels {order} have a natural order: code them "
-                f"0..{len(order) - 1} (check the order; unknown -> -1){unseen_note}",
-                "ordinal",
-                "both",
-                {"categories": {col: order}},
-            )
-        ]
-
-    high = n_unique > HIGH_CARDINALITY
-    if family == "tree" and high:
-        by_freq = [_py(v) for v in counts.index]
-        info.onehot_columns = 1
-        return [
-            Rec(
-                col,
-                "encoding",
-                "warning",
-                f"high cardinality ({n_unique} categories) for a tree model: an "
-                "arbitrary integer code (by frequency) avoids a mostly-zero one-hot "
-                f"matrix; trees can carve the codes apart{unseen_note}",
-                "ordinal",
-                "both",
-                {"categories": {col: by_freq}},
-            )
-        ]
-
+def _onehot_rec(col, counts, n_unique, unseen, unseen_note, family, info) -> Rec:
     params: dict[str, Any] = {"columns": [col]}
     n_rare = int((counts < MIN_FREQUENCY).sum())
     produced = n_unique
@@ -161,7 +84,7 @@ def encoding_recs(
             f"{col}_infrequent column (min_frequency={MIN_FREQUENCY})"
         )
     info.onehot_columns = produced
-    severity = "warning" if high else "info"
+    high = n_unique > HIGH_CARDINALITY
     advice = f"nominal: one-hot costs {produced} column{'s' if produced > 1 else ''}"
     if notes:
         advice += "; " + "; ".join(notes)
@@ -174,4 +97,59 @@ def encoding_recs(
         advice += "; drop_first only matters for an unregularised linear model"
     if unseen:
         advice += unseen_note + " (unseen -> all-zero row)"
-    return [Rec(col, "encoding", severity, advice, "onehot", "both", params)]
+    severity = "warning" if high else "info"
+    return Rec(col, "encoding", severity, advice, "onehot", "both", params)
+
+
+def _categorical_recs(col, train, test, family, missing_rec, info) -> list[Rec]:
+    counts = train[col].value_counts()
+    fills = missing_rec is not None and missing_rec.params["strategy"] == "constant"
+    n_unique = len(counts) + (1 if fills else 0)
+    unseen = []
+    if test is not None and col in test.columns:
+        unseen = sorted(set(test[col].dropna().unique()) - set(counts.index), key=str)
+    note = (
+        f"; {len(unseen)} test categories unseen in train (e.g. {unseen[:3]})"
+        if unseen
+        else ""
+    )
+    order = _ordinal_order(list(counts.index))
+    if order is not None:
+        info.onehot_columns = 1
+        return [Rec(
+            col, "encoding", "info",
+            f"ordinal hint: levels {order} have a natural order: code them "
+            f"0..{len(order) - 1} (check the order; unknown -> -1){note}",
+            "ordinal", "both", {"categories": {col: order}},
+        )]  # fmt: skip
+    if family == "tree" and n_unique > HIGH_CARDINALITY:
+        info.onehot_columns = 1
+        return [Rec(
+            col, "encoding", "warning",
+            f"high cardinality ({n_unique} categories) for a tree model: an "
+            "arbitrary integer code (by frequency) avoids a mostly-zero one-hot "
+            f"matrix; trees can carve the codes apart{note}",
+            "ordinal", "both", {"categories": {col: [_py(v) for v in counts.index]}},
+        )]  # fmt: skip
+    return [_onehot_rec(col, counts, n_unique, unseen, note, family, info)]
+
+
+def encoding_recs(
+    col: str,
+    semantic: str,
+    train: pd.DataFrame,
+    test: pd.DataFrame | None,
+    family: str | None,
+    missing_rec: Rec | None,
+    info: ColumnInfo,
+) -> list[Rec]:
+    if semantic == "datetime":
+        return _datetime_recs(col)
+    if semantic == "boolean" and pdt.is_bool_dtype(train[col]):
+        return [Rec(
+            col, "encoding", "info", "boolean: cast to 0/1",
+            "cast", "both", {"dtypes": {col: "int64"}},
+        )]  # fmt: skip
+    if semantic == "categorical":
+        return _categorical_recs(col, train, test, family, missing_rec, info)
+    return []
