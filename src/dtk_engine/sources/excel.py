@@ -13,6 +13,11 @@ from dtk_engine.sources.spec import ExcelSource
 @reader("excel")
 def read_excel(spec: ExcelSource) -> pd.DataFrame:
     path = resolve_path(spec.path)
+    if path.lower().endswith(".xls"):
+        raise SourceError(
+            f"cannot read excel {spec.path}: legacy .xls is not supported, "
+            "only .xlsx is supported (re-save the file as .xlsx)"
+        )
     try:
         return pd.read_excel(
             path,

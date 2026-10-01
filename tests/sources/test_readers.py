@@ -62,6 +62,14 @@ def test_excel_sheet_by_name_and_index(tmp_path):
     assert list(load(ExcelSource(path=str(path), sheet=1)).columns) == ["b", "c"]
 
 
+def test_legacy_xls_gets_a_clear_error(tmp_path):
+    path = tmp_path / "old.xls"
+    path.write_bytes(b"\xd0\xcf\x11\xe0")  # BIFF/OLE magic; never parsed
+    for source in (path, {"kind": "excel", "path": str(path)}):
+        with pytest.raises(SourceError, match="only .xlsx is supported"):
+            api.load(source)
+
+
 def test_json_flatten_and_record_path(tmp_path):
     path = tmp_path / "d.json"
     path.write_text(
