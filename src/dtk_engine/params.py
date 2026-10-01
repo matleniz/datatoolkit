@@ -12,13 +12,17 @@ source instead of a free-text field). A field built by ``columns_field`` /
   frame this step applies to", i.e. the workspace ``dataset`` source of the
   step's role (train for ``train`` / ``both``, test for ``test``), in its state
   before the step;
-- ``x-dtk-dtype``: ``"any"`` or ``"numeric"`` (offer only numeric columns).
+- ``x-dtk-dtype``: ``"any"`` or ``"numeric"`` (offer only numeric columns);
+- ``x-dtk-semantic`` (optional, single column): a ``semantic_type`` (e.g.
+  ``"group_id"``) whose column a front may prefill (``workspace_rows`` column
+  meta carries each column's ``semantic``).
 
 An empty ``columns`` list means "every eligible column" (each key caps it).
 
-Any param may also carry ``x-dtk-when``: ``{sibling param: value}``, i.e. the
-param only matters (a front shows it) when every listed sibling has that value,
-e.g. ``impute.expr`` -> ``{"strategy": "formula"}``.
+Any param may also carry ``x-dtk-when``: ``{sibling param: value or list of
+values}``, i.e. the param only matters (a front shows it) when every listed
+sibling has that value (one of them, for a list), e.g. ``impute.expr`` ->
+``{"strategy": "formula"}``. ``when(...)`` builds it.
 """
 
 from typing import Any, Literal
@@ -43,8 +47,14 @@ class SourceParams(KeyParams):
     source: SourceSpec = CsvSource(path=TRAIN_CSV)
 
 
-def _hints(widget: str, source: str, dtype: ColumnDtype) -> dict[str, str]:
+def _hints(widget: str, source: str, dtype: ColumnDtype) -> dict[str, Any]:
     return {"x-dtk-widget": widget, "x-dtk-source": source, "x-dtk-dtype": dtype}
+
+
+def when(**siblings: Any) -> dict[str, Any]:
+    """``json_schema_extra`` of a param that only applies for these sibling
+    values (a list = any of them), e.g. ``when(strategy="formula")``."""
+    return {"x-dtk-when": siblings}
 
 
 def columns_field(
@@ -78,12 +88,15 @@ def column_field(
     *,
     source: str = "source",
     dtype: ColumnDtype = "any",
+    semantic: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> Any:
     """A single-column param (e.g. a target) picking a column of ``source``.
 
-    ``default=...`` makes the param required."""
-    return Field(
-        default=default,
-        description=description,
-        json_schema_extra=_hints("column", source, dtype),
-    )
+    ``default=...`` makes the param required. ``semantic``: the
+    ``semantic_type`` a front may prefill it from; ``extra``: more schema hints
+    (e.g. ``when(...)``)."""
+    hints = _hints("column", source, dtype) | (extra or {})
+    if semantic is not None:
+        hints["x-dtk-semantic"] = semantic
+    return Field(default=default, description=description, json_schema_extra=hints)

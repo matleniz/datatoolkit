@@ -366,6 +366,52 @@ def test_workspace_impute_formula_save_and_preview(tmp_path, monkeypatch):
         save_workspace({**ws, "steps": [bad]})
 
 
+def _visits_csv(path: Path, n_patients: int, offset: int) -> None:
+    """3 visits per patient (>= 100 ids: a group_id column); visit 2 missing."""
+    rows = ["pid,age,ledd"]
+    for i in range(n_patients):
+        base = 10 * (i + offset)
+        rows += [
+            f"p{i + offset},50,{base}",
+            f"p{i + offset},51,",
+            f"p{i + offset},52,{base + 2}",
+        ]
+    path.write_text("\n".join(rows) + "\n")
+
+
+def test_workspace_impute_group_strategy_and_semantic_prefill(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
+    _visits_csv(tmp_path / "train.csv", 120, 0)
+    _visits_csv(tmp_path / "test.csv", 120, 500)  # other patients
+    params = {
+        "columns": ["ledd"],
+        "strategy": "group_interp",
+        "by": "pid",
+        "order": "age",
+    }
+    ws = {
+        "name": "w",
+        "datasets": {
+            "train": {"x": {"kind": "csv", "path": str(tmp_path / "train.csv")}},
+            "test": {"x": {"kind": "csv", "path": str(tmp_path / "test.csv")}},
+        },
+        "steps": [{"op": "impute", "target": "both", "params": params}],
+    }
+    assert save_workspace(ws)["steps"][0]["params"]["by"] == "pid"
+    assert [r["ledd"] for r in preview_workspace(ws, "test")["head"][:3]] == [
+        5000,
+        5001,
+        5002,
+    ]
+    # Studio prefill: the schema names the semantic type, the grid gives it.
+    by = transform_schema("impute")["properties"]["by"]
+    meta = contract.workspace_rows(ws, "train", limit=1)["columns"]
+    assert [c["name"] for c in meta if c["semantic"] == by["x-dtk-semantic"]] == ["pid"]
+    bad = {"op": "impute", "target": "both", "params": {**params, "order": None}}
+    with pytest.raises(KeyParamsError, match="needs order"):
+        save_workspace({**ws, "steps": [bad]})
+
+
 def test_preview_workspace_errors():
     with pytest.raises(KeyParamsError):
         preview_workspace({"name": "w"}, "train")

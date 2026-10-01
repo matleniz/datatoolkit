@@ -9,6 +9,11 @@ before the walk: ``np.f(x)`` -> ``f(x)``, ``a if c else b`` -> ``where(c, a, b)`
 ``df.col`` / ``df["col"]`` -> column; ``and``/``or``/``not``/``&``/``|``/``~``
 are element-wise on truthiness (!= 0) and return 0/1. Any other attribute,
 subscript or method call is refused with a message naming the construct.
+
+Group functions (``group_mean(x, by=patient_id)``, ``group_prev`` /
+``group_interp(x, by=..., order=age)``, see ``ops/groups.py``) compute each
+row from the rows of its own entity in the same frame; they are the only
+functions taking keyword arguments, and ``by=`` must name a column.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import pandas as pd
 from pydantic import Field, field_validator, model_validator
 
 from dtk_engine.errors import KeyParamsError
+from dtk_engine.ops import groups
 from dtk_engine.ops._util import json_scalar as _json
 from dtk_engine.params import column_field
 from dtk_engine.transform_registry import TransformParams, transform
@@ -32,6 +38,7 @@ from dtk_engine.transform_registry import TransformParams, transform
 IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_]*$"
 _VAR_PREFIX = "_dtk_var_"
 _COL_PREFIX = "_dtk_col_"  # df.col / df["col"] references
+_GRP_PREFIX = "_dtk_grp_"  # by= columns: env holds group codes, not values
 _VAR_TOKEN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)")
 _DIV_EPS = 1e-12
 
@@ -50,6 +57,10 @@ def _round(x: np.ndarray, ndigits: np.ndarray | None = None) -> np.ndarray:
     return np.round(x) if ndigits is None else np.round(x, int(ndigits[:1].sum()))
 
 
+def _group_prev(x: np.ndarray, by: np.ndarray, order: np.ndarray) -> np.ndarray:
+    return groups.group_prev(pd.Series(x), by, order).to_numpy(dtype=float)
+
+
 @dataclass(frozen=True)
 class _Func:
     """One whitelisted function: the single place validation, errors and eval read."""
@@ -58,6 +69,7 @@ class _Func:
     arity: tuple[int, int | None] = (1, 1)  # (min, max); max None = n-ary
     np_name: str | None = None  # np.<np_name> spelling; defaults to the name
     int_tail: bool = False  # arguments after the first must be int constants
+    keywords: tuple[str, ...] = ()  # required keyword arguments (group functions)
 
 
 _FUNCS: dict[str, _Func] = {
@@ -74,9 +86,14 @@ _FUNCS: dict[str, _Func] = {
     "clip": _Func(np.clip, (3, 3)),
     "where": _Func(_where, (3, 3)),
     "isnull": _Func(lambda x: np.isnan(x).astype(float), np_name="isnan"),
+    "group_mean": _Func(groups.group_mean, keywords=("by",)),
+    "group_prev": _Func(_group_prev, keywords=("by", "order")),
+    "group_interp": _Func(groups.group_interp, keywords=("by", "order")),
 }
 # np.<name> -> canonical whitelist name (same function, numpy spelling).
-_NP_FUNCS = {f.np_name or name: name for name, f in _FUNCS.items()}
+_NP_FUNCS = {
+    f.np_name or name: name for name, f in _FUNCS.items() if not f.keywords
+}
 
 
 class FormulaVariable(TransformParams):
@@ -204,6 +221,8 @@ class _Normalizer(ast.NodeTransformer):
                 "formula; call functions by name (log(x)) or as np.log(x)"
             )
         node.args = [self.visit(arg) for arg in node.args]
+        for kw in node.keywords:
+            kw.value = self.visit(kw.value)
         return node
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -404,30 +423,71 @@ class _Compiler:
     def _Call(self, node: ast.Call) -> Compiled:
         assert isinstance(node.func, ast.Name)  # _Normalizer guarantees it
         fname, args = node.func.id, node.args
-        if node.keywords:
-            _refuse("keyword arguments", f"in {fname}()")
         fn = _FUNCS.get(fname)
         if fn is None:
             _not_allowed(
                 f"unknown function {fname}() is not allowed in a formula; "
                 f"allowed: {', '.join(sorted(_FUNCS))}"
             )
-        if not args:
-            _not_allowed(f"{fname}() needs at least one argument")
-        lo, hi = fn.arity
-        if lo == hi and len(args) != lo:
-            _not_allowed(
-                f"{fname}() takes {lo} argument"
-                f"{'' if lo == 1 else 's'}, got {len(args)}"
-            )
-        if hi is not None and len(args) > hi:
-            _not_allowed(f"{fname}() takes at most {hi} arguments")
-        if fn.int_tail and not all(
-            isinstance(a, ast.Constant) and type(a.value) is int for a in args[1:]
-        ):
-            _not_allowed(f"{fname}() second argument must be an integer constant")
+        keywords = self._keywords(fname, fn, node.keywords)
+        _check_args(fname, fn, args)
         compiled = [self.compile(a) for a in args]
-        return lambda env, n: fn.impl(*(c(env, n) for c in compiled))
+        return lambda env, n: fn.impl(
+            *(c(env, n) for c in compiled),
+            **{k: c(env, n) for k, c in keywords.items()},
+        )
+
+    def _keywords(
+        self, fname: str, fn: _Func, keywords: list[ast.keyword]
+    ) -> dict[str, Compiled]:
+        """Compile the keyword arguments: exactly ``fn.keywords``; ``by=`` is a
+        column read as group codes, the others are expressions."""
+        if keywords and not fn.keywords:
+            _refuse("keyword arguments", f"in {fname}()")
+        given = [k.arg for k in keywords]
+        if None in given:
+            _refuse("**unpacking")
+        if sorted(given) != sorted(fn.keywords):
+            expected = ", ".join(f"{k}=" for k in fn.keywords)
+            _not_allowed(f"{fname}() needs exactly the keyword arguments {expected}")
+        return {
+            k.arg: self._group_column(fname, k.value)
+            if k.arg == "by"
+            else self.compile(k.value)
+            for k in keywords
+        }
+
+    def _group_column(self, fname: str, node: ast.AST) -> Compiled:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            col = _restore_vars(node.value)
+        elif (
+            isinstance(node, ast.Name)
+            and not node.id.startswith((_VAR_PREFIX, "__"))
+            and node.id not in _CONSTANTS
+        ):
+            col = node.id.removeprefix(_COL_PREFIX)
+        else:
+            _not_allowed(f"{fname}() by= must name a column, e.g. by=patient_id")
+        key = f"{_GRP_PREFIX}{col}"
+        self.cols[key] = col
+        return lambda env, n: env[key]
+
+
+def _check_args(fname: str, fn: _Func, args: list[ast.expr]) -> None:
+    if not args:
+        _not_allowed(f"{fname}() needs at least one argument")
+    lo, hi = fn.arity
+    if lo == hi and len(args) != lo:
+        _not_allowed(
+            f"{fname}() takes {lo} argument"
+            f"{'' if lo == 1 else 's'}, got {len(args)}"
+        )
+    if hi is not None and len(args) > hi:
+        _not_allowed(f"{fname}() takes at most {hi} arguments")
+    if fn.int_tail and not all(
+        isinstance(a, ast.Constant) and type(a.value) is int for a in args[1:]
+    ):
+        _not_allowed(f"{fname}() second argument must be an integer constant")
 
 
 def _compile_expr(
@@ -535,12 +595,15 @@ def evaluate(
     for key, col in cols.items():
         if col not in df.columns:
             raise KeyParamsError(f"formula: unknown column {col!r}")
-        env[key] = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+        if key.startswith(_GRP_PREFIX):
+            env[key] = groups.group_codes(df[col])
+        else:
+            env[key] = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
     for name, value in (variables or {}).items():
         fill = np.nan if value is None else float(value)
         env[f"{_VAR_PREFIX}{name}"] = np.full(n, fill, dtype=float)
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
         result = run(env, n)
-    result = np.asarray(result, dtype=float)
+    result = np.array(result, dtype=float)  # a copy: impls may return views
     result[~np.isfinite(result)] = np.nan
     return result
