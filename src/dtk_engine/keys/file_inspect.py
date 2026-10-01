@@ -197,58 +197,81 @@ def _excel_header_row(raw: pd.DataFrame) -> int:
 
 
 def _text_facts(raw: bytes, shown: str) -> dict:
-    bom = next((name for mark, name in BOMS if raw.startswith(mark)), None)
-    encoding = guess_encoding(raw, complete=len(raw) < SNIFF_CHARS)
+    cut = len(raw) >= SNIFF_CHARS  # the sample stops mid-file
+    encoding = guess_encoding(raw, complete=not cut)
     text = raw.decode(encoding, errors="replace").removeprefix("\ufeff")
-    crlf, lf = text.count("\r\n"), text.count("\n") - text.count("\r\n")
-    cr = text.count("\r") - crlf
-    endings = [n for n, c in (("CRLF", crlf), ("LF", lf), ("CR", cr)) if c]
-    lines = text.splitlines()
-    if len(raw) >= SNIFF_CHARS and lines:
-        lines = lines[:-1]  # last line is cut by the sample limit
+    lines = _sample_lines(text, cut)
     sample = "\n".join(lines) + "\n" if lines else ""
     sep = sniff_sep(sample) if lines else None
     decimal = guess_decimal(sample, sep)
     facts = {
-        "bom": bom or "none",
+        "bom": next((name for mark, name in BOMS if raw.startswith(mark)), "none"),
         "encoding_guess": encoding,
-        "line_endings": "+".join(endings) or "none",
+        "line_endings": _line_endings(text),
         "delimiter": repr(sep) if sep else "unknown",
         "decimal_guess": decimal,
     }
     spec: dict = {"kind": "csv", "path": shown, "sep": sep or "auto"}
     spec |= {"encoding": encoding, "decimal": decimal}
-    records = _records(lines, sep)
+    header_facts, header_spec = _header_facts(_records(lines, sep), decimal)
+    facts |= header_facts
+    spec |= header_spec
+    if sep:
+        facts["bad_line"] = _bad_line(sample, sep, spec["header"], cut)
+    facts["load_spec"] = json.dumps(spec)
+    return facts
+
+
+def _sample_lines(text: str, cut: bool) -> list[str]:
+    lines = text.splitlines()
+    if cut and lines:
+        lines = lines[:-1]  # last line is cut by the sample limit
+    return lines
+
+
+def _line_endings(text: str) -> str:
+    crlf = text.count("\r\n")
+    counts = (
+        ("CRLF", crlf),
+        ("LF", text.count("\n") - crlf),
+        ("CR", text.count("\r") - crlf),
+    )
+    return "+".join(name for name, count in counts if count) or "none"
+
+
+def _header_facts(
+    records: list[tuple[int, list[str]]], decimal: str
+) -> tuple[dict, dict]:
+    """(facts, load_spec keys) about the header record."""
     header = _header_record(records)
-    if header is None:
-        facts["header_guess"] = "none"
-        spec["header"] = None
-    elif not _has_header(records, header, decimal):
-        facts["header_guess"] = "none"
-        spec["header"] = None
+    if header is None or not _has_header(records, header, decimal):
+        facts = {"header_guess": "none"}
         # header=None reads title lines as data: report them so they can be dropped.
         if header:
             facts["title_lines_above_data"] = records[header][0]
-    else:
-        line, fields = records[header]
-        facts["header_guess"] = "present"
-        facts["header_line"] = line + 1
-        facts["title_lines_above_header"] = line
-        facts["unnamed_columns"] = ", ".join(
+        return facts, {"header": None}
+    line, fields = records[header]
+    zeros = _leading_zero_columns(records[header:], fields)
+    facts = {
+        "header_guess": "present",
+        "header_line": line + 1,
+        "title_lines_above_header": line,
+        "unnamed_columns": ", ".join(
             f"Unnamed: {i}" for i, name in enumerate(fields) if not name.strip()
-        )
-        spec["header"] = sum(1 for _, f in records[:header] if f)
-        zeros = _leading_zero_columns(records[header:], fields)
-        facts["leading_zero_columns"] = ", ".join(zeros)
-        if zeros:
-            spec["dtype"] = dict.fromkeys(zeros, "str")
-    if sep:
-        bad = find_bad_record(sample, sep, spec["header"])
-        if bad and bad[1] == "unclosed quote" and len(raw) >= SNIFF_CHARS:
-            bad = None  # a quoted field cut by the sample limit
-        facts["bad_line"] = f"line {bad[0]}: {bad[1]}" if bad else "none"
-    facts["load_spec"] = json.dumps(spec)
-    return facts
+        ),
+        "leading_zero_columns": ", ".join(zeros),
+    }
+    spec: dict = {"header": sum(1 for _, f in records[:header] if f)}
+    if zeros:
+        spec["dtype"] = dict.fromkeys(zeros, "str")
+    return facts, spec
+
+
+def _bad_line(sample: str, sep: str, header: int | None, cut: bool) -> str:
+    bad = find_bad_record(sample, sep, header)
+    if bad and bad[1] == "unclosed quote" and cut:
+        bad = None  # a quoted field cut by the sample limit
+    return f"line {bad[0]}: {bad[1]}" if bad else "none"
 
 
 def _records(lines: list[str], sep: str | None) -> list[tuple[int, list[str]]]:
