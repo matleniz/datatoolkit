@@ -110,6 +110,64 @@ def _fuzzy_clusters(
     return rep
 
 
+def _exact_groups(counts: pd.Series, keys: pd.Series) -> dict[str, list[str]]:
+    """Exact clusters: normalised key -> original forms, most frequent first
+    (counts.index is already sorted by count desc); keys ordered by total count."""
+    groups: dict[str, list[str]] = {}
+    for form in counts.index:
+        groups.setdefault(keys[form], []).append(form)
+    key_count = {k: sum(int(counts[f]) for f in forms) for k, forms in groups.items()}
+    return {k: groups[k] for k in sorted(groups, key=lambda k: -key_count[k])}
+
+
+def _fuzzy_representatives(
+    counts: pd.Series,
+    exact_groups: dict[str, list[str]],
+    threshold: float,
+    max_distinct: int,
+    max_cardinality_ratio: float,
+) -> dict[str, tuple[str, float]]:
+    """Normalised key -> (representative key, similarity) over every exact key."""
+    distinct_keys = list(exact_groups)
+    if len(counts) / int(counts.sum()) > max_cardinality_ratio:
+        eligible: list[str] = []
+    else:
+        eligible = [k for k in distinct_keys if _fuzzy_eligible(k)]
+    if len(eligible) > max_distinct:
+        return {k: (k, 100.0) for k in distinct_keys}
+    rep = _fuzzy_clusters(eligible, threshold)
+    for k in distinct_keys:
+        rep.setdefault(k, (k, 100.0))
+    return rep
+
+
+def _variant_rows(
+    col: str,
+    forms: list[str],
+    counts: pd.Series,
+    keys: pd.Series,
+    fuzzy_rep: dict[str, tuple[str, float]],
+) -> list[dict]:
+    canonical = max(forms, key=lambda f: int(counts[f]))
+    rows = []
+    for form in forms:
+        key = keys[form]
+        method = "exact" if normalize(canonical) == key else "fuzzy"
+        rows.append(
+            {
+                "column": col,
+                "canonical": canonical,
+                "variant": form,
+                "count": int(counts[form]),
+                "similarity": 100.0
+                if method == "exact"
+                else round(fuzzy_rep[key][1], 1),
+                "method": method,
+            }
+        )
+    return rows
+
+
 def variants(
     df: pd.DataFrame,
     columns: list[str],
@@ -138,65 +196,32 @@ def variants(
         if counts.empty:
             continue
         keys = pd.Series([normalize(v) for v in counts.index], index=counts.index)
-
-        # Exact clusters: normalised key -> original forms, most frequent first
-        # (counts.index is already sorted by count desc).
-        exact_groups: dict[str, list[str]] = {}
-        for form in counts.index:
-            exact_groups.setdefault(keys[form], []).append(form)
-        key_count = {
-            k: sum(int(counts[f]) for f in forms) for k, forms in exact_groups.items()
-        }
-        distinct_keys = sorted(exact_groups, key=lambda k: -key_count[k])
-        cardinality_ratio = len(counts) / int(counts.sum())
-        if cardinality_ratio > fuzzy_max_cardinality_ratio:
-            fuzzy_eligible: list[str] = []
-        else:
-            fuzzy_eligible = [k for k in distinct_keys if _fuzzy_eligible(k)]
-
-        if len(fuzzy_eligible) > fuzzy_max_distinct:
-            fuzzy_rep = {k: (k, 100.0) for k in distinct_keys}
-        else:
-            fuzzy_rep = _fuzzy_clusters(fuzzy_eligible, fuzzy_threshold)
-            for k in distinct_keys:
-                fuzzy_rep.setdefault(k, (k, 100.0))
-
+        exact_groups = _exact_groups(counts, keys)
+        fuzzy_rep = _fuzzy_representatives(
+            counts,
+            exact_groups,
+            fuzzy_threshold,
+            fuzzy_max_distinct,
+            fuzzy_max_cardinality_ratio,
+        )
         # Final clusters: representative normalised key -> member normalised keys.
         final: dict[str, list[str]] = {}
-        for k in distinct_keys:
-            rep_key, _ = fuzzy_rep[k]
-            final.setdefault(rep_key, []).append(k)
-
-        n_after = len(final)
-        if n_after == len(counts):
+        for k in exact_groups:
+            final.setdefault(fuzzy_rep[k][0], []).append(k)
+        if len(final) == len(counts):
             continue
         summary.append(
             {
                 "column": col,
                 "distinct_before": len(counts),
-                "distinct_after": n_after,
-                "n_merged": len(counts) - n_after,
+                "distinct_after": len(final),
+                "n_merged": len(counts) - len(final),
             }
         )
         for member_keys in final.values():
             forms = [f for k in member_keys for f in exact_groups[k]]
-            if len(forms) < 2:
-                continue
-            canonical = max(forms, key=lambda f: int(counts[f]))
-            for form in forms:
-                key = keys[form]
-                _, similarity = fuzzy_rep[key]
-                method = "exact" if normalize(canonical) == key else "fuzzy"
-                mapping.append(
-                    {
-                        "column": col,
-                        "canonical": canonical,
-                        "variant": form,
-                        "count": int(counts[form]),
-                        "similarity": 100.0 if method == "exact" else round(similarity, 1),
-                        "method": method,
-                    }
-                )
+            if len(forms) >= 2:
+                mapping.extend(_variant_rows(col, forms, counts, keys, fuzzy_rep))
     return (
         pd.DataFrame(summary, columns=SUMMARY_COLUMNS),
         pd.DataFrame(mapping, columns=VARIANT_COLUMNS),

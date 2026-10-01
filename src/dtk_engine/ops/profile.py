@@ -121,6 +121,45 @@ def _group_band(n_unique: int, ratio: float) -> bool:
     return n_unique >= GROUP_MIN_UNIQUE and GROUP_MIN_RATIO <= ratio < ID_UNIQUE_RATIO
 
 
+def _numeric_kind(
+    series: pd.Series, values: pd.Series, n_unique: int, ratio: float
+) -> str:
+    if n_unique == 2 and set(values.unique()) <= {0, 1}:
+        return "boolean"
+    if pdt.is_integer_dtype(series):
+        density = _range_density(values, n_unique)
+        if (
+            len(values) >= ID_MIN_NON_NULL
+            and ratio >= ID_UNIQUE_RATIO
+            and density >= ID_RANGE_DENSITY
+        ):
+            return "id_like"
+        if _group_band(n_unique, ratio) and density >= GROUP_RANGE_DENSITY:
+            return "group_id"
+    return "numeric"
+
+
+def _text_kind(
+    series: pd.Series, values: pd.Series, n_unique: int, ratio: float
+) -> str:
+    strings = values.astype(str)
+    if _parses_as_datetime(strings):
+        return "datetime"
+    # Numbers stored as text (possibly polluted by "?", "N/A", ...): not an id.
+    parsed = pd.to_numeric(strings.str.strip(), errors="coerce")
+    mostly_numeric = float(parsed.notna().mean()) >= NUMERIC_AS_TEXT_RATIO
+    # Currency / percent / EU-formatted numbers ("$1,029.55", "65.9567%") don't
+    # parse with plain pd.to_numeric either, but they are numbers-as-text too,
+    # not identifiers (MAT-168).
+    mostly_numeric = mostly_numeric or numeric_text_format(series) is not None
+    if not mostly_numeric and not strings.str.contains(r"\s").any():
+        if len(values) >= ID_MIN_NON_NULL and ratio >= ID_UNIQUE_RATIO:
+            return "id_like"
+        if _group_band(n_unique, ratio):
+            return "group_id"
+    return "text" if ratio > TEXT_UNIQUE_RATIO else "categorical"
+
+
 @memoize()
 def semantic_type(series: pd.Series) -> str:
     """Classify a column into one of SEMANTIC_TYPES from its dtype and values."""
@@ -136,37 +175,9 @@ def semantic_type(series: pd.Series) -> str:
     if pdt.is_datetime64_any_dtype(series):
         return "datetime"
     ratio = n_unique / len(values)
-    enough = len(values) >= ID_MIN_NON_NULL
     if pdt.is_numeric_dtype(series):
-        if n_unique == 2 and set(values.unique()) <= {0, 1}:
-            return "boolean"
-        if pdt.is_integer_dtype(series):
-            density = _range_density(values, n_unique)
-            if enough and ratio >= ID_UNIQUE_RATIO and density >= ID_RANGE_DENSITY:
-                return "id_like"
-            if _group_band(n_unique, ratio) and density >= GROUP_RANGE_DENSITY:
-                return "group_id"
-        return "numeric"
-    strings = values.astype(str)
-    if _parses_as_datetime(strings):
-        return "datetime"
-    # Numbers stored as text (possibly polluted by "?", "N/A", ...): not an id.
-    parsed = pd.to_numeric(strings.str.strip(), errors="coerce")
-    mostly_numeric = float(parsed.notna().mean()) >= NUMERIC_AS_TEXT_RATIO
-    # Currency / percent / EU-formatted numbers ("$1,029.55", "65.9567%") don't
-    # parse with plain pd.to_numeric either, but they are numbers-as-text too,
-    # not identifiers (MAT-168).
-    if not mostly_numeric:
-        mostly_numeric = numeric_text_format(series) is not None
-    spaceless = not strings.str.contains(r"\s").any()
-    if not mostly_numeric:
-        if enough and ratio >= ID_UNIQUE_RATIO and spaceless:
-            return "id_like"
-        if spaceless and _group_band(n_unique, ratio):
-            return "group_id"
-    if ratio > TEXT_UNIQUE_RATIO:
-        return "text"
-    return "categorical"
+        return _numeric_kind(series, values, n_unique, ratio)
+    return _text_kind(series, values, n_unique, ratio)
 
 
 def pct_numeric_parsable(series: pd.Series) -> float:
@@ -238,7 +249,11 @@ def numeric_text_format(series: pd.Series) -> dict | None:
     # marker that would trip up the plain parse (currency, '%', ',-'/'.-', a
     # comma, or a thousands separator).
     has_marker = bool(
-        with_symbol.any() or percent.any() or with_whole_unit.any() or has_comma or has_space
+        with_symbol.any()
+        or percent.any()
+        or with_whole_unit.any()
+        or has_comma
+        or has_space
     )
     if not has_marker:
         return None

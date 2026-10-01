@@ -110,39 +110,41 @@ def missing_per_row(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _sentinel_hits(series: pd.Series) -> dict[str, int]:
-    non_null = series.dropna()
-    hits: dict[str, int] = {}
-    if object_kind(non_null):
-        # Lists / dicts / bytes (WKB, blobs) hold no textual sentinel.
-        return hits
-    if pdt.is_datetime64_any_dtype(series):
-        stamps = non_null.dt.strftime("%Y-%m-%d")
-        for s in DATE_SENTINELS:
-            if c := int((stamps == s).sum()):
-                hits[s] = c
-        return hits
-    if pdt.is_numeric_dtype(series) and not pdt.is_bool_dtype(series):
-        numbers = non_null.astype(float)
-    else:
-        text = non_null.astype(str).str.strip()
-        lowered = text.str.lower()
-        for s in sorted(STRING_SENTINELS):
-            if c := int((lowered == s).sum()):
-                hits[repr(s) if s == "" else s] = c
-        for s in DATE_SENTINELS:
-            if c := int(text.str.startswith(s).sum()):
-                hits[s] = c
-        numbers = pd.to_numeric(text, errors="coerce").dropna()
-    for s in NUMERIC_SENTINELS:
-        if c := int((numbers == s).sum()):
-            hits[str(s)] = c
+def _nonzero(masks) -> dict[str, int]:
+    return {label: c for label, mask in masks if (c := int(mask.sum()))}
+
+
+def _text_sentinel_hits(text: pd.Series) -> dict[str, int]:
+    lowered = text.str.lower()
+    return _nonzero(
+        [(repr(s) if s == "" else s, lowered == s) for s in sorted(STRING_SENTINELS)]
+        + [(s, text.str.startswith(s)) for s in DATE_SENTINELS]
+    )
+
+
+def _numeric_sentinel_hits(numbers: pd.Series) -> dict[str, int]:
+    hits = _nonzero((str(s), numbers == s) for s in NUMERIC_SENTINELS)
     zeros = int((numbers == 0).sum())
     if zeros >= ZERO_MIN_ROWS and numbers.nunique() >= ZERO_MIN_UNIQUE:
         other = numbers[numbers != 0].value_counts()
         if zeros >= ZERO_DOMINANCE * (int(other.iloc[0]) if len(other) else 0):
             hits["0"] = zeros
     return hits
+
+
+def _sentinel_hits(series: pd.Series) -> dict[str, int]:
+    non_null = series.dropna()
+    if object_kind(non_null):
+        # Lists / dicts / bytes (WKB, blobs) hold no textual sentinel.
+        return {}
+    if pdt.is_datetime64_any_dtype(series):
+        stamps = non_null.dt.strftime("%Y-%m-%d")
+        return _nonzero((s, stamps == s) for s in DATE_SENTINELS)
+    if pdt.is_numeric_dtype(series) and not pdt.is_bool_dtype(series):
+        return _numeric_sentinel_hits(non_null.astype(float))
+    text = non_null.astype(str).str.strip()
+    numbers = pd.to_numeric(text, errors="coerce").dropna()
+    return {**_text_sentinel_hits(text), **_numeric_sentinel_hits(numbers)}
 
 
 def sentinel_counts(df: pd.DataFrame) -> pd.DataFrame:
