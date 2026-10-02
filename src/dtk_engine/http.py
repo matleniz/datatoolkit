@@ -209,6 +209,7 @@ async def post_rows(request: Request) -> dict:
         contract.workspace_rows, body["workspace"], body.get("role", "train"),
         version=body.get("version"), offset=int(body.get("offset", 0)),
         limit=int(body.get("limit", 500)), columns=body.get("columns"),
+        filter=body.get("filter"), sort=body.get("sort"),
     )
 
 

@@ -403,3 +403,21 @@ def test_slow_key_does_not_block_preview_step(home, monkeypatch):
     r, elapsed, done_before_key = asyncio.run(scenario())
     assert r.status_code == 200
     assert done_before_key and elapsed < 5
+
+
+def test_workspace_rows_filter_sort_http(client):
+    body = {
+        "workspace": _workspace(),
+        "role": "train",
+        "filter": {"conditions": [{"column": "Age", "op": "gt", "value": 50}]},
+        "sort": [{"column": "Age", "desc": True}],
+    }
+    r = client.post("/api/workspace/rows", json=body)
+    assert r.status_code == 200
+    out = r.json()
+    assert out["total"] < out["total_unfiltered"] == 41
+    ages = [x["Age"] for x in out["rows"]]
+    assert ages == sorted(ages, reverse=True) and min(ages) > 50
+
+    body["filter"]["conditions"][0]["column"] = "nope"
+    assert client.post("/api/workspace/rows", json=body).status_code == 422
