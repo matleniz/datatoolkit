@@ -37,6 +37,18 @@ STRING_SENTINELS = frozenset(
         "missing",
     }
 )
+# The category the engine itself writes when it imputes a categorical ("constant"
+# strategy, advisor advice): a deliberate value, never a disguised missing one.
+# Case-sensitive: a human-typed "missing" / "Missing" stays a sentinel.
+CATEGORICAL_FILL = "MISSING"
+
+# A numeric code (-1, 999, ...) is a sentinel only when it lies outside the range of
+# the other values, or is a spike: >= NUMERIC_SPIKE_MIN_ROWS rows and >= SPIKE_FACTOR x
+# the count of each of its NUMERIC_SPIKE_NEIGHBOURS nearest distinct other values.
+# 999 inside a continuous 50-1800 column is data, not a code.
+NUMERIC_SPIKE_MIN_ROWS = 5
+NUMERIC_SPIKE_NEIGHBOURS = 10
+
 # 0 is only suspicious in a continuous-looking column where it dwarfs every other value.
 ZERO_MIN_UNIQUE = 20
 ZERO_MIN_ROWS = 5
@@ -114,8 +126,25 @@ def _nonzero(masks) -> dict[str, int]:
     return {label: c for label, mask in masks if (c := int(mask.sum()))}
 
 
+def _is_numeric_code(code: float, count: int, others: pd.Series) -> bool:
+    """Does ``code`` stand out from ``others`` (the values that are not codes)?"""
+    if others.empty or code < others.min() or code > others.max():
+        return True
+    if count < NUMERIC_SPIKE_MIN_ROWS:
+        return False
+    counts = others.value_counts()
+    nearest = (counts.index.to_series() - code).abs().nsmallest(NUMERIC_SPIKE_NEIGHBOURS)
+    return count >= SPIKE_FACTOR * max(int(counts[nearest.index].max()), 1)
+
+
 def _numeric_sentinel_hits(numbers: pd.Series) -> dict[str, int]:
-    hits = _nonzero((str(s), numbers == s) for s in NUMERIC_SENTINELS)
+    codes = _nonzero((str(s), numbers == s) for s in NUMERIC_SENTINELS)
+    others = numbers[~numbers.isin([float(c) for c in codes])]
+    hits = {
+        label: count
+        for label, count in codes.items()
+        if _is_numeric_code(float(label), count, others)
+    }
     zeros = int((numbers == 0).sum())
     if zeros >= ZERO_MIN_ROWS and numbers.nunique() >= ZERO_MIN_UNIQUE:
         other = numbers[numbers != 0].value_counts()
@@ -135,7 +164,8 @@ def _sentinel_hits(series: pd.Series) -> dict[str, int]:
     if pdt.is_numeric_dtype(series) and not pdt.is_bool_dtype(series):
         return _numeric_sentinel_hits(non_null.astype(float))
     text = non_null.astype(str).str.strip()
-    lowered = text.str.lower()
+    # The engine's own fill token is data, not a disguised missing value.
+    lowered = text.str.lower().where(text != CATEGORICAL_FILL)
     hits = _nonzero(
         [(repr(s) if s == "" else s, lowered == s) for s in sorted(STRING_SENTINELS)]
         + [(s, text.str.startswith(s)) for s in DATE_SENTINELS]

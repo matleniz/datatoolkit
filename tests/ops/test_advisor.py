@@ -4,6 +4,7 @@ import pytest
 
 from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
 from dtk_engine.ops.advisor import MODEL_FAMILIES, advise, as_steps
+from dtk_engine.ops.missing import sentinel_counts
 from dtk_engine.sources import CsvSource, load
 from dtk_engine.transform_registry import get_transform
 from dtk_engine.workspace import Step
@@ -316,3 +317,55 @@ def test_bad_arguments(frames):
         advise(train, model_family="svm")
     with pytest.raises(ValueError, match="target"):
         advise(train, target="nope")
+
+
+def test_imputed_missing_category_is_not_a_sentinel():
+    """datatoolkit-issues#78: the engine's own "MISSING" fill must not loop."""
+    rng = np.random.default_rng(1)
+    gene = rng.choice(["a", "b", "c"], 100).astype(object)
+    gene[:32] = None
+    train = pd.DataFrame({"gene": gene, "y": rng.integers(0, 2, 100)})
+    recs, _ = advise(train, model_family="tree", target="y")
+    assert "impute" in _by_column(recs)["gene"]
+    rec = _rec(recs, "gene", "impute")
+    params = get_transform("impute").parse(rec["params"])
+    filled = get_transform("impute").fit_apply(train, params)
+    assert (filled["gene"] == "MISSING").sum() == 32
+    recs, _ = advise(filled, model_family="tree", target="y")
+    assert not {"impute", "replace_sentinels"} & set(_by_column(recs)["gene"])
+
+
+def test_typed_missing_word_stays_a_sentinel():
+    train = pd.DataFrame({"c": ["a", "b", "Missing", "a", "b"] * 4, "y": [0, 1] * 10})
+    recs, _ = advise(train, model_family="tree", target="y")
+    assert _rec(recs, "c", "replace_sentinels")["params"]["sentinels"] == {
+        "c": ["Missing"]
+    }
+
+
+def test_999_inside_a_continuous_range_is_not_a_sentinel():
+    """datatoolkit-issues#79: ledd-like column, 999 is a real dose."""
+    rng = np.random.default_rng(2)
+    ledd = rng.integers(50, 1800, 3000).astype(float)
+    ledd[:10] = 999
+    train = pd.DataFrame({"ledd": ledd, "y": rng.integers(0, 2, 3000)})
+    assert sentinel_counts(train[["ledd"]]).empty
+    recs, _ = advise(train, model_family="tree", target="y")
+    assert "replace_sentinels" not in _by_column(recs).get("ledd", [])
+
+
+def test_999_spike_above_the_max_is_still_a_sentinel():
+    rng = np.random.default_rng(3)
+    ledd = rng.integers(50, 900, 3000).astype(float)
+    ledd[:10] = 999
+    table = sentinel_counts(pd.DataFrame({"ledd": ledd}))
+    assert table[["sentinel", "count"]].values.tolist() == [["999", 10]]
+
+
+def test_999_spike_inside_the_range_is_still_a_sentinel():
+    rng = np.random.default_rng(4)
+    ledd = rng.integers(50, 1800, 3000).astype(float)
+    ledd[ledd == 999] = 998
+    ledd[:60] = 999
+    table = sentinel_counts(pd.DataFrame({"ledd": ledd}))
+    assert table["sentinel"].tolist() == ["999"]
