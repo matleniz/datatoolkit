@@ -115,6 +115,30 @@ def test_context_round_trip_and_latest(client):
     assert client.get("/api/ui/context?session=zz", headers=AUTH).status_code == 404
 
 
+def test_sessions_lists_contexts_and_listeners(client):
+    assert client.get("/api/ui/sessions", headers=AUTH).json() == []
+    ctx = {"session": "a", "workspace": "w", "identity": "w|x|1"}
+    client.put("/api/ui/context", json=ctx, headers=AUTH)
+    assert client.get("/api/ui/sessions", headers=AUTH).json() == [
+        {"session": "a", "listening": False, "workspace": "w", "identity": "w|x|1"}
+    ]
+
+
+def test_sessions_python_api_order_and_listening():
+    bridge = UiBridge("t")
+    bridge.add_listener("solo")
+    bridge.put_context({"session": "b", "workspace": "wb"})
+    queue = bridge.add_listener("b")
+    bridge.put_context({"session": "a"})
+    assert [(s["session"], s["listening"]) for s in bridge.sessions()] == [
+        ("b", True), ("a", False), ("solo", True)
+    ]
+    bridge.remove_listener("b", queue)
+    assert bridge.sessions()[0] == {
+        "session": "b", "listening": False, "workspace": "wb", "identity": None
+    }
+
+
 def test_context_requires_session(client):
     assert client.put("/api/ui/context", json={"screen": "x"}, headers=AUTH).status_code == 422
 
@@ -260,8 +284,9 @@ def test_every_ui_route_is_guarded(client):
         client.post("/api/ui/ack", json={"id": "x", "ok": True}),
         client.post("/api/ui/commands", json={"type": "x"}),
         client.get("/api/ui/events?session=a"),
+        client.get("/api/ui/sessions"),
     ]
-    assert [c.status_code for c in calls] == [401] * 5
+    assert [c.status_code for c in calls] == [401] * 6
 
 
 def test_token_env_override_and_generated(monkeypatch):

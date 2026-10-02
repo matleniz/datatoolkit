@@ -81,7 +81,9 @@ def test_ui_bridge_is_isolated_and_only_http_and_agent_import_it():
         for path in sorted(ROOT.rglob("*.py"))
         if path != bridge and f"{PACKAGE}.ui_bridge" in _imports(path, ROOT)
     ]
-    assert importers == ["agent/ports.py", "agent/server.py", "http.py"]
+    assert importers == [
+        "agent/configure.py", "agent/doctor.py", "agent/ports.py", "agent/server.py", "http.py"
+    ]
 
 
 _AGENT_ALLOWED = {

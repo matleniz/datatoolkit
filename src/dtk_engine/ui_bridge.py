@@ -140,6 +140,23 @@ class UiBridge:
         for session in sessions:
             self._fail_pending(session, "no_studio")
 
+    def sessions(self) -> list[dict]:
+        """Known sessions ``{session, listening, workspace, identity}``, most recent last.
+
+        Sessions with a context come first in publish order, then listener-only ones.
+        """
+        names = [*self._contexts, *(s for s in self._listeners if s not in self._contexts)]
+        out = []
+        for name in names:
+            context = self._contexts.get(name, {})
+            out.append({
+                "session": name,
+                "listening": self.has_listener(name),
+                "workspace": context.get("workspace"),
+                "identity": context.get("identity"),
+            })
+        return out
+
     def target_session(self, session: str | None = None) -> str | None:
         """Explicit session if it listens, else most recent context with a listener, else any."""
         if session is not None:

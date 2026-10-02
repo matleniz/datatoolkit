@@ -1,0 +1,1 @@
+claude --strict-mcp-config --mcp-config /cfg/dtk.mcp.json --tools '' --allowedTools 'mcp__dtk__*'
