@@ -253,17 +253,27 @@ def workspace_rows(
     offset: int = 0,
     limit: int = 500,
     columns: list[str] | None = None,
+    filter: dict | None = None,
+    sort: list[dict] | None = None,
 ) -> dict:
     """Paged rows for ``role`` at ``version`` (None = all steps).
 
     Returns ``{columns: [{name, dtype, kind}], rows: [{..., _rid}], total,
-    version}``. ``kind`` is number|binary|text|date|identifier|bool (from
+    total_unfiltered, version}``. ``kind`` is number|binary|text|date|identifier|bool (from
     ``ops.profile.semantic_type``, plus an ``*_id`` / ``Id`` name heuristic for
     high-distinctness text). ``_rid`` is the row's position in the raw
     frame, preserved through row-dropping steps. NaN -> null, datetimes -> ISO.
 
     Optional ``columns`` (non-empty list) restricts column meta and row cells
     to those names in that order; unknown names raise ``KeyParamsError``.
+
+    Optional view-only ``filter`` (exactly the ``filter_rows`` params:
+    ``{conditions: [{column, op, value}], combine: "and"|"or"}``) and ``sort``
+    (``[{column, desc}]``, stable, multi-key, NaN last) run on the full frame
+    after the steps and before paging; they never alter the workspace. ``total``
+    is the row count after the filter (what a pager uses), ``total_unfiltered``
+    the count before it; ``_rid`` stays the raw-frame position. Unknown
+    columns, bad ops or malformed specs raise ``KeyParamsError``.
     """
     return _inspect.workspace_rows(
         parse_workspace(ws),
@@ -272,6 +282,8 @@ def workspace_rows(
         offset=offset,
         limit=limit,
         columns=columns,
+        filter=filter,
+        sort=sort,
     )
 
 

@@ -40,6 +40,7 @@ from dtk_engine.ops.profile import (
     semantic_type,
 )
 from dtk_engine.ops.suggested import suggested_params as _suggested_params
+from dtk_engine.ops.transforms.cleaning import FilterRowsParams, _condition_mask
 from dtk_engine.sources import load
 from dtk_engine.workspace.dataset import cached_frame, raw_workspace_frame
 from dtk_engine.workspace.models import Step, Workspace
@@ -230,6 +231,59 @@ def _resolve_columns(
     return list(dict.fromkeys(columns))
 
 
+def _filter_view(df: pd.DataFrame, spec: Any) -> pd.DataFrame:
+    """Keep the rows matching ``spec`` (the ``filter_rows`` params shape)."""
+    if not isinstance(spec, dict):
+        raise KeyParamsError(f"workspace_rows: filter must be an object, got {spec!r}")
+    try:
+        params = FilterRowsParams.model_validate(spec)
+    except ValidationError as exc:
+        raise key_params_from_validation(exc, prefix="workspace_rows: filter: ") from exc
+    absent = [c.column for c in params.conditions if c.column not in df.columns]
+    if absent:
+        raise KeyParamsError(f"workspace_rows: filter columns not in the frame {absent}")
+    try:
+        masks = [_condition_mask(df, c) for c in params.conditions]
+    except (TypeError, ValueError) as exc:
+        raise KeyParamsError(f"workspace_rows: filter does not apply to the data: {exc}") from exc
+    combine = np.logical_and if params.combine == "and" else np.logical_or
+    return df[np.asarray(combine.reduce(masks), dtype=bool)]
+
+
+def _sort_keys(df: pd.DataFrame, sort: Any) -> list[tuple[str, bool]]:
+    if not isinstance(sort, list) or any(
+        not isinstance(k, dict) or not isinstance(k.get("column"), str) for k in sort
+    ):
+        raise KeyParamsError(
+            f"workspace_rows: sort must be a list of {{column, desc}}, got {sort!r}"
+        )
+    keys = []
+    for k in sort:
+        desc = k.get("desc", False)
+        if not isinstance(desc, bool):
+            raise KeyParamsError(f"workspace_rows: sort desc must be a bool, got {desc!r}")
+        keys.append((k["column"], desc))
+    absent = [c for c, _ in keys if c not in df.columns]
+    if absent:
+        raise KeyParamsError(f"workspace_rows: sort columns not in the frame {absent}")
+    return keys
+
+
+def _sort_view(df: pd.DataFrame, sort: Any) -> pd.DataFrame:
+    """Stable multi-key sort, NaN last in both directions (the index, i.e.
+    ``_rid``, travels with the rows)."""
+    keys = _sort_keys(df, sort)
+    try:
+        # Stable sorts from the least to the most significant key.
+        for column, desc in reversed(keys):
+            df = df.sort_values(
+                column, ascending=not desc, kind="stable", na_position="last"
+            )
+    except TypeError as exc:
+        raise KeyParamsError(f"workspace_rows: cannot sort mixed-type column: {exc}") from exc
+    return df
+
+
 def workspace_rows(
     ws: Workspace,
     role: str,
@@ -237,11 +291,18 @@ def workspace_rows(
     offset: int = 0,
     limit: int = 500,
     columns: list[str] | None = None,
+    filter: dict | None = None,
+    sort: list[dict] | None = None,
 ) -> dict:
     """Paged rows for ``role`` at ``version`` (None = all steps replayed).
 
     Optional ``columns`` (non-empty) restricts the page and column meta to those
     names in that order; unknown names raise ``KeyParamsError``.
+
+    Optional view-only ``filter`` (``filter_rows`` params: ``{conditions,
+    combine}``) then ``sort`` (``[{column, desc}]``, stable, NaN last) apply to
+    the full frame before paging; nothing is written. ``total`` counts the rows
+    after the filter, ``total_unfiltered`` before it; ``_rid`` is unchanged.
     """
     _check_role(role)
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
@@ -250,12 +311,18 @@ def workspace_rows(
         raise KeyParamsError(f"limit must be a positive int, got {limit!r}")
     df, n = _frame_at(ws, role, version)
     picked = _resolve_columns(df, columns, "workspace_rows")
+    total_unfiltered = len(df)
+    if filter is not None:
+        df = _filter_view(df, filter)
+    if sort:
+        df = _sort_view(df, sort)
     view = df[picked] if picked is not None else df
     page = view.iloc[offset : offset + limit]
     return {
         "columns": _column_meta(view),
         "rows": _records(page),
         "total": len(df),
+        "total_unfiltered": total_unfiltered,
         "version": n,
     }
 

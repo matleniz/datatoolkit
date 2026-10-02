@@ -632,3 +632,95 @@ def test_column_kind_mapping():
     # Below 90% distinct -> stay text even with an id-like name.
     low = pd.Series(["A", "A", "B", "B", "C"])
     assert column_kind(low, "customer_id") == "text"
+
+
+def _view_workspace(tmp_path):
+    train = tmp_path / "v_train.csv"
+    train.write_text(
+        "age,grp,Survived\n"
+        "30,b,0\n"
+        ",a,1\n"
+        "60,a,0\n"
+        "45,b,1\n"
+        "60,b,0\n"
+        "20,a,1\n"
+    )
+    return {
+        "name": "v",
+        "datasets": {
+            "train": {
+                "x": {"kind": "csv", "path": str(train)},
+                "target_column": "Survived",
+            },
+        },
+    }
+
+
+def test_workspace_rows_filter_total_and_rids(tmp_path):
+    ws = _view_workspace(tmp_path)
+    out = workspace_rows(
+        ws, "train", filter={"conditions": [{"column": "age", "op": "gt", "value": 40}]}
+    )
+    assert out["total"] == 3 and out["total_unfiltered"] == 6
+    assert [r["_rid"] for r in out["rows"]] == [2, 3, 4]
+    plain = workspace_rows(ws, "train")
+    assert plain["total"] == plain["total_unfiltered"] == 6
+
+
+def test_workspace_rows_filter_combine_or(tmp_path):
+    out = workspace_rows(
+        _view_workspace(tmp_path),
+        "train",
+        filter={
+            "combine": "or",
+            "conditions": [
+                {"column": "age", "op": "lt", "value": 25},
+                {"column": "age", "op": "isna"},
+            ],
+        },
+    )
+    assert [r["_rid"] for r in out["rows"]] == [1, 5]
+
+
+def test_workspace_rows_sort_stable_nan_last(tmp_path):
+    ws = _view_workspace(tmp_path)
+    asc = workspace_rows(ws, "train", sort=[{"column": "age"}])
+    assert [r["_rid"] for r in asc["rows"]] == [5, 0, 3, 2, 4, 1]
+    desc = workspace_rows(ws, "train", sort=[{"column": "age", "desc": True}])
+    assert [r["_rid"] for r in desc["rows"]] == [2, 4, 3, 0, 5, 1]
+    multi = workspace_rows(
+        ws, "train", sort=[{"column": "grp"}, {"column": "age", "desc": True}]
+    )
+    assert [r["_rid"] for r in multi["rows"]] == [2, 5, 1, 4, 3, 0]
+
+
+def test_workspace_rows_filter_sort_and_paging(tmp_path):
+    out = workspace_rows(
+        _view_workspace(tmp_path),
+        "train",
+        filter={"conditions": [{"column": "age", "op": "ge", "value": 30}]},
+        sort=[{"column": "age", "desc": True}],
+        offset=1,
+        limit=2,
+    )
+    assert out["total"] == 4 and out["total_unfiltered"] == 6
+    assert [r["_rid"] for r in out["rows"]] == [4, 3]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"filter": {"conditions": [{"column": "nope", "op": "eq", "value": 1}]}},
+        {"filter": {"conditions": [{"column": "age", "op": "like", "value": 1}]}},
+        {"filter": {"conditions": [{"column": "age", "op": "eq"}]}},
+        {"filter": {"conditions": []}},
+        {"filter": {"conditions": [{"column": "grp", "op": "gt", "value": 1}]}},
+        {"filter": "age > 3"},
+        {"sort": [{"column": "nope"}]},
+        {"sort": [{"column": "age", "desc": "yes"}]},
+        {"sort": "age"},
+    ],
+)
+def test_workspace_rows_view_bad_params(tmp_path, kwargs):
+    with pytest.raises(KeyParamsError):
+        workspace_rows(_view_workspace(tmp_path), "train", **kwargs)
