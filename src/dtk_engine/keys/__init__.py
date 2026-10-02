@@ -9,6 +9,7 @@ from . import (  # noqa: F401
     feature_selection,
     file_inspect,
     inconsistencies,
+    label_join_preview,
     missing_values,
     outliers,
     preprocessing_advisor,
