@@ -22,6 +22,7 @@ from claude_agent_sdk import (
 )
 
 from dtk_engine.agent.chat import AgentHub, ChatSession
+from dtk_engine.agent.commands import UI_COMMANDS
 from dtk_engine.agent.packs import agent_sdk
 from dtk_engine.ui_bridge import UiBridge
 
@@ -188,6 +189,15 @@ async def test_can_use_tool_allows_dtk_only_and_pins_session(fake):
     assert allowed.updated_input == {"ops": [], "session": "s1"}
     allowed = await adapter._can_use_tool("mcp__dtk__list_keys", {}, None)
     assert allowed.updated_input == {}
+
+
+async def test_every_ui_command_tool_is_allowed_with_session_pinned(fake):
+    _, _, adapter, client = await _started(fake, UiBridge("t"))
+    for spec in UI_COMMANDS.values():
+        allowed = await adapter._can_use_tool(f"mcp__dtk__{spec.tool_name}", {"x": 1}, None)
+        assert isinstance(allowed, PermissionResultAllow), spec.tool_name
+        assert allowed.updated_input == {"x": 1, "session": "s1"}
+        assert spec.tool_name in client.options.system_prompt
 
 
 def _stream(event: dict) -> StreamEvent:

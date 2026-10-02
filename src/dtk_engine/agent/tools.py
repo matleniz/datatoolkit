@@ -292,9 +292,14 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
     tools = [ToolSpec(n, d, s, _checked(h), ro) for n, d, s, h, ro in static]
     tools.extend(
         ToolSpec(
-            c.tool_name, c.description, c.input_schema,
+            c.tool_name, c.description, _with_session(c.input_schema),
             _checked(t.ui_command(c)), False,
         )
         for c in UI_COMMANDS.values()
     )
     return tools
+
+
+def _with_session(schema: dict) -> dict:
+    """A UI command's schema plus ``session`` (which Studio tab gets it)."""
+    return {**schema, "properties": {**schema.get("properties", {}), "session": _SESSION}}

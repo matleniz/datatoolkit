@@ -129,9 +129,28 @@ under `$DTK_HOME/workspaces`; `DTK_HOME` defaults to `~/.datatoolkit`.
 ## Agent (MCP)
 
 Optional extra `agent` (the official `mcp` SDK): the contract as MCP tools
-(keys, transforms, workspaces, rows / profiles) plus tools that drive the open
-Studio (`propose_steps`, `open_window`, `select_columns`, `set_view`). Reads are
-capped and path-scoped (`dtk_engine.agent.policy`).
+(keys, transforms, workspaces, rows / profiles) plus one tool per Studio
+command, which drives the open Studio. Reads are capped and path-scoped, and
+every call is audited (`dtk_engine.agent.policy`).
+
+| Studio tools | what changes in Studio |
+| --- | --- |
+| `propose_steps` | workspace steps (destructive ones wait for your review) |
+| `fill_editor`, `edit_step` | the step editor (you preview and Apply) |
+| `open_window`, `set_tool_params`, `set_dist_by`, `set_target` | analysis windows and their params, the target column |
+| `select_columns`, `pick_row`, `pick_cell`, `clear_selection` | the grid selection |
+| `set_view`, `set_grid_view` | role / version shown, view-only filter and sort |
+| `add_variable`, `draft_chart`, `add_chart` | workspace variables, the chart builder, saved charts |
+
+Each one is acked `{id, ok, error?, identity?}`. Studio applies it as one
+undoable change and highlights what it touched. The tools are generated from
+the command table `src/dtk_engine/agent/commands.py`, which matches Studio's
+parser (`datatoolkit-web/src/state/agentCommands.ts`). The same table backs the
+policy allow-list. `GET /api/ui/commands/schema` (same guard as `/api/ui`)
+publishes it as `{type: {input_schema, destructive}}`, so Studio can test its
+parser against it. With a web checkout (`DTK_WEB_DIR`, default
+`~/datatoolkit-web`), `tests/agent/test_web_contract.py` also checks the table
+against Studio's parser.
 
 ```bash
 uv sync --extra agent
