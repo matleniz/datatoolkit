@@ -126,10 +126,26 @@ CORS allows the Vite dev origins (`http://localhost:5173`,
 Uploads land under `$DTK_UPLOAD_DIR` (default `$DTK_HOME/uploads`), workspaces
 under `$DTK_HOME/workspaces`; `DTK_HOME` defaults to `~/.datatoolkit`.
 
+## Agent (MCP)
+
+Optional extra `agent` (the official `mcp` SDK): the contract as MCP tools
+(keys, transforms, workspaces, rows / profiles) plus tools that drive the open
+Studio (`propose_steps`, `open_window`, `select_columns`, `set_view`). Reads are
+capped and path-scoped (`dtk_engine.agent.policy`).
+
+```bash
+uv sync --extra agent
+uv run dtk-api        # serves /mcp too; token + url in $DTK_HOME/agent/runtime.json
+uv run dtk-mcp        # or: stdio server (UI tools reach the running dtk-api)
+```
+
+`/mcp` (and `/mcp/`) takes `Authorization: Bearer <token>` with the same
+Host / Origin checks as `/api/ui`. Without the extra, `dtk-api` has no `/mcp`.
+
 Develop:
 
 ```bash
-uv sync --extra api
+uv sync --extra api --extra agent
 uv run pytest
 uv run ruff check .
 ```

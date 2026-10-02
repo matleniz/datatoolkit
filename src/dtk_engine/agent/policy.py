@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from dtk_engine import contract
+from dtk_engine.agent import commands as _commands
 from dtk_engine.errors import KeyParamsError
 
 DEFAULT_ROWS = 50
 MAX_ROWS = 500
 MAX_RESPONSE_CHARS = 100_000  # default; env DTK_AGENT_MAX_CHARS overrides
-UI_COMMANDS = frozenset({"propose_steps", "open_window", "select_columns", "set_view"})
+UI_COMMANDS = frozenset(_commands.UI_COMMANDS)
 
 _WINDOWS_DRIVE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 _SECRET_KEYS = ("token", "secret", "password", "authorization", "api_key")

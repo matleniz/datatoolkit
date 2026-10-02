@@ -72,7 +72,7 @@ def test_detects_forbidden_edge(tmp_path):
     assert layer_violations(tmp_path) == ["ops/bad.py: ops -> keys (dtk_engine.keys)"]
 
 
-def test_ui_bridge_is_isolated_and_only_http_imports_it():
+def test_ui_bridge_is_isolated_and_only_http_and_agent_import_it():
     bridge = ROOT / "ui_bridge.py"
     imported = {m for m in _imports(bridge, ROOT) if m.startswith(PACKAGE)}
     assert imported == set(), "ui_bridge must stay pure asyncio + stdlib"
@@ -81,7 +81,7 @@ def test_ui_bridge_is_isolated_and_only_http_imports_it():
         for path in sorted(ROOT.rglob("*.py"))
         if path != bridge and f"{PACKAGE}.ui_bridge" in _imports(path, ROOT)
     ]
-    assert importers == ["http.py"]
+    assert importers == ["agent/ports.py", "agent/server.py", "http.py"]
 
 
 _AGENT_ALLOWED = {
@@ -105,4 +105,4 @@ def test_agent_layer_imports():
         if agent not in path.parents
         and any(m.startswith(f"{PACKAGE}.agent") for m in _imports(path, ROOT))
     ]
-    assert importers == []
+    assert importers == ["http.py"]
