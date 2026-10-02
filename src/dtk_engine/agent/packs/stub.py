@@ -1,26 +1,36 @@
-"""Stub pack: a scripted agent, no network, no CLI.
+"""Stub pack: a scripted agent, no network, no CLI. Two faces:
 
-``run_script`` drives an MCP ``Server`` through the SDK's in-memory ``Client``
-(``[{tool, args}]`` -> ``[{tool, is_error, result}]``). Used by the tests and the
-phase-3 end-to-end check.
+- ``PACK`` (registry, ``base.Pack``): ``run_script`` drives an MCP ``Server``
+  through the SDK's in-memory ``Client`` (``[{tool, args}]`` ->
+  ``[{tool, is_error, result}]``). Used by the tests and the phase-3
+  end-to-end check.
+- ``chat_pack()`` (in-Studio chat, ``chat.Pack``, ``DTK_AGENT_PACK=stub``):
+  scripted turns over the real dtk tools, for unit / e2e tests:
+
+  - text with ``permission`` -> ``permission_request`` first (deny -> failed
+    ``tool_result``, allow -> as ``add a step``);
+  - text with ``add a step`` -> ``propose_steps`` adding ``scale`` on ``age``
+    through the real MCP server and UI bridge (workspace / base_identity filled
+    from the Studio context), then a one-line reply;
+  - anything else -> echoed back.
+
+  Usage is fake but deterministic: 10 input + 5 output tokens per turn.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
 from mcp import Client
 
+from dtk_engine.agent import chat as _chat
 from dtk_engine.agent.packs.base import Pack
+from dtk_engine.agent.packs.chat_packs import parse_tool_text, tool_result_fields
 
-
-def _decode(text: str) -> Any:
-    try:
-        return json.loads(text)
-    except ValueError:
-        return text
+STEP = {"op": "scale", "target": "both", "params": {"columns": ["age"]}}
+TURN_USAGE = (10, 5)
 
 
 @dataclass(frozen=True)
@@ -38,7 +48,7 @@ class StubPack(Pack):
                 out.append({
                     "tool": step["tool"],
                     "is_error": bool(result.is_error),
-                    "result": _decode(texts[0]) if len(texts) == 1 else texts,
+                    "result": parse_tool_text(texts[0]) if len(texts) == 1 else texts,
                 })
         return out
 
@@ -51,3 +61,55 @@ PACK = StubPack(
     auth="none",
     cost="free: no model, no network",
 )
+
+
+class StubAdapter:
+    def __init__(self) -> None:
+        self.chat: _chat.ChatSession | None = None
+        self._calls = 0
+
+    async def start(self, chat: _chat.ChatSession) -> None:
+        self.chat = chat
+
+    async def send(self, text: str) -> str | None:
+        assert self.chat is not None
+        chat = self.chat
+        lowered = text.lower()
+        reply = f"stub: {text}"
+        if "permission" in lowered or "add a step" in lowered:
+            reply = await self._add_step(chat, ask="permission" in lowered)
+        await asyncio.sleep(0)  # a real pack yields between events; so does the stub
+        chat.emit("assistant_delta", text=reply)
+        chat.set_turn_usage(*TURN_USAGE)
+        return "end_turn"
+
+    async def _add_step(self, chat: _chat.ChatSession, *, ask: bool) -> str:
+        self._calls += 1
+        tool_id = f"stub-{self._calls}"
+        args: dict[str, Any] = {"ops": [{"add": {"step": STEP}}], "session": chat.session}
+        chat.emit("tool_call", id=tool_id, name="propose_steps", input=args)
+        if ask and not await chat.ask("propose_steps", args, "Add a step: scale age"):
+            chat.emit("tool_result", id=tool_id, ok=False, error="denied")
+            return "stub: not added (permission denied)"
+        async with Client(chat.mcp_server()) as client:
+            result = await client.call_tool("propose_steps", args)
+        text = "".join(getattr(c, "text", "") for c in result.content)
+        fields = tool_result_fields(parse_tool_text(text), is_error=bool(result.is_error))
+        chat.emit("tool_result", id=tool_id, **fields)
+        return "stub: added a scale step on age" if fields["ok"] else "stub: step not added"
+
+    async def cancel(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        self.chat = None
+
+
+def chat_pack() -> _chat.Pack:
+    return _chat.Pack(
+        id="stub",
+        provider=lambda: "stub (no network)",
+        model=lambda: "stub",
+        detect=lambda: None,
+        create=StubAdapter,
+    )

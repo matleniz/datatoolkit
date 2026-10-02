@@ -383,7 +383,8 @@ async def _sse_stream(
                 continue
             if cmd is None:  # bridge closing
                 return
-            yield f"event: command\ndata: {json.dumps(cmd)}\n\n"
+            event, data = cmd if isinstance(cmd, tuple) else ("command", cmd)
+            yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
     finally:
         bridge.remove_listener(session, queue)
 
@@ -434,6 +435,71 @@ async def get_ui_command(cid: str, request: Request):
     return status
 
 
+# -- in-Studio agent chat (/api/ui/agent): protocol in docs/agent-chat-protocol.md --
+
+_NO_AGENT_EXTRA = "extra agent not installed (uv sync --extra agent-sdk)"
+
+
+class AgentSession(BaseModel):
+    session: str
+
+
+class AgentSend(AgentSession):
+    text: str
+
+
+class AgentPermission(AgentSession):
+    id: str
+    allow: bool
+
+
+def _agent_hub(request: Request):
+    """The app's ``AgentHub`` (built in the lifespan), or None without the extra."""
+    return getattr(request.app.state, "agent_hub", None)
+
+
+@ui_router.get("/agent")
+def get_agent(request: Request, session: str | None = None) -> dict:
+    hub = _agent_hub(request)
+    if hub is None:
+        return {
+            "available": False, "pack": None, "reason": _NO_AGENT_EXTRA, "running": False,
+            "usage": {"input_tokens": 0, "output_tokens": 0}, "max_tokens": None,
+        }
+    return hub.status(session)
+
+
+@ui_router.post("/agent/send", status_code=202, response_model=None)
+async def post_agent_send(body: AgentSend, request: Request):
+    hub = _agent_hub(request)
+    if hub is None:
+        return _ui_error(503, "NoAgent", _NO_AGENT_EXTRA)
+    from dtk_engine.agent.chat import AgentBusyError, NoAgentError
+
+    await run_in_threadpool(hub.unavailable)  # first auth probe may spawn the CLI
+    try:
+        turn = hub.send(body.session, body.text)
+    except NoAgentError as exc:
+        return _ui_error(503, "NoAgent", str(exc))
+    except AgentBusyError as exc:
+        return _ui_error(409, "AgentBusy", str(exc))
+    return {"turn": turn}
+
+
+@ui_router.post("/agent/cancel")
+async def post_agent_cancel(body: AgentSession, request: Request) -> dict:
+    hub = _agent_hub(request)
+    return {"cancelled": bool(hub is not None and await hub.cancel(body.session))}
+
+
+@ui_router.post("/agent/permission", response_model=None)
+async def post_agent_permission(body: AgentPermission, request: Request):
+    hub = _agent_hub(request)
+    if hub is None or not hub.reply(body.session, body.id, body.allow):
+        return _ui_error(404, "UnknownPermission", f"no pending permission {body.id!r}")
+    return {"ok": True}
+
+
 _ERROR_STATUS: dict[type[Exception], int] = {
     **dict.fromkeys((UnknownKeyError, UnknownTransformError, WorkspaceNotFoundError), 404),
     **dict.fromkeys((KeyParamsError, SourceError), 422),
@@ -454,7 +520,9 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
     """
 
     bridge = UiBridge()
-    try:  # the optional extra ``agent`` adds the MCP endpoint; without it, no ``/mcp``
+    try:  # the optional extra ``agent`` adds ``/mcp`` and the chat hub; without it, neither
+        from dtk_engine.agent.packs.chat_packs import hub_from_env
+        from dtk_engine.agent.policy import AuditLog
         from dtk_engine.agent.server import mcp_http_app
     except ImportError:
         mcp_http_app = None
@@ -463,8 +531,12 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with AsyncExitStack() as stack:
             if mcp_http_app is not None:
-                app.state.mcp_app, mcp_lifespan = mcp_http_app(bridge)
+                audit = AuditLog()
+                app.state.mcp_app, mcp_lifespan = mcp_http_app(bridge, audit)
                 await stack.enter_async_context(mcp_lifespan)
+                # Built here, not at import: ``dtk-api --agent`` sets DTK_AGENT_PACK first.
+                app.state.agent_hub = hub_from_env(bridge, audit)
+                stack.push_async_callback(app.state.agent_hub.close)
             yield
             app.state.ui_bridge.close()
 
@@ -493,11 +565,18 @@ app = create_app()
 
 
 def main(argv: list[str] | None = None) -> None:
-    """CLI entry: ``dtk-api [--host HOST] [--port PORT]``."""
+    """CLI entry: ``dtk-api [--host HOST] [--port PORT] [--agent [PACK]]``."""
     parser = argparse.ArgumentParser(prog="dtk-api", description="datatoolkit HTTP API")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--agent", nargs="?", const="agent-sdk", metavar="PACK",
+        help="enable the in-Studio agent chat (pack: agent-sdk (default) or stub; "
+        "same as DTK_AGENT_PACK)",
+    )
     args = parser.parse_args(argv)
+    if args.agent:
+        os.environ["DTK_AGENT_PACK"] = args.agent
     import uvicorn
 
     # Runtime file: lets the Vite dev server and dtk-mcp find this run's token.

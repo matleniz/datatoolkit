@@ -171,6 +171,45 @@ choice) is your own session. Data egress: rows and profiles the agent reads
 go to that CLI's model provider, capped at 50 rows per call by default (500
 max). Destructive edits to a workspace still wait for your review in Studio.
 
+### Agent chat in Studio (`agent-sdk` pack)
+
+Extra `agent-sdk` adds a chat with Claude to Studio's agent panel. The engine
+runs the agent loop through `claude-agent-sdk`, which drives the Claude Code
+CLI as a subprocess. The agent gets **only** the dtk MCP tools above: built-in
+tools are off and settings, CLAUDE.md and the user's other MCP servers are not
+loaded. Destructive steps still wait for your review in Studio. Protocol:
+[`docs/agent-chat-protocol.md`](docs/agent-chat-protocol.md).
+
+```bash
+uv sync --extra agent-sdk
+uv run dtk-api --agent          # = DTK_AGENT_PACK=agent-sdk; then Studio: npm run dev
+# or Studio + engine in one process (Studio build with the agent panel):
+DTK_AGENT_PACK=agent-sdk uvx --from "git+https://github.com/matleniz/datatoolkit-web#subdirectory=launcher" \
+  --with "dtk-engine[agent-sdk] @ git+https://github.com/matleniz/datatoolkit" dtk-studio
+```
+
+Auth: the CLI's own. DTK never reads or stores a credential. The CLI is
+`DTK_AGENT_CLI`, else `claude` on PATH, else the one bundled in the SDK wheel;
+all of them use the same `~/.claude` login. With `ANTHROPIC_API_KEY` (or
+Bedrock / Vertex / Foundry env) set, that is used. Otherwise it is your own
+`claude` login (`claude` then `/login`). `GET /api/ui/agent` says which one
+(`claude auth status`, cached). Anthropic's terms
+(<https://code.claude.com/docs/en/legal-and-compliance>, checked 2026-10-03)
+allow a user to sign in to the unmodified Claude Code binary with **their
+own** subscription. Agent SDK use on a Pro / Max plan counts against that
+plan's usage limits
+(<https://support.claude.com/en/articles/15036540>). Developers must not offer
+claude.ai login to *other* users of their product or route their requests
+through it. So: your own machine and your own login are fine. Anyone you ship
+this to brings their own login or `ANTHROPIC_API_KEY`.
+
+Env: `DTK_AGENT_PACK` (`agent-sdk`, `stub`; unset = off),
+`DTK_AGENT_MAX_TOKENS` (per Studio session, input + output, cache reads
+included; stops the turn), `DTK_AGENT_MODEL` (default: the CLI's),
+`DTK_AGENT_MAX_TURNS` (default 25 tool round trips per message),
+`DTK_AGENT_CLI`. The `stub` pack (`dtk-api --agent stub`) is scripted and
+makes no network calls; Studio's e2e tests use it.
+
 Develop:
 
 ```bash

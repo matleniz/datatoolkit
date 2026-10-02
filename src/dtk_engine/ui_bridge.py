@@ -10,6 +10,10 @@ It holds, in memory only (never on disk, never in the workspace JSON):
 - the SSE listeners per session (one ``asyncio.Queue`` each);
 - the pending commands (id -> future) resolved by Studio's ack.
 
+``emit(session, event, data)`` pushes any other named SSE event to a
+session's listeners (``event: agent`` = the chat protocol of
+``dtk_engine.agent.chat``); fire-and-forget, dropped when nobody listens.
+
 ``send_command`` is the Python API for the MCP layer: it relays a command to
 the target session's listeners and returns the ack dict
 ``{id, ok, error?, identity?}``. Bridge-made failures: ``no_studio`` (no live
@@ -129,6 +133,13 @@ class UiBridge:
 
     def has_listener(self, session: str) -> bool:
         return bool(self._listeners.get(session))
+
+    def emit(self, session: str, event: str, data: dict) -> bool:
+        """Queue SSE ``event`` with ``data`` for ``session``; False when nobody listens."""
+        queues = self._listeners.get(session, [])
+        for queue in queues:
+            queue.put_nowait((event, data))
+        return bool(queues)
 
     def close(self) -> None:
         """Server shutdown: wake every listener (``None`` sentinel) and fail pending."""
