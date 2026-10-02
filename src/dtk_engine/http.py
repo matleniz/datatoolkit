@@ -8,17 +8,22 @@ per-key logic. Install with ``pip install 'dtk-engine[api]'`` (or
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
+import json
 import os
+import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path, PurePath
 
 # FastAPI is an optional dependency; keep the import inside this module so
 # ``import dtk_engine`` still works without the ``api`` extra.
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
-from pydantic import ValidationError
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from dtk_engine import contract
 from dtk_engine.errors import (
@@ -29,6 +34,7 @@ from dtk_engine.errors import (
     message_from_validation_details,
     validation_error_details,
 )
+from dtk_engine.ui_bridge import UiBridge, allowed_hosts, host_name
 from dtk_engine.workspace import WorkspaceNotFoundError
 
 
@@ -236,6 +242,136 @@ async def put_upload(filename: str, request: Request) -> dict:
     return {"path": str(path)}
 
 
+# -- UI bridge (/api/ui): Studio <-> agent relay, guarded by token/Origin/Host --
+
+
+class _UiGuardError(Exception):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+async def _ui_guard_response(_request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, _UiGuardError)
+    body = {"type": "UiBridgeError", "message": str(exc), "details": None}
+    return JSONResponse(status_code=exc.status, content=body)
+
+
+def _bridge(request: Request) -> UiBridge:
+    return request.app.state.ui_bridge
+
+
+def _presented_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.query_params.get("token", "")
+
+
+def _ui_guard(request: Request) -> None:
+    """Router dependency: Host (DNS rebinding), Origin, then token."""
+    if host_name(request.headers.get("host", "")) not in allowed_hosts():
+        raise _UiGuardError(403, "host not allowed")
+    origin = request.headers.get("origin")
+    if origin is not None:
+        same = f"{request.url.scheme}://{request.headers.get('host', '')}"
+        if origin != same and origin not in _cors_origins():
+            raise _UiGuardError(403, "origin not allowed")
+    presented = _presented_token(request).encode()
+    if not secrets.compare_digest(presented, _bridge(request).token.encode()):
+        raise _UiGuardError(401, "missing or invalid UI token")
+
+
+_MAX_COMMAND_TIMEOUT = 120.0
+
+ui_router = APIRouter(prefix="/api/ui", dependencies=[Depends(_ui_guard)])
+
+
+class UiContext(BaseModel):
+    """Studio's published view state; only ``session`` is required."""
+
+    model_config = ConfigDict(extra="allow")
+    session: str
+
+
+class UiAck(BaseModel):
+    id: str
+    ok: bool
+    error: str | None = None
+    identity: str | None = None
+
+
+def _ui_error(status: int, type_: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status, content={"type": type_, "message": message, "details": None}
+    )
+
+
+@ui_router.put("/context", status_code=204)
+async def put_ui_context(context: UiContext, request: Request) -> Response:
+    _bridge(request).put_context(context.model_dump(exclude_unset=True))
+    return Response(status_code=204)
+
+
+@ui_router.get("/context", response_model=None)
+async def get_ui_context(request: Request, session: str | None = None):
+    context = _bridge(request).get_context(session)
+    if context is None:
+        return _ui_error(404, "NoUiContext", "no UI context published")
+    return context
+
+
+async def _sse_stream(
+    request: Request, bridge: UiBridge, session: str, ping_interval: float
+) -> AsyncIterator[str]:
+    queue = bridge.add_listener(session)
+    try:
+        yield ": connected\n\n"
+        while not await request.is_disconnected():
+            try:
+                cmd = await asyncio.wait_for(queue.get(), ping_interval)
+            except TimeoutError:
+                yield ": ping\n\n"
+                continue
+            if cmd is None:  # bridge closing
+                return
+            yield f"event: command\ndata: {json.dumps(cmd)}\n\n"
+    finally:
+        bridge.remove_listener(session, queue)
+
+
+@ui_router.get("/events")
+async def get_ui_events(request: Request, session: str) -> StreamingResponse:
+    stream = _sse_stream(request, _bridge(request), session, request.app.state.ui_ping_interval)
+    return StreamingResponse(
+        stream,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@ui_router.post("/ack", response_model=None)
+async def post_ui_ack(ack: UiAck, request: Request):
+    if not _bridge(request).ack(ack.model_dump()):
+        return _ui_error(404, "UnknownCommand", f"no pending command {ack.id!r}")
+    return {"ok": True}
+
+
+@ui_router.post("/commands")
+async def post_ui_command(request: Request) -> dict:
+    body = await _body(request, "type", message="body must be {type: ..., ...}")
+    session = request.query_params.get("session") or body.pop("session", None)
+    try:
+        timeout = float(request.query_params.get("timeout") or body.pop("timeout", 30.0))
+    except (TypeError, ValueError):
+        raise KeyParamsError("timeout must be a number") from None
+    body.pop("timeout", None)
+    body.pop("session", None)
+    return await _bridge(request).send_command(
+        body, session=session, timeout=min(max(timeout, 0.0), _MAX_COMMAND_TIMEOUT)
+    )
+
+
 _ERROR_STATUS: dict[type[Exception], int] = {
     **dict.fromkeys((UnknownKeyError, UnknownTransformError, WorkspaceNotFoundError), 404),
     **dict.fromkeys((KeyParamsError, SourceError), 422),
@@ -248,17 +384,31 @@ async def _error_response(_request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=status, content=_error_body(exc))
 
 
-def create_app() -> FastAPI:
-    """Build the FastAPI app (CORS + contract routes under ``/api``)."""
-    application = FastAPI(title="dtk-api", docs_url=None, redoc_url=None)
+def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
+    """Build the FastAPI app (CORS, contract routes under ``/api``, UI bridge ``/api/ui``).
+
+    One ``UiBridge`` per app, at ``app.state.ui_bridge`` (``.token`` is the
+    per-run token the Studio launcher hands to the front).
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        yield
+        app.state.ui_bridge.close()
+
+    application = FastAPI(title="dtk-api", docs_url=None, redoc_url=None, lifespan=lifespan)
+    application.state.ui_bridge = UiBridge()
+    application.state.ui_ping_interval = ui_ping_interval
     application.add_middleware(
         CORSMiddleware, allow_origins=_cors_origins(), allow_credentials=True,
         allow_methods=["*"], allow_headers=["*"],
     )
     for exc_type in _ERROR_STATUS:
         application.add_exception_handler(exc_type, _error_response)
+    application.add_exception_handler(_UiGuardError, _ui_guard_response)
     for router in (
-        keys_router, transforms_router, workspaces_router, studio_router, uploads_router
+        keys_router, transforms_router, workspaces_router, studio_router, uploads_router,
+        ui_router,
     ):
         application.include_router(router)
     return application
@@ -275,7 +425,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     import uvicorn
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    # SSE streams never end by themselves: cap the graceful wait so Ctrl-C exits.
+    uvicorn.run(app, host=args.host, port=args.port, timeout_graceful_shutdown=2)
 
 
 if __name__ == "__main__":
