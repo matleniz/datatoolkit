@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "dtk": {
+      "type": "stdio",
+      "command": "/py",
+      "args": [
+        "-m",
+        "dtk_engine.agent.cli"
+      ]
+    }
+  }
+}

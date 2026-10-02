@@ -1,0 +1,1 @@
+gemini --skip-trust --allowed-mcp-server-names dtk

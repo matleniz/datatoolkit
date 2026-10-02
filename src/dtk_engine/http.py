@@ -420,6 +420,12 @@ async def post_ui_command(request: Request) -> dict:
     )
 
 
+@ui_router.get("/sessions")
+async def get_ui_sessions(request: Request) -> list[dict]:
+    """Known Studio sessions (``dtk-mcp doctor``: is a Studio tab listening?)."""
+    return _bridge(request).sessions()
+
+
 @ui_router.get("/commands/{cid}", response_model=None)
 async def get_ui_command(cid: str, request: Request):
     status = _bridge(request).command_status(cid)

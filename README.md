@@ -142,6 +142,35 @@ uv run dtk-mcp        # or: stdio server (UI tools reach the running dtk-api)
 `/mcp` (and `/mcp/`) takes `Authorization: Bearer <token>` with the same
 Host / Origin checks as `/api/ui`. Without the extra, `dtk-api` has no `/mcp`.
 
+### Plug an agent
+
+Run your own agent CLI next to Studio, wired to the `dtk` server only:
+
+```bash
+uv sync --extra agent
+uv run dtk-api                                          # keep it running, open Studio
+uv run dtk-mcp config claude-code --write ~/dtk-agent   # then run the printed command
+uv run dtk-mcp doctor                                   # engine up? token valid? Studio? CLIs?
+```
+
+Packs: `claude-code`, `gemini`, `opencode` (and `stub`, scripted, for tests).
+Without `--write` the files and the command are printed; `--write` never
+overwrites an existing file unless `--force`. The config launches the stdio
+server with this env's interpreter: no token in any file, it survives
+`dtk-api` restarts. `--http` points at the running `/mcp` with this run's
+token instead (needs a running engine; valid until it stops).
+
+| pack | file | launch | turned off |
+| --- | --- | --- | --- |
+| `claude-code` | `dtk.mcp.json` | `claude --strict-mcp-config --mcp-config …/dtk.mcp.json --tools '' --allowedTools 'mcp__dtk__*'` | every built-in tool, every other MCP server |
+| `gemini` | `.gemini/settings.json` | `cd <dir> && gemini --skip-trust --allowed-mcp-server-names dtk` | shell, file read / write / edit, web, subagents, skills (`tools.exclude`); other MCP servers |
+| `opencode` | `opencode.json` | `cd <dir> && opencode` | every built-in tool and other MCP servers' tools (`permission: {"*": "deny", "dtk_*": "allow"}`) |
+
+What a CLI cannot turn off (its own settings, memory files, hooks, model
+choice) is your own session. Data egress: rows and profiles the agent reads
+go to that CLI's model provider, capped at 50 rows per call by default (500
+max). Destructive edits to a workspace still wait for your review in Studio.
+
 Develop:
 
 ```bash

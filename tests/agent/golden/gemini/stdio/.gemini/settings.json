@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "dtk": {
+      "command": "/py",
+      "args": [
+        "-m",
+        "dtk_engine.agent.cli"
+      ],
+      "trust": true
+    }
+  },
+  "mcp": {
+    "allowed": [
+      "dtk"
+    ]
+  },
+  "tools": {
+    "exclude": [
+      "run_shell_command",
+      "write_file",
+      "replace",
+      "read_file",
+      "read_many_files",
+      "list_directory",
+      "glob",
+      "grep_search",
+      "web_fetch",
+      "google_web_search",
+      "invoke_agent",
+      "activate_skill",
+      "write_todos"
+    ]
+  }
+}
