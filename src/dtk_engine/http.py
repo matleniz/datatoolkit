@@ -29,6 +29,7 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from dtk_engine import contract
+from dtk_engine.agent.commands import command_schemas
 from dtk_engine.errors import (
     KeyParamsError,
     SourceError,
@@ -425,6 +426,15 @@ async def post_ui_command(request: Request) -> dict:
 async def get_ui_sessions(request: Request) -> list[dict]:
     """Known Studio sessions (``dtk-mcp doctor``: is a Studio tab listening?)."""
     return _bridge(request).sessions()
+
+
+@ui_router.get("/commands/schema")
+async def get_ui_command_schema() -> dict:
+    """``{type: {input_schema, destructive}}``: the UI commands agents may send.
+
+    Declared before ``/commands/{cid}`` so it is not read as a command id.
+    """
+    return command_schemas()
 
 
 @ui_router.get("/commands/{cid}", response_model=None)
