@@ -82,3 +82,27 @@ def test_ui_bridge_is_isolated_and_only_http_imports_it():
         if path != bridge and f"{PACKAGE}.ui_bridge" in _imports(path, ROOT)
     ]
     assert importers == ["http.py"]
+
+
+_AGENT_ALLOWED = {
+    f"{PACKAGE}.contract",
+    f"{PACKAGE}.ui_bridge",
+    f"{PACKAGE}.errors",
+}
+
+
+def test_agent_layer_imports():
+    agent = ROOT / "agent"
+    for path in sorted(agent.rglob("*.py")):
+        for target in _imports(path, ROOT):
+            if not target.startswith(PACKAGE) or target == PACKAGE:
+                continue
+            ok = target in _AGENT_ALLOWED or target.startswith(f"{PACKAGE}.agent")
+            assert ok, f"{path.relative_to(ROOT)} imports {target}"
+    importers = [
+        path.relative_to(ROOT).as_posix()
+        for path in sorted(ROOT.rglob("*.py"))
+        if agent not in path.parents
+        and any(m.startswith(f"{PACKAGE}.agent") for m in _imports(path, ROOT))
+    ]
+    assert importers == []
