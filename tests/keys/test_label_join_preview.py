@@ -119,3 +119,13 @@ def test_notebook_api_on_dataframes():
     res = api.label_join_preview(x, y)
     assert res.metrics["recommended_mode"] == "none"
     assert res.metrics["n_key_candidates"] == 1
+
+
+def test_dtype_mismatch_issue():
+    from dtk_engine.keys.label_join_preview import preview_result
+
+    x = pd.DataFrame({"id": [1, 2, 3], "a": [1, 2, 3]})
+    y = pd.DataFrame({"id": ["1", "2", "3"], "label": [0, 1, 0]})
+    result = preview_result(x, y)
+    issues = next(t for t in result.tables if t.title == "issues")
+    assert "dtype_mismatch" in {r["check"] for r in issues.records}

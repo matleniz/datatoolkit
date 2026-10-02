@@ -174,6 +174,14 @@ def _key_issues(d: dict, level: str, add) -> None:
                 cand,
                 f"{d[f'{side}_missing']} missing key value(s) in {side.upper() if side == 'x' else side}",
             )
+    if d["dtype_mismatch"]:
+        add(
+            "warning",
+            "dtype_mismatch",
+            cand,
+            f"key dtype differs: X is {d['x_dtype']}, y is {d['y_dtype']} "
+            "(cast one side so the values can match)",
+        )
     if d["clashing_columns"]:
         add(
             level,

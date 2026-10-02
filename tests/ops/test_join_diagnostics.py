@@ -56,3 +56,19 @@ def test_order_diagnostics_never_raises_on_multi_value_y():
     d = order_diagnostics(x, y)
     assert d["would_join"] is False
     assert d["value_error"]
+
+
+def test_key_diagnostics_dtype_mismatch_does_not_raise():
+    x = pd.DataFrame({"id": [1, 2, 3], "a": [1, 2, 3]})
+    y = pd.DataFrame({"id": ["1", "2", "3"], "label": [0, 1, 0]})
+    d = key_diagnostics(x, y, "id")
+    assert d["dtype_mismatch"] is True
+    assert d["match_x_to_y"] == 0 and d["match_y_to_x"] == 0
+    assert d["result_rows"] == 3 and d["would_join"] is False
+
+
+def test_key_diagnostics_result_rows_counts_duplicates_and_nan():
+    x = pd.DataFrame({"id": [1, 2, None], "a": [1, 2, 3]})
+    y = pd.DataFrame({"id": [1, 1, None, 5.0], "label": [0, 1, 0, 1]})
+    d = key_diagnostics(x, y, "id")
+    assert d["result_rows"] == len(x.merge(y[["id"]], on="id", how="left"))
