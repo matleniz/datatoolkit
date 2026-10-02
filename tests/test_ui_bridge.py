@@ -315,3 +315,129 @@ def test_server_shutdown_with_open_stream():
             srv.server.should_exit = True
             srv.thread.join(timeout=10)
             assert not srv.thread.is_alive()
+
+
+# -- reviews: interim ack + command status (datatoolkit-issues#95) ---------
+
+
+async def _send_and_get(bridge: UiBridge, queue: asyncio.Queue, **kwargs):
+    task = asyncio.create_task(bridge.send_command({"type": "propose_steps"}, **kwargs))
+    cmd = await asyncio.wait_for(queue.get(), 1)
+    return task, cmd["id"]
+
+
+def test_interim_ack_returns_pending_then_final_ack_is_kept():
+    async def scenario():
+        bridge = UiBridge("t")
+        queue = bridge.add_listener("s")
+        task, cid = await _send_and_get(bridge, queue, timeout=5)
+        assert bridge.ack({"id": cid, "pending": "review"})
+        assert await asyncio.wait_for(task, 1) == {"id": cid, "ok": None, "pending": "review"}
+        assert bridge.command_status(cid) == {"id": cid, "ok": None, "pending": "review"}
+        assert bridge.ack({"id": cid, "pending": "review"})  # repeated interim: harmless
+        assert bridge.ack({"id": cid, "ok": True, "identity": "ws|train|v3|ab", "error": None})
+        assert bridge.command_status(cid) == {"id": cid, "ok": True, "identity": "ws|train|v3|ab"}
+        assert not bridge.ack({"id": cid, "ok": True})  # already final
+
+    asyncio.run(scenario())
+
+
+def test_review_deadline_reads_as_timeout():
+    async def scenario():
+        bridge = UiBridge("t", review_timeout=0.05)
+        queue = bridge.add_listener("s")
+        task, cid = await _send_and_get(bridge, queue, timeout=5)
+        bridge.ack({"id": cid, "pending": "review"})
+        await task
+        await asyncio.sleep(0.1)
+        assert bridge.command_status(cid) == {"id": cid, "ok": False, "error": "timeout"}
+        assert not bridge.ack({"id": cid, "ok": True})
+
+    asyncio.run(scenario())
+
+
+def test_listener_drop_during_review_is_no_studio():
+    async def scenario():
+        bridge = UiBridge("t")
+        queue = bridge.add_listener("s")
+        task, cid = await _send_and_get(bridge, queue, timeout=5)
+        bridge.ack({"id": cid, "pending": "review"})
+        await task
+        bridge.remove_listener("s", queue)
+        assert bridge.command_status(cid) == {"id": cid, "ok": False, "error": "no_studio"}
+
+    asyncio.run(scenario())
+
+
+def test_status_of_plain_commands_and_unknown():
+    async def scenario():
+        bridge = UiBridge("t")
+        assert bridge.command_status("nope") is None
+        queue = bridge.add_listener("s")
+        task, cid = await _send_and_get(bridge, queue, timeout=0.05)
+        assert (await task)["error"] == "timeout"
+        assert bridge.command_status(cid) == {"id": cid, "ok": False, "error": "timeout"}
+        task, cid = await _send_and_get(bridge, queue, timeout=5)
+        bridge.ack({"id": cid, "ok": False, "error": "stale"})
+        await task
+        assert bridge.command_status(cid) == {"id": cid, "ok": False, "error": "stale"}
+
+    asyncio.run(scenario())
+
+
+def test_review_id_cannot_be_reused():
+    async def scenario():
+        bridge = UiBridge("t")
+        queue = bridge.add_listener("s")
+        task = asyncio.create_task(bridge.send_command({"type": "x", "id": "r1"}, timeout=5))
+        await asyncio.wait_for(queue.get(), 1)
+        bridge.ack({"id": "r1", "pending": "review"})
+        await task
+        again = await bridge.send_command({"type": "x", "id": "r1"}, timeout=0.05)
+        assert again == {"id": "r1", "ok": False, "error": "duplicate_id"}
+
+    asyncio.run(scenario())
+
+
+def test_ack_needs_exactly_one_of_ok_pending(client):
+    for body in ({"id": "x"}, {"id": "x", "ok": True, "pending": "review"},
+                 {"id": "x", "pending": "later"}):
+        assert client.post("/api/ui/ack", json=body, headers=AUTH).status_code == 422
+
+
+def test_command_status_route_unknown_404_and_guarded(client):
+    r = client.get("/api/ui/commands/nope", headers=AUTH)
+    assert r.status_code == 404
+    assert r.json()["type"] == "UnknownCommand"
+    assert client.get("/api/ui/commands/nope").status_code == 401
+
+
+def test_review_over_http_round_trip():
+    with Server() as srv:
+        client, cm = _open_stream(srv)
+        with client, cm as resp:
+            lines = resp.iter_lines()
+            _read_until(lines, lambda line: line.startswith(": connected"))
+            results: list = []
+            t = threading.Thread(
+                target=_post_command, args=(srv, {"type": "propose_steps"}, results),
+                kwargs={"timeout": "20"},
+            )
+            t.start()
+            cid = json.loads(
+                _read_until(lines, lambda line: line.startswith("data:")).removeprefix("data: ")
+            )["id"]
+            interim = httpx.post(
+                f"{srv.url}/api/ui/ack", json={"id": cid, "pending": "review"},
+                headers=AUTH, timeout=5,
+            )
+            assert interim.status_code == 200
+            t.join(timeout=10)
+            assert results[0].json() == {"id": cid, "ok": None, "pending": "review"}
+            final = httpx.post(
+                f"{srv.url}/api/ui/ack", json={"id": cid, "ok": True, "identity": "i2"},
+                headers=AUTH, timeout=5,
+            )
+            assert final.status_code == 200
+            status = httpx.get(f"{srv.url}/api/ui/commands/{cid}", headers=AUTH, timeout=5)
+            assert status.json() == {"id": cid, "ok": True, "identity": "i2"}

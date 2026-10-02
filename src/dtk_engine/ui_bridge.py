@@ -16,6 +16,15 @@ the target session's listeners and returns the ack dict
 listener, or the listener went away before acking) and ``timeout``. A
 ``stale`` ack is just an ack Studio sends; it is passed through.
 
+Reviews (a command Studio holds for the user, e.g. a destructive
+``propose_steps``): Studio first sends an **interim** ack ``{id, pending:
+"review"}``; ``send_command`` then returns at once ``{id, ok: None, pending:
+"review"}`` and the command waits in the reviews table until Studio's final
+ack (accepted however late) or the review deadline (``DTK_UI_REVIEW_TIMEOUT``
+seconds, default 900 -> ``timeout``; listener gone -> ``no_studio``).
+``command_status(id)`` answers for any recent id (last 200 final results):
+the final ack, the ``pending`` dict while under review, or None if unknown.
+
 Access guard (applied by ``http.py`` on every ``/api/ui/*`` route):
 
 - per-run token: ``DTK_UI_TOKEN`` if set, else ``secrets.token_urlsafe(32)``
@@ -44,10 +53,23 @@ import json
 import os
 import secrets
 import tempfile
+import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
 
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+DEFAULT_REVIEW_TIMEOUT = 900.0
+MAX_RESULTS = 200
+
+
+def review_timeout_from_env() -> float:
+    """``DTK_UI_REVIEW_TIMEOUT`` seconds (positive number), else 900."""
+    try:
+        value = float(os.environ.get("DTK_UI_REVIEW_TIMEOUT", ""))
+    except ValueError:
+        return DEFAULT_REVIEW_TIMEOUT
+    return value if value > 0 else DEFAULT_REVIEW_TIMEOUT
 
 
 def allowed_hosts() -> set[str]:
@@ -67,11 +89,14 @@ def host_name(host_header: str) -> str:
 class UiBridge:
     """Context store, SSE listener registry and command / ack relay."""
 
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(self, token: str | None = None, *, review_timeout: float | None = None) -> None:
         self.token: str = token or os.environ.get("DTK_UI_TOKEN") or secrets.token_urlsafe(32)
+        self.review_timeout = review_timeout or review_timeout_from_env()
         self._contexts: dict[str, dict] = {}  # insertion order = recency (last PUT last)
         self._listeners: dict[str, list[asyncio.Queue]] = {}
         self._pending: dict[str, tuple[asyncio.Future, str]] = {}
+        self._reviews: dict[str, tuple[str, float]] = {}  # id -> (session, deadline)
+        self._results: OrderedDict[str, dict] = OrderedDict()  # final, most recent last
         self._ids = itertools.count(1)
         self._closed = False
 
@@ -111,7 +136,8 @@ class UiBridge:
         for queues in self._listeners.values():
             for queue in queues:
                 queue.put_nowait(None)
-        for session in {s for _, s in self._pending.values()}:
+        sessions = {s for _, s in self._pending.values()} | {s for s, _ in self._reviews.values()}
+        for session in sessions:
             self._fail_pending(session, "no_studio")
 
     def target_session(self, session: str | None = None) -> str | None:
@@ -128,14 +154,46 @@ class UiBridge:
         for cid, (future, target) in list(self._pending.items()):
             if target == session and not future.done():
                 future.set_result({"id": cid, "ok": False, "error": error})
+        for cid, (target, _) in list(self._reviews.items()):
+            if target == session:
+                del self._reviews[cid]
+                self._record({"id": cid, "ok": False, "error": error})
+
+    def _record(self, result: dict) -> None:
+        self._results.pop(result["id"], None)
+        self._results[result["id"]] = result
+        while len(self._results) > MAX_RESULTS:
+            self._results.popitem(last=False)
 
     def ack(self, ack: dict) -> bool:
-        """Resolve the pending command ``ack["id"]``; False when the id is unknown."""
-        entry = self._pending.get(ack["id"])
+        """Resolve command ``ack["id"]`` (interim ``pending`` or final); False when unknown."""
+        cid = ack["id"]
+        final = {k: v for k, v in ack.items() if v is not None and k != "pending"}
+        if cid in self._reviews:
+            if ack.get("pending") is None:
+                del self._reviews[cid]
+                self._record(final)
+            return True
+        entry = self._pending.get(cid)
         if entry is None or entry[0].done():
             return False
-        entry[0].set_result({k: v for k, v in ack.items() if v is not None})
+        future, session = entry
+        if ack.get("pending") is not None:
+            self._reviews[cid] = (session, time.monotonic() + self.review_timeout)
+            future.set_result({"id": cid, "ok": None, "pending": ack["pending"]})
+        else:
+            future.set_result(final)
         return True
+
+    def command_status(self, cid: str) -> dict | None:
+        """Final result of a recent command, ``pending`` while under review, else None."""
+        review = self._reviews.get(cid)
+        if review is not None:
+            if time.monotonic() < review[1]:
+                return {"id": cid, "ok": None, "pending": "review"}
+            del self._reviews[cid]
+            self._record({"id": cid, "ok": False, "error": "timeout"})
+        return self._results.get(cid)
 
     async def send_command(
         self, cmd: dict, *, session: str | None = None, timeout: float = 30.0
@@ -145,19 +203,22 @@ class UiBridge:
         target = self.target_session(session)
         if target is None:
             return {"id": cid, "ok": False, "error": "no_studio"}
-        if cid in self._pending:
+        if cid in self._pending or cid in self._reviews:
             return {"id": cid, "ok": False, "error": "duplicate_id"}
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[cid] = (future, target)
         try:
             for queue in self._listeners[target]:
                 queue.put_nowait({**cmd, "id": cid})
-            return await asyncio.wait_for(future, timeout)
+            result = await asyncio.wait_for(future, timeout)
         except TimeoutError:
-            return {"id": cid, "ok": False, "error": "timeout"}
+            result = {"id": cid, "ok": False, "error": "timeout"}
         finally:
             self._pending.pop(cid, None)
             future.cancel()
+        if cid not in self._reviews:
+            self._record(result)
+        return result
 
 
 # -- runtime file ($DTK_HOME/agent/runtime.json) ---------------------------
