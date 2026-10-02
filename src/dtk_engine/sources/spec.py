@@ -21,8 +21,21 @@ class CsvSource(BaseModel):
         default="auto",
         description='Decimal mark; "auto" picks "," for non-comma files full of 1,5 values',
     )
+    skiprows: int | Literal["auto"] = Field(
+        default=0,
+        description="Junk lines (title, metadata, blank) dropped from the top of "
+        'the file before parsing; "auto" detects them (up to the first line whose '
+        "field count matches the body). `header` counts after the skip",
+    )
     header: int | None = Field(
         default=0, description="Row number of the header; null = no header"
+    )
+    mixed_sep: Literal["error", "normalize", "ignore"] = Field(
+        default="error",
+        description="Lines using another delimiter than `sep` (e.g. ';' lines in a "
+        "',' file): \"error\" fails naming the lines, \"normalize\" rewrites them to "
+        'the file delimiter when safe (still an error when ambiguous), "ignore" '
+        "loads as pandas would",
     )
     na_values: list[str] | None = Field(
         default=None, description="Extra strings read as missing"

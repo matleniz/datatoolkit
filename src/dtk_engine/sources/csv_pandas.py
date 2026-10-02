@@ -10,6 +10,7 @@ import re
 import sys
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -35,6 +36,10 @@ _CSV_ERRORS = [
     ),
     ("unexpected end of data", "unclosed quote"),
 ]
+
+# Lines read to find the junk lines above the header, and the longest one allowed.
+JUNK_SCAN = 200
+MAX_LISTED_LINES = 10
 
 _WINDOWS_DRIVE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 
@@ -194,6 +199,198 @@ def _csv_error_record(reader, exc: csv.Error) -> tuple[int, str] | None:
     return reader.line_num, message
 
 
+class MixedSeparatorError(SourceError):
+    """Some lines use another delimiter than the file's; ``lines`` are 1-based."""
+
+    def __init__(self, message: str, lines: list[int]) -> None:
+        super().__init__(message)
+        self.lines = lines
+
+
+@dataclass
+class MixedReport:
+    """Lines of a csv body that fit another delimiter than ``sep``.
+
+    ``counts``: delimiter -> lines using it (``sep``: lines with the modal field
+    count). ``lines``: alt delimiter -> 1-based offending lines. ``unsafe``: the
+    offending lines that cannot be rewritten without guessing (they also hold
+    ``sep``, or a quote).
+    """
+
+    sep: str
+    fields: int = 0
+    counts: dict[str, int] = field(default_factory=dict)
+    lines: dict[str, list[int]] = field(default_factory=dict)
+    unsafe: list[int] = field(default_factory=list)
+
+    @property
+    def offending(self) -> list[int]:
+        return sorted(n for nums in self.lines.values() for n in nums)
+
+
+def drop_lines(text: str, count: int) -> str:
+    """``text`` without its first ``count`` physical lines."""
+    pos = 0
+    for _ in range(count):
+        nxt = text.find("\n", pos)
+        if nxt < 0:
+            return ""
+        pos = nxt + 1
+    return text[pos:]
+
+
+def detect_junk(lines: list[str], seps: str) -> tuple[int, str | None]:
+    """(junk line count, delimiter) of the best reading of a sample's lines.
+
+    The body is the tail of the sample: per candidate delimiter, its width is the
+    modal field count (≥ 2) of the second half of the non-blank records, and the
+    header is the first record of that width; every line above it is junk. The
+    candidate with the most records of body width wins (ties: ``seps`` order).
+    """
+    best: tuple[int, int, int, str] | None = None
+    for sep in seps:
+        found = _body_start(lines, sep)
+        if found is None:
+            continue
+        start, width, rows = found
+        if best is None or (rows, width) > best[:2]:
+            best = (rows, width, start, sep)
+    return (best[2], best[3]) if best else (0, None)
+
+
+def _body_start(lines: list[str], sep: str) -> tuple[int, int, int] | None:
+    """(line index of the header, body width, records of that width) for ``sep``."""
+    records = [
+        (i, ln.count(sep) + 1) for i, ln in enumerate(lines) if ln.strip() and '"' not in ln
+    ]
+    tail = [n for _, n in records[len(records) // 2 :]]
+    if not tail:
+        return None
+    width = max(set(tail), key=tail.count)
+    if width < 2:
+        return None
+    rows = [i for i, n in records if n == width]
+    return rows[0], width, len(rows)
+
+
+def _trim_and_sniff(text: str, spec: CsvSource) -> tuple[str, str | None, int]:
+    """(text without the junk top lines, delimiter, lines dropped)."""
+    sep: str | None = spec.sep
+    skipped = spec.skiprows if isinstance(spec.skiprows, int) else 0
+    if spec.skiprows == "auto":
+        sample = _drop_cut_line(text[:SNIFF_CHARS]).splitlines()[:JUNK_SCAN]
+        skipped, found = detect_junk(sample, SNIFF_DELIMITERS if sep == "auto" else sep)
+        if sep == "auto" and found:
+            sep = found
+    text = drop_lines(text, skipped)
+    if sep == "auto":
+        sep = sniff_sep(text[:SNIFF_CHARS])
+    return text, sep, skipped
+
+
+def mixed_separator_report(
+    lines: list[str], sep: str, header: int | None, offset: int = 0
+) -> MixedReport:
+    """Which body lines use another delimiter than ``sep``.
+
+    ``lines`` start at the file's line ``offset + 1``. Only lines without quotes
+    count (a quoted field can legitimately hold any delimiter); a line is
+    offending when its field count under ``sep`` is not the modal one but is under
+    another delimiter.
+    """
+    start = _header_index(lines, header)
+    records = _plain_records(lines, sep, start)
+    report = MixedReport(sep)
+    counts = [n for _, n in records]
+    if not counts:
+        return report
+    width = max(set(counts), key=counts.count)
+    report.fields = width
+    report.counts[sep] = counts.count(width)
+    if width < 2:
+        return report
+    for i, n in records:
+        if n != width:
+            _classify(report, lines[i], i + 1 + offset, sep, width)
+    return report
+
+
+def _header_index(lines: list[str], header: int | None) -> int:
+    """Index of the header line (pandas counts non-blank lines); 0 without one."""
+    seen = 0
+    for i, line in enumerate(lines):
+        if line.strip():
+            if seen == (header or 0):
+                return i
+            seen += 1
+    return len(lines)
+
+
+def _plain_records(lines: list[str], sep: str, start: int) -> list[tuple[int, int]]:
+    """(line index, field count) of the non-blank lines clear of quotes."""
+    out, in_quote = [], False
+    for i in range(start, len(lines)):
+        line = lines[i]
+        quotes = line.count('"')
+        if in_quote or quotes:
+            in_quote ^= bool(quotes % 2)
+        elif line.strip():
+            out.append((i, line.count(sep) + 1))
+    return out
+
+
+def _classify(report: MixedReport, line: str, number: int, sep: str, width: int):
+    for alt in SNIFF_DELIMITERS:
+        if alt != sep and line.count(alt) + 1 == width:
+            report.lines.setdefault(alt, []).append(number)
+            report.counts[alt] = report.counts.get(alt, 0) + 1
+            if sep in line:
+                report.unsafe.append(number)
+            return
+
+
+def _check_mixed_sep(text: str, sep: str | None, spec: CsvSource, skipped: int) -> str:
+    """``text`` with mixed-delimiter lines normalized, or the typed error."""
+    if not sep or spec.mixed_sep == "ignore":
+        return text
+    lines = text.split("\n")
+    report = mixed_separator_report(lines, sep, spec.header, skipped)
+    if not report.lines:
+        return text
+    if spec.mixed_sep == "error" or report.unsafe:
+        raise _mixed_error(spec.path, report)
+    for alt, numbers in report.lines.items():
+        for number in numbers:
+            i = number - 1 - skipped
+            lines[i] = lines[i].replace(alt, sep)
+    return "\n".join(lines)
+
+
+def _listed(numbers: list[int]) -> str:
+    shown = ", ".join(map(str, numbers[:MAX_LISTED_LINES]))
+    more = len(numbers) - MAX_LISTED_LINES
+    return shown + (f" (and {more} more)" if more > 0 else "")
+
+
+def _mixed_error(path: str, report: MixedReport) -> MixedSeparatorError:
+    sep = report.sep
+    parts = [
+        f"{alt!r} on line(s) {_listed(nums)}" for alt, nums in report.lines.items()
+    ]
+    if report.unsafe:
+        fix = (
+            f"line(s) {_listed(report.unsafe)} also hold {sep!r}, so rewriting them "
+            "would guess: fix those lines in the file"
+        )
+    else:
+        fix = "pass mixed_sep='normalize' to rewrite them, or mixed_sep='ignore' to load as is"
+    return MixedSeparatorError(
+        f"cannot read csv {path}: mixed separators: the file uses {sep!r} "
+        f"({report.fields} fields) but {'; '.join(parts)} use another delimiter; {fix}",
+        report.offending,
+    )
+
+
 @reader("csv")
 def read_csv(spec: CsvSource) -> pd.DataFrame:
     path = resolve_path(spec.path)
@@ -204,9 +401,8 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
         # A BOM is never content (utf-8 / utf-16 codecs without -sig keep it).
         text = raw.decode(encoding).removeprefix("\ufeff")
         del raw
-        sep: str | None = spec.sep
-        if sep == "auto":
-            sep = sniff_sep(text[:SNIFF_CHARS])
+        text, sep, skipped = _trim_and_sniff(text, spec)
+        text = _check_mixed_sep(text, sep, spec, skipped)
         decimal = spec.decimal
         if decimal == "auto":
             decimal = guess_decimal(_drop_cut_line(text[:SNIFF_CHARS]), sep)
@@ -215,7 +411,7 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
             if bad:
                 line, reason = bad
                 raise SourceError(
-                    f"cannot read csv {spec.path}: line {line}: {reason}. Fix the "
+                    f"cannot read csv {spec.path}: line {line + skipped}: {reason}. Fix the "
                     "quoting, or pass on_bad_lines='warn' / 'skip' to load anyway "
                     "(rows with too many fields are dropped)"
                 )
@@ -235,6 +431,8 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
         if spec.keep_leading_zeros:
             df = _keep_leading_zeros(df, text, sep, spec, options)
         return df
+    except MixedSeparatorError:
+        raise
     except FileNotFoundError:
         raise SourceError(f"csv source not found: {spec.path}") from None
     # ParserError, EmptyDataError and UnicodeDecodeError are ValueErrors;
