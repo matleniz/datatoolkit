@@ -90,3 +90,18 @@ def test_no_numeric_feature_gives_encode_first_result():
     assert {s["op"] for s in steps} >= {"onehot", "ordinal"}
     assert "re-run feature_selection" in res.text
     json.dumps(res.model_dump())
+
+
+def test_sample_reported_above_threshold(monkeypatch):
+    from dtk_engine.keys.feature_selection import selection_result
+
+    rng = np.random.default_rng(1)
+    a = rng.normal(size=300)
+    df = pd.DataFrame({"a": a, "noise": rng.normal(size=300), "y": a * 2})
+    assert "n_scored_rows" not in selection_result(df, "y").metrics
+    monkeypatch.setattr("dtk_engine.ops.selection.SCORE_SAMPLE_SIZE", 120)
+    res = selection_result(df, "y")
+    assert res.metrics["n_scored_rows"] == 120 and res.metrics["n_rows"] == 300
+    assert "sample of 120 of 300 rows" in res.text
+    assert res.metrics["top_feature"] == "a"
+    assert selection_result(df, "y").model_dump() == res.model_dump()

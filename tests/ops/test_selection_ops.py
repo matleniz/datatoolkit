@@ -95,3 +95,18 @@ def test_feature_scores_memoized_on_content(monkeypatch):
     feature_scores(df.assign(y=1 - df["y"]), "y", "classification", ["a", "b"])
     assert len(calls) == 3
     cache._FITS.clear()
+
+
+def test_feature_scores_sample_above_threshold(monkeypatch):
+    df = planted(n=300)
+    full = feature_scores(df, "y", "classification", ["noise", "a", "b"])
+    monkeypatch.setattr("dtk_engine.ops.selection.SCORE_SAMPLE_SIZE", 100)
+    a = feature_scores(df, "y", "classification", ["noise", "a", "b"])
+    b = feature_scores(df.copy(), "y", "classification", ["noise", "a", "b"])
+    pd.testing.assert_frame_equal(a, b)  # seeded: same sample every run
+    assert not a["tree_importance"].equals(full["tree_importance"])  # sampled
+    # variance / pct_missing still describe every row
+    pd.testing.assert_series_equal(
+        a.set_index("column")["variance"].sort_index(),
+        full.set_index("column")["variance"].sort_index(),
+    )
