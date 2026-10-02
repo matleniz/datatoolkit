@@ -18,6 +18,7 @@ from dtk_engine.ops.selection import (
     near_constant,
     pca_variance,
     resolve_task,
+    score_sample_rows,
     suggested_steps,
 )
 from dtk_engine.params import SourceParams, column_field, columns_field
@@ -104,6 +105,9 @@ def selection_result(
         f"Top feature: {top_feat}; {pca95} PCA components explain 95 % variance "
         f"({len(columns)} features scored)"
     )
+    n_labeled = int(df[target].notna().sum())
+    n_scored = score_sample_rows(n_labeled)
+    sampled = n_scored < n_labeled
     result = Result(
         headline=headline,
         metrics={
@@ -113,11 +117,13 @@ def selection_result(
             "n_collinear_pairs": len(pairs),
             "n_near_constant": len(constant),
             "top_feature": top_feat,
+            **({"n_scored_rows": n_scored} if sampled else {}),
             **needed,
         },
         text=FAMILIES_TEXT
         + "\n\nSuggested steps (each a 'both' step, fitted on train):\n"
         + "\n".join(f"{r.order}. {r.op}: {r.why}" for r in steps.itertuples())
+        + _sample_hint(n_scored, n_labeled)
         + _missing_hint(scores),
     )
     result.add_table("feature_scores", scores)
@@ -181,4 +187,13 @@ def _missing_hint(scores: pd.DataFrame) -> str:
     return (
         f"\n\nMissing values in {missing}: scores here use a median fill; the "
         "selection ops refuse missing values, add an impute step before them."
+    )
+
+
+def _sample_hint(n_scored: int, n_labeled: int) -> str:
+    if n_scored >= n_labeled:
+        return ""
+    return (
+        f"\n\nScores computed on a seeded sample of {n_scored} of {n_labeled} "
+        "rows (variance and missing % use every row)."
     )

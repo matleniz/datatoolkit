@@ -26,6 +26,7 @@ from sklearn.feature_selection import (
     mutual_info_regression,
 )
 from sklearn.linear_model import LassoCV, LinearRegression, LogisticRegression
+from sklearn.model_selection import train_test_split
 
 from dtk_engine.cache import memo_frame
 
@@ -39,6 +40,9 @@ NEAR_CONSTANT_SHARE = 0.95
 PCA_TARGETS = (0.90, 0.95, 0.99)
 N_ESTIMATORS = 100
 CV_FOLDS = 5
+# The analysis scores (MI, L1, forest, RFECV) are fitted on at most this many
+# rows (a seeded sample of the rows with a target); larger frames are sampled.
+SCORE_SAMPLE_SIZE = 10_000
 
 FAMILIES = pd.DataFrame(
     [
@@ -217,6 +221,35 @@ def _analysis_frame(
     return rows, X.fillna(X.median()).fillna(0.0).to_numpy()
 
 
+def score_sample_rows(n_rows: int) -> int:
+    """Rows the analysis scores are fitted on, out of ``n_rows`` with a target."""
+    return min(n_rows, SCORE_SAMPLE_SIZE)
+
+
+def _sample_index(y: np.ndarray, task: str, random_state: int) -> np.ndarray:
+    """Sorted row positions of the scoring sample: stratified on a classification
+    target (a rare class keeps its share), a plain seeded draw otherwise or when
+    a class has fewer than 2 rows."""
+    if task == "classification":
+        _, counts = np.unique(y, return_counts=True)
+        if counts.min() >= 2:
+            try:
+                keep, _ = train_test_split(
+                    np.arange(len(y)),
+                    train_size=SCORE_SAMPLE_SIZE,
+                    stratify=y,
+                    random_state=random_state,
+                )
+                return np.sort(keep)
+            except ValueError:  # more classes than sample rows, etc.
+                pass
+    return np.sort(
+        np.random.default_rng(random_state).choice(
+            len(y), SCORE_SAMPLE_SIZE, replace=False
+        )
+    )
+
+
 def feature_scores(
     df: pd.DataFrame,
     target: str,
@@ -227,11 +260,12 @@ def feature_scores(
 ) -> pd.DataFrame:
     """Per feature: variance, pct_missing, filter scores, embedded scores,
     optional RFECV rank and a combined rank (1 = most useful), best first.
-    Memoized on the content of ``df[[target, *columns]]`` and the params."""
+    Above ``SCORE_SAMPLE_SIZE`` rows the scores are fitted on a seeded row sample
+    (stratified on a classification target; variance and pct_missing still use every row). Memoized on the content of ``df[[target, *columns]]`` and the params."""
     return memo_frame(
         "feature_scores",
         df[list(dict.fromkeys([target, *columns]))],
-        (target, task, list(columns), wrapper, random_state),
+        (target, task, list(columns), wrapper, random_state, SCORE_SAMPLE_SIZE),
         lambda: _feature_scores(df, target, task, columns, wrapper, random_state),
     )
 
@@ -246,6 +280,9 @@ def _feature_scores(
 ) -> pd.DataFrame:
     rows, X = _analysis_frame(df, target, columns)
     y = target_vector(rows, target, task, "feature_selection")
+    if len(y) > SCORE_SAMPLE_SIZE:
+        keep = _sample_index(y, task, random_state)
+        X, y = X[keep], y[keep]
     table = pd.DataFrame(
         {
             "column": columns,
@@ -265,7 +302,7 @@ def _feature_scores(
         l1_model(task, random_state, n_classes).fit(Z, y)
     )
     table["tree_importance"] = model_importance(
-        tree_model(task, random_state).fit(X, y)
+        tree_model(task, random_state).set_params(n_jobs=-1).fit(X, y)
     )
     score_columns = [
         "mutual_info",
