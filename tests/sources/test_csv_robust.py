@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from dtk_engine.keys.file_inspect import Params, run
@@ -89,12 +90,20 @@ def test_mixed_sep_ignore_keeps_old_behaviour():
     assert len(df) == 5
 
 
-def test_mixed_sep_ambiguous_line_errors_even_when_normalizing():
-    spec = CsvSource(path=str(FIX / "mixed_sep_ambiguous.csv"), mixed_sep="normalize")
-    with pytest.raises(MixedSeparatorError) as exc:
-        read_csv(spec)
-    assert exc.value.lines == [3]
-    assert "also hold ','" in str(exc.value)
+RAGGED = {
+    "tab": "a\tb\tc\n1\t2\t3\n4\t5,6,7\n",
+    "comma": "id,note,v\n1,ok,3\n2,see a;b;c\n3,x,4\n",
+}
+
+
+@pytest.mark.parametrize("name", RAGGED)
+def test_ragged_row_holding_sep_loads_as_before(tmp_path, name):
+    path = tmp_path / "f.csv"
+    path.write_text(RAGGED[name])
+    sep = "\t" if name == "tab" else ","
+    expected = pd.read_csv(path, sep=sep)
+    pd.testing.assert_frame_equal(read_csv(CsvSource(path=str(path))), expected)
+    assert run(Params(path=str(path))).metrics["mixed_separators"] == "none"
 
 
 def test_mixed_sep_error_line_numbers_count_skipped_junk(tmp_path):
@@ -118,12 +127,6 @@ def test_inspect_mixed_reports_and_load_spec_loads():
     spec = _load_spec(m)
     assert spec.mixed_sep == "normalize"
     assert read_csv(spec)["qty"].tolist() == [5, 6, 7, 8, 9]
-
-
-def test_inspect_mixed_ambiguous_flags_unsafe_lines():
-    m = _inspect("mixed_sep_ambiguous.csv")
-    assert m["mixed_separators_unsafe_lines"] == "3"
-    assert "mixed_sep" not in json.loads(m["load_spec"])
 
 
 def test_inspect_clean_file_reports_no_mixed_separators(tmp_path):

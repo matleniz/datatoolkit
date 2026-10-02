@@ -311,9 +311,6 @@ def _mixed_facts(
         ),
         "separator_line_counts": json.dumps(report.counts),
     }
-    if report.unsafe:
-        facts["mixed_separators_unsafe_lines"] = ", ".join(map(str, report.unsafe))
-        return facts, {}  # ambiguous lines: fix the file, no spec can load it
     return facts, {"mixed_sep": "normalize"}
 
 

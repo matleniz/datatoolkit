@@ -212,16 +212,15 @@ class MixedReport:
     """Lines of a csv body that fit another delimiter than ``sep``.
 
     ``counts``: delimiter -> lines using it (``sep``: lines with the modal field
-    count). ``lines``: alt delimiter -> 1-based offending lines. ``unsafe``: the
-    offending lines that cannot be rewritten without guessing (they also hold
-    ``sep``, or a quote).
+    count). ``lines``: alt delimiter -> 1-based offending lines. An offending
+    line holds no ``sep`` and no quote: a line with ``sep`` is an ordinary (ragged)
+    row, whatever else it contains.
     """
 
     sep: str
     fields: int = 0
     counts: dict[str, int] = field(default_factory=dict)
     lines: dict[str, list[int]] = field(default_factory=dict)
-    unsafe: list[int] = field(default_factory=list)
 
     @property
     def offending(self) -> list[int]:
@@ -295,8 +294,8 @@ def mixed_separator_report(
 
     ``lines`` start at the file's line ``offset + 1``. Only lines without quotes
     count (a quoted field can legitimately hold any delimiter); a line is
-    offending when its field count under ``sep`` is not the modal one but is under
-    another delimiter.
+    offending when it holds no ``sep`` at all and splits into the modal field count
+    under another delimiter.
     """
     start = _header_index(lines, header)
     records = _plain_records(lines, sep, start)
@@ -310,7 +309,7 @@ def mixed_separator_report(
     if width < 2:
         return report
     for i, n in records:
-        if n != width:
+        if n == 1:  # no ``sep`` in the line
             _classify(report, lines[i], i + 1 + offset, sep, width)
     return report
 
@@ -344,9 +343,15 @@ def _classify(report: MixedReport, line: str, number: int, sep: str, width: int)
         if alt != sep and line.count(alt) + 1 == width:
             report.lines.setdefault(alt, []).append(number)
             report.counts[alt] = report.counts.get(alt, 0) + 1
-            if sep in line:
-                report.unsafe.append(number)
             return
+
+
+def _has_sepless_line(lines: list[str], sep: str) -> bool:
+    """Whether a non-blank line holds no ``sep`` (the only possible offenders).
+
+    A cheap membership pass, so the usual clean file skips the quote-aware scan.
+    """
+    return any(sep not in line and line.strip() for line in lines)
 
 
 def _check_mixed_sep(text: str, sep: str | None, spec: CsvSource, skipped: int) -> str:
@@ -354,10 +359,12 @@ def _check_mixed_sep(text: str, sep: str | None, spec: CsvSource, skipped: int) 
     if not sep or spec.mixed_sep == "ignore":
         return text
     lines = text.split("\n")
+    if not _has_sepless_line(lines, sep):
+        return text
     report = mixed_separator_report(lines, sep, spec.header, skipped)
     if not report.lines:
         return text
-    if spec.mixed_sep == "error" or report.unsafe:
+    if spec.mixed_sep == "error":
         raise _mixed_error(spec.path, report)
     for alt, numbers in report.lines.items():
         for number in numbers:
@@ -377,13 +384,7 @@ def _mixed_error(path: str, report: MixedReport) -> MixedSeparatorError:
     parts = [
         f"{alt!r} on line(s) {_listed(nums)}" for alt, nums in report.lines.items()
     ]
-    if report.unsafe:
-        fix = (
-            f"line(s) {_listed(report.unsafe)} also hold {sep!r}, so rewriting them "
-            "would guess: fix those lines in the file"
-        )
-    else:
-        fix = "pass mixed_sep='normalize' to rewrite them, or mixed_sep='ignore' to load as is"
+    fix = "pass mixed_sep='normalize' to rewrite them, or mixed_sep='ignore' to load as is"
     return MixedSeparatorError(
         f"cannot read csv {path}: mixed separators: the file uses {sep!r} "
         f"({report.fields} fields) but {'; '.join(parts)} use another delimiter; {fix}",
