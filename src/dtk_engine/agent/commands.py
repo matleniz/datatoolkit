@@ -177,7 +177,10 @@ _VIEW_COMMANDS = (
         tool_name="open_window",
         description=(
             "Open an analysis window in Studio. params.column for dist / outliers / "
-            "target, params.by for dist; other params are the window's key params."
+            "target, params.by for dist; other params are the window's key params. "
+            "Studio has one window per tool: opening an open one updates it in place, "
+            "and params you omit keep their current value. Pass params.by \"\" to "
+            "remove the dist split."
         ),
         input_schema=_args(
             {"tool": {"type": "string", "enum": WINDOWS}, "params": {"type": "object"}},
