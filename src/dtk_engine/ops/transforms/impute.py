@@ -29,12 +29,12 @@ from sklearn.impute import IterativeImputer, KNNImputer
 from dtk_engine.ops._util import py as _py
 from dtk_engine.ops._util import require_numeric as _numeric
 from dtk_engine.ops.groups import group_codes, group_interp, group_mean, group_prev
+from dtk_engine.ops.missing import CATEGORICAL_FILL
 from dtk_engine.ops.transforms.formula import check_expr, evaluate
 from dtk_engine.params import column_field, columns_field, when
 from dtk_engine.transform_registry import TransformParams, transform
 
 INDICATOR_SUFFIX = "_was_missing"
-CATEGORICAL_FILL = "MISSING"
 GROUP_STRATEGIES = ("group_mean", "group_prev", "group_interp")
 ORDERED_STRATEGIES = ("group_prev", "group_interp")
 NUMERIC_STRATEGIES = ("median", "mean", "formula", "group_mean", "group_interp")

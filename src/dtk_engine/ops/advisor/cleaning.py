@@ -9,6 +9,7 @@ from dtk_engine.ops._util import py as _py
 from dtk_engine.ops.advisor.common import Rec
 from dtk_engine.ops.consistency import variants
 from dtk_engine.ops.missing import (
+    CATEGORICAL_FILL,
     DATE_SENTINELS,
     NUMERIC_SENTINELS,
     STRING_SENTINELS,
@@ -23,8 +24,8 @@ UNSAFE_SENTINELS = frozenset({"0"})
 def _sentinel_values(series: pd.Series) -> list:
     """Raw cell values ``sentinel_counts`` flags in ``series`` (same rules, per value).
 
-    A numeric sentinel (-1, 999, ...) counts only outside the range of the other
-    values: -1 in a column of temperatures is data, -999 in a column of ages is not.
+    Numeric codes are already context-filtered by ``sentinel_counts`` (outside the
+    range of the other values, or a spike): -1 in a column of temperatures is data.
     """
     if pdt.is_datetime64_any_dtype(series) or pdt.is_bool_dtype(series):
         return []  # replace_sentinels takes scalars, not timestamps
@@ -32,21 +33,17 @@ def _sentinel_values(series: pd.Series) -> list:
     if not (set(table["sentinel"]) - UNSAFE_SENTINELS):
         return []
     values = series.dropna()
+    flagged = set(table["sentinel"])
+    codes = [float(c) for c in NUMERIC_SENTINELS if str(c) in flagged]
     if pdt.is_numeric_dtype(series):
-        codes = [float(h) for h in table["sentinel"] if h not in UNSAFE_SENTINELS]
-        others = values[~values.isin(codes)]
-        return sorted(
-            _py(v)
-            for v in values[values.isin(codes)].unique()
-            if others.empty or v < others.min() or v > others.max()
-        )
+        return sorted(_py(v) for v in values[values.isin(codes)].unique())
     # Text: the rules of ops.missing, vectorised over the distinct values.
     uniques = pd.Series(values.unique())
     text = uniques.astype(str).str.strip()
     hit = (
-        text.str.lower().isin(STRING_SENTINELS)
+        (text.str.lower().isin(STRING_SENTINELS) & (text != CATEGORICAL_FILL))
         | text.str.startswith(DATE_SENTINELS)
-        | pd.to_numeric(text, errors="coerce").isin(NUMERIC_SENTINELS)
+        | pd.to_numeric(text, errors="coerce").isin(codes)
     )
     return sorted((_py(v) for v in uniques[hit]), key=str)
 
