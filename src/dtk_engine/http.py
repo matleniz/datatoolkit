@@ -14,7 +14,7 @@ import json
 import os
 import secrets
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path, PurePath
 from typing import Literal
 
@@ -25,6 +25,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
 
 from dtk_engine import contract
 from dtk_engine.errors import (
@@ -276,8 +278,8 @@ def _presented_token(request: Request) -> str:
     return request.query_params.get("token", "")
 
 
-def _ui_guard(request: Request) -> None:
-    """Router dependency: Host (DNS rebinding), Origin, then token."""
+def _check_access(request: Request, token: str) -> None:
+    """Host (DNS rebinding), then Origin, then token; shared by ``/api/ui`` and ``/mcp``."""
     if host_name(request.headers.get("host", "")) not in allowed_hosts():
         raise _UiGuardError(403, "host not allowed")
     origin = request.headers.get("origin")
@@ -286,8 +288,37 @@ def _ui_guard(request: Request) -> None:
         if origin != same and origin not in _cors_origins():
             raise _UiGuardError(403, "origin not allowed")
     presented = _presented_token(request).encode()
-    if not secrets.compare_digest(presented, _bridge(request).token.encode()):
+    if not secrets.compare_digest(presented, token.encode()):
         raise _UiGuardError(401, "missing or invalid UI token")
+
+
+def _ui_guard(request: Request) -> None:
+    """Router dependency for ``/api/ui``."""
+    _check_access(request, _bridge(request).token)
+
+
+class _McpGuard:
+    """Pure-ASGI wrapper applying the ``/api/ui`` checks in front of the ``/mcp`` app.
+
+    The SDK app lives in ``app.state.mcp_app`` while the lifespan runs (its
+    session manager runs once per instance). Serves ``/mcp`` and ``/mcp/``
+    alike (the inner app only knows ``/mcp``) so clients never see a redirect.
+    """
+
+    def __init__(self, bridge: UiBridge) -> None:
+        self.bridge = bridge
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        inner = getattr(scope["app"].state, "mcp_app", None)
+        try:
+            _check_access(Request(scope), self.bridge.token)
+            if inner is None:
+                raise _UiGuardError(503, "MCP endpoint not running")
+        except _UiGuardError as exc:
+            body = {"type": "UiBridgeError", "message": str(exc), "details": None}
+            await JSONResponse(status_code=exc.status, content=body)(scope, receive, send)
+            return
+        await inner({**scope, "path": "/mcp"}, receive, send)
 
 
 _MAX_COMMAND_TIMEOUT = 120.0
@@ -416,13 +447,23 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
     per-run token the Studio launcher hands to the front).
     """
 
+    bridge = UiBridge()
+    try:  # the optional extra ``agent`` adds the MCP endpoint; without it, no ``/mcp``
+        from dtk_engine.agent.server import mcp_http_app
+    except ImportError:
+        mcp_http_app = None
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        yield
-        app.state.ui_bridge.close()
+        async with AsyncExitStack() as stack:
+            if mcp_http_app is not None:
+                app.state.mcp_app, mcp_lifespan = mcp_http_app(bridge)
+                await stack.enter_async_context(mcp_lifespan)
+            yield
+            app.state.ui_bridge.close()
 
     application = FastAPI(title="dtk-api", docs_url=None, redoc_url=None, lifespan=lifespan)
-    application.state.ui_bridge = UiBridge()
+    application.state.ui_bridge = bridge
     application.state.ui_ping_interval = ui_ping_interval
     application.add_middleware(
         CORSMiddleware, allow_origins=_cors_origins(), allow_credentials=True,
@@ -436,6 +477,9 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
         ui_router,
     ):
         application.include_router(router)
+    if mcp_http_app is not None:
+        guarded = _McpGuard(bridge)
+        application.router.routes.extend(Route(path, guarded) for path in ("/mcp", "/mcp/"))
     return application
 
 
