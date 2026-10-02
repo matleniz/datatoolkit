@@ -16,6 +16,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePath
+from typing import Literal
 
 # FastAPI is an optional dependency; keep the import inside this module so
 # ``import dtk_engine`` still works without the ``api`` extra.
@@ -23,7 +24,7 @@ from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from dtk_engine import contract
 from dtk_engine.errors import (
@@ -302,10 +303,19 @@ class UiContext(BaseModel):
 
 
 class UiAck(BaseModel):
+    """Final ack ``{id, ok, error?, identity?}`` or interim ``{id, pending: "review"}``."""
+
     id: str
-    ok: bool
+    ok: bool | None = None
+    pending: Literal["review"] | None = None
     error: str | None = None
     identity: str | None = None
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> UiAck:
+        if (self.ok is None) == (self.pending is None):
+            raise ValueError("an ack sets exactly one of ok / pending")
+        return self
 
 
 def _ui_error(status: int, type_: str, message: str) -> JSONResponse:
@@ -377,6 +387,14 @@ async def post_ui_command(request: Request) -> dict:
     return await _bridge(request).send_command(
         body, session=session, timeout=min(max(timeout, 0.0), _MAX_COMMAND_TIMEOUT)
     )
+
+
+@ui_router.get("/commands/{cid}", response_model=None)
+async def get_ui_command(cid: str, request: Request):
+    status = _bridge(request).command_status(cid)
+    if status is None:
+        return _ui_error(404, "UnknownCommand", f"no recent command {cid!r}")
+    return status
 
 
 _ERROR_STATUS: dict[type[Exception], int] = {
