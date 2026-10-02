@@ -18,6 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 api = ["fastapi", "uvicorn"]
 agent = ["mcp>=2.2,<3", "fastapi", "uvicorn"]
+# In-Studio chat with Claude (agent-sdk pack): the SDK runs the claude CLI.
+agent-sdk = ["claude-agent-sdk>=0.2.163,<0.3", "mcp>=2.2,<3", "fastapi", "uvicorn"]
 
 [project.scripts]
 dtk-api = "dtk_engine.http:main"
@@ -26,7 +28,10 @@ dtk-mcp = "dtk_engine.agent.cli:main"
 [dependency-groups]
 # fastapi/uvicorn also listed here so `uv sync` (gate) can run the HTTP tests;
 # the optional extra `api` is what consumers install for `dtk-api`.
-dev = ["ruff", "pytest", "httpx", "fastapi", "uvicorn", "mcp>=2.2,<3"]
+dev = [
+    "ruff", "pytest", "httpx", "fastapi", "uvicorn", "mcp>=2.2,<3",
+    "claude-agent-sdk>=0.2.163,<0.3",
+]
 
 [build-system]
 requires = ["hatchling"]
