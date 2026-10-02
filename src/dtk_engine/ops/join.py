@@ -197,3 +197,110 @@ def merge_table(
         return out, stats
     return out
 
+
+# --- Pure diagnostics (label_join_preview); they never raise and never join. ---
+
+# A shared column is a plausible key when at least this share of rows is distinct
+# on one side (or when it is index-like).
+KEY_UNIQUE_SHARE = 0.5
+
+
+def key_candidates(
+    x: pd.DataFrame, y: pd.DataFrame, columns: list[str] | None = None
+) -> list[str]:
+    """Plausible label-join keys: columns shared by X and y that are (nearly)
+    unique on at least one side or index-like. ``columns`` overrides the guess
+    (names missing from either side are kept so the caller can flag them)."""
+    if columns is not None:
+        return list(dict.fromkeys(columns))
+    found = []
+    for c in y.columns:
+        if c not in x.columns:
+            continue
+        shares = [df[c].nunique() / len(df) for df in (x, y) if len(df)]
+        if is_index_like(y[c]) or any(s >= KEY_UNIQUE_SHARE for s in shares):
+            found.append(c)
+    return found
+
+
+def key_diagnostics(x: pd.DataFrame, y: pd.DataFrame, key: str) -> dict:
+    """What a join on ``key`` would do (``key`` must be in both frames).
+
+    ``would_join`` mirrors ``join_labels(..., "key", key)``: true when it would
+    not raise. ``result_rows`` is the row count of a plain left join of X and y.
+    """
+    values = [c for c in y.columns if c != key]
+    joined = len(x.merge(y[[key]], on=key, how="left"))
+    n_x, n_y = len(x), len(y)
+    x_unmatched = int((~x[key].isin(y[key])).sum())
+    y_unmatched = int((~y[key].isin(x[key])).sum())
+    out = {
+        "key": key,
+        "x_rows": n_x,
+        "y_rows": n_y,
+        "x_unique": bool(x[key].is_unique),
+        "y_unique": bool(y[key].is_unique),
+        "x_duplicated": int(x[key].duplicated().sum()),
+        "y_duplicated": int(y[key].duplicated().sum()),
+        "x_missing": int(x[key].isna().sum()),
+        "y_missing": int(y[key].isna().sum()),
+        "x_unmatched": x_unmatched,
+        "y_unmatched": y_unmatched,
+        "match_x_to_y": (n_x - x_unmatched) / n_x if n_x else 0.0,
+        "match_y_to_x": (n_y - y_unmatched) / n_y if n_y else 0.0,
+        "result_rows": joined,
+        "extra_rows": joined - n_x,
+        "value_columns": values,
+        "clashing_columns": [c for c in values if c in x.columns],
+    }
+    out["would_join"] = bool(
+        values
+        and not out["clashing_columns"]
+        and not any(
+            out[k]
+            for k in (
+                "x_duplicated",
+                "y_duplicated",
+                "x_missing",
+                "y_missing",
+                "x_unmatched",
+                "y_unmatched",
+            )
+        )
+    )
+    return out
+
+
+def order_diagnostics(x: pd.DataFrame, y: pd.DataFrame, key: str | None = None) -> dict:
+    """What a join by order would do; ``would_join`` mirrors
+    ``join_labels(..., "order", key)`` (``key`` None: the index column of a
+    two-column y is auto-detected)."""
+    out: dict = {
+        "x_rows": len(x),
+        "y_rows": len(y),
+        "same_rows": len(x) == len(y),
+        "index_column": None,
+        "value_column": None,
+        "value_error": None,
+        "aligned": None,
+        "n_misaligned": 0,
+        "first_misaligned": None,
+        "clashing_columns": [],
+    }
+    try:
+        index, value = label_columns(y, key)
+    except LabelJoinError as e:
+        out["value_error"] = str(e)
+        out["would_join"] = False
+        return out
+    out["index_column"], out["value_column"] = index, value
+    out["clashing_columns"] = [value] if value in x.columns else []
+    if out["same_rows"] and index is not None and index in x.columns:
+        differ = x[index].to_numpy() != y[index].to_numpy()
+        out["aligned"] = not bool(differ.any())
+        out["n_misaligned"] = int(differ.sum())
+        out["first_misaligned"] = int(differ.argmax()) if differ.any() else None
+    out["would_join"] = bool(
+        out["same_rows"] and out["aligned"] is not False and not out["clashing_columns"]
+    )
+    return out

@@ -5,6 +5,7 @@
     train = api.load("train.csv")
     api.overview(train)                      # Result, rendered by _repr_html_
     api.check(train, api.load("test.csv"))
+    api.label_join_preview(X, y)
     api.transform(train, "drop_columns", columns=["Name"])
     api.advise(train, test, model_family="linear", target="Survived")
     api.select_features(train, target="Survived")
@@ -33,6 +34,9 @@ from dtk_engine.keys.dataset_overview import overview_result
 from dtk_engine.keys.duplicates import duplicates_result
 from dtk_engine.keys.feature_selection import selection_result
 from dtk_engine.keys.inconsistencies import inconsistencies_result
+from dtk_engine.keys.label_join_preview import (
+    preview_result as label_join_preview_result,
+)
 from dtk_engine.keys.missing_values import missing_result
 from dtk_engine.keys.outliers import outliers_result
 from dtk_engine.keys.preprocessing_advisor import advisor_result
@@ -56,6 +60,7 @@ __all__ = [
     "duplicates",
     "export_workspace",
     "inconsistencies",
+    "label_join_preview",
     "list_transforms",
     "load",
     "missing",
@@ -116,6 +121,13 @@ def check(
 ) -> Result:
     """``train_test_check`` on two DataFrames."""
     return check_result(train, test, id_columns)
+
+
+def label_join_preview(
+    x: pd.DataFrame, y: pd.DataFrame, key_columns: list[str] | None = None
+) -> Result:
+    """``label_join_preview`` on X and y DataFrames (before joining the labels)."""
+    return label_join_preview_result(x, y, key_columns)
 
 
 def transform(df: pd.DataFrame, op: str, **params) -> pd.DataFrame:
