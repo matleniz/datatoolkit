@@ -70,3 +70,15 @@ def test_detects_forbidden_edge(tmp_path):
     pkg.mkdir()
     (pkg / "bad.py").write_text("from dtk_engine.keys import chart\n")
     assert layer_violations(tmp_path) == ["ops/bad.py: ops -> keys (dtk_engine.keys)"]
+
+
+def test_ui_bridge_is_isolated_and_only_http_imports_it():
+    bridge = ROOT / "ui_bridge.py"
+    imported = {m for m in _imports(bridge, ROOT) if m.startswith(PACKAGE)}
+    assert imported == set(), "ui_bridge must stay pure asyncio + stdlib"
+    importers = [
+        path.relative_to(ROOT).as_posix()
+        for path in sorted(ROOT.rglob("*.py"))
+        if path != bridge and f"{PACKAGE}.ui_bridge" in _imports(path, ROOT)
+    ]
+    assert importers == ["http.py"]
