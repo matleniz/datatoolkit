@@ -34,7 +34,13 @@ from dtk_engine.errors import (
     message_from_validation_details,
     validation_error_details,
 )
-from dtk_engine.ui_bridge import UiBridge, allowed_hosts, host_name
+from dtk_engine.ui_bridge import (
+    UiBridge,
+    allowed_hosts,
+    clear_runtime,
+    host_name,
+    write_runtime,
+)
 from dtk_engine.workspace import WorkspaceNotFoundError
 
 
@@ -425,8 +431,15 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     import uvicorn
 
-    # SSE streams never end by themselves: cap the graceful wait so Ctrl-C exits.
-    uvicorn.run(app, host=args.host, port=args.port, timeout_graceful_shutdown=2)
+    # Runtime file: lets the Vite dev server and dtk-mcp find this run's token.
+    host = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host
+    url_host = f"[{host}]" if ":" in host else host
+    write_runtime(f"http://{url_host}:{args.port}", app.state.ui_bridge.token)
+    try:
+        # SSE streams never end by themselves: cap the graceful wait so Ctrl-C exits.
+        uvicorn.run(app, host=args.host, port=args.port, timeout_graceful_shutdown=2)
+    finally:
+        clear_runtime()
 
 
 if __name__ == "__main__":

@@ -26,14 +26,26 @@ Access guard (applied by ``http.py`` on every ``/api/ui/*`` route):
 - ``Host`` hostname must be ``localhost`` / ``127.0.0.1`` / ``[::1]`` or listed
   in ``DTK_UI_ALLOWED_HOSTS`` (comma separated hostnames; a Docker / nginx
   setup would need it, the bridge is not in the image in phase 1).
+
+Runtime file: while ``dtk-api`` runs, ``write_runtime`` publishes
+``{url, token, pid, started}`` at ``$DTK_HOME/agent/runtime.json`` (owner-only
+``0o600``, directory ``0o700``; removed on shutdown by ``clear_runtime``), the
+way Jupyter publishes its server info. Readers (``read_runtime``): the Vite dev
+plugin (token for a plain ``npm run dev``), ``dtk-mcp`` (stdio proxy to the
+running ``/mcp``) and ``dtk-mcp doctor``. ``DTK_UI_RUNTIME_FILE=0`` skips it.
+The token is still never stored in a workspace, localStorage or a log.
 """
 
 from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import os
 import secrets
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
 
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 
@@ -146,3 +158,76 @@ class UiBridge:
         finally:
             self._pending.pop(cid, None)
             future.cancel()
+
+
+# -- runtime file ($DTK_HOME/agent/runtime.json) ---------------------------
+
+
+def runtime_path() -> Path:
+    """``$DTK_HOME/agent/runtime.json`` (``~/.datatoolkit`` when unset)."""
+    home = os.environ.get("DTK_HOME")
+    base = Path(home) if home else Path.home() / ".datatoolkit"
+    return base / "agent" / "runtime.json"
+
+
+def runtime_file_enabled() -> bool:
+    return os.environ.get("DTK_UI_RUNTIME_FILE", "1").strip().lower() not in ("0", "false", "no")
+
+
+def write_runtime(url: str, token: str) -> Path | None:
+    """Publish ``{url, token, pid, started}``; owner-only, written atomically.
+
+    Returns the path, or None when ``DTK_UI_RUNTIME_FILE=0``.
+    """
+    if not runtime_file_enabled():
+        return None
+    path = runtime_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = {
+        "url": url,
+        "token": token,
+        "pid": os.getpid(),
+        "started": datetime.now(UTC).isoformat(),
+    }
+    # mkstemp creates the file 0o600 from the start: never readable by others.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".runtime-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def read_runtime() -> dict | None:
+    """The running engine's runtime info, or None (missing, garbage, dead pid)."""
+    try:
+        data = json.loads(runtime_path().read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("pid"), int):
+        return None
+    return data if _pid_alive(data["pid"]) else None
+
+
+def clear_runtime(pid: int | None = None) -> None:
+    """Remove the runtime file if it belongs to ``pid`` (default: this process)."""
+    path = runtime_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(data, dict) and data.get("pid") == (os.getpid() if pid is None else pid):
+        path.unlink(missing_ok=True)
