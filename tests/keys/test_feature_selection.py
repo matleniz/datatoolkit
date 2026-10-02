@@ -105,3 +105,26 @@ def test_sample_reported_above_threshold(monkeypatch):
     assert "sample of 120 of 300 rows" in res.text
     assert res.metrics["top_feature"] == "a"
     assert selection_result(df, "y").model_dump() == res.model_dump()
+
+
+def test_sample_stratified_keeps_rare_class():
+    from dtk_engine.ops.selection import SCORE_SAMPLE_SIZE, _sample_index
+
+    rng = np.random.default_rng(3)
+    y = (rng.random(30_000) < 0.005).astype(int)
+    keep = _sample_index(y, "classification", 0)
+    assert len(keep) == SCORE_SAMPLE_SIZE and (np.diff(keep) > 0).all()
+    share = y[keep].mean()
+    assert abs(share - y.mean()) < 0.0005
+    assert (y[keep] == 1).sum() >= 40
+
+
+def test_sample_falls_back_when_a_class_has_one_row():
+    from dtk_engine.ops.selection import SCORE_SAMPLE_SIZE, _sample_index
+
+    y = np.zeros(30_000, dtype=int)
+    y[0] = 1
+    keep = _sample_index(y, "classification", 0)
+    assert len(keep) == SCORE_SAMPLE_SIZE
+    reg = _sample_index(np.random.default_rng(0).normal(size=30_000), "regression", 0)
+    assert len(reg) == SCORE_SAMPLE_SIZE
