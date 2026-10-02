@@ -18,10 +18,13 @@ from dtk_engine.result import Result
 from dtk_engine.sources.csv_pandas import (
     BOMS,
     SNIFF_CHARS,
+    SNIFF_DELIMITERS,
+    detect_junk,
     find_bad_record,
     guess_decimal,
     guess_encoding,
     is_leading_zero_column,
+    mixed_separator_report,
     resolve_path,
     sniff_sep,
 )
@@ -203,6 +206,8 @@ def _text_facts(raw: bytes, shown: str) -> dict:
     lines = _sample_lines(text, cut)
     sample = "\n".join(lines) + "\n" if lines else ""
     sep = sniff_sep(sample) if lines else None
+    junk, lines, sep = _misled_sniff(lines, sep)
+    sample = "\n".join(lines) + "\n" if lines else ""
     decimal = guess_decimal(sample, sep)
     facts = {
         "bom": next((name for mark, name in BOMS if raw.startswith(mark)), "none"),
@@ -216,8 +221,16 @@ def _text_facts(raw: bytes, shown: str) -> dict:
     header_facts, header_spec = _header_facts(_records(lines, sep), decimal)
     facts |= header_facts
     spec |= header_spec
+    if junk:
+        facts["junk_lines"] = _junk_summary(junk)
+        if "header_line" in facts:
+            facts["header_line"] += len(junk)
+        spec["skiprows"] = len(junk)
     if sep:
-        facts["bad_line"] = _bad_line(sample, sep, spec["header"], cut)
+        facts["bad_line"] = _bad_line(sample, sep, spec["header"], cut, len(junk))
+        mixed_facts, mixed_spec = _mixed_facts(lines, sep, spec["header"], len(junk))
+        facts |= mixed_facts
+        spec |= mixed_spec
     facts["load_spec"] = json.dumps(spec)
     return facts
 
@@ -267,11 +280,47 @@ def _header_facts(
     return facts, spec
 
 
-def _bad_line(sample: str, sep: str, header: int | None, cut: bool) -> str:
+def _misled_sniff(
+    lines: list[str], sep: str | None
+) -> tuple[list[str], list[str], str | None]:
+    """(junk lines, remaining lines, delimiter) when top junk lines fooled the
+    sniffer: reading the body alone finds another delimiter. Otherwise nothing is
+    dropped (title lines above the header are ``header`` business)."""
+    skip, found = detect_junk(lines[:HEADER_SCAN], SNIFF_DELIMITERS)
+    if not skip or not found or found == sep:
+        return [], lines, sep
+    return lines[:skip], lines[skip:], found
+
+
+def _junk_summary(junk: list[str]) -> str:
+    shown = " | ".join(line[:40] for line in junk[:3])
+    return f"{len(junk)} line(s) above the header: {shown}"
+
+
+def _mixed_facts(
+    lines: list[str], sep: str, header: int | None, offset: int
+) -> tuple[dict, dict]:
+    """(facts, load_spec keys) about lines using another delimiter than ``sep``."""
+    report = mixed_separator_report(lines, sep, header, offset)
+    if not report.lines:
+        return {"mixed_separators": "none"}, {}
+    facts = {
+        "mixed_separators": ", ".join(
+            f"{alt!r}: line(s) {', '.join(map(str, nums[:10]))}"
+            for alt, nums in report.lines.items()
+        ),
+        "separator_line_counts": json.dumps(report.counts),
+    }
+    return facts, {"mixed_sep": "normalize"}
+
+
+def _bad_line(
+    sample: str, sep: str, header: int | None, cut: bool, offset: int = 0
+) -> str:
     bad = find_bad_record(sample, sep, header)
     if bad and bad[1] == "unclosed quote" and cut:
         bad = None  # a quoted field cut by the sample limit
-    return f"line {bad[0]}: {bad[1]}" if bad else "none"
+    return f"line {bad[0] + offset}: {bad[1]}" if bad else "none"
 
 
 def _records(lines: list[str], sep: str | None) -> list[tuple[int, list[str]]]:
