@@ -201,8 +201,11 @@ loaded. Destructive steps still wait for your review in Studio. Protocol:
 
 ```bash
 uv sync --extra agent-sdk
-uv run dtk-api --agent          # = DTK_AGENT_PACK=agent-sdk; then Studio: npm run dev
-# or Studio + engine in one process (Studio build with the agent panel):
+export DTK_UI_TOKEN=$(openssl rand -hex 24)   # the bridge token: same value for both sides
+uv run dtk-api --agent          # = DTK_AGENT_PACK=agent-sdk
+# then, with the same DTK_UI_TOKEN in its env, in datatoolkit-web: npm run dev
+# (without it the panel says "Agent bridge off"; see that repo's README, "Agent bridge (dev)")
+# or Studio + engine in one process (Studio build with the agent panel, token built in):
 DTK_AGENT_PACK=agent-sdk uvx --from "git+https://github.com/matleniz/datatoolkit-web#subdirectory=launcher" \
   --with "dtk-engine[agent-sdk] @ git+https://github.com/matleniz/datatoolkit" dtk-studio
 ```
