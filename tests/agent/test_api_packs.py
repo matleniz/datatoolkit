@@ -391,3 +391,95 @@ async def test_key_never_leaks(monkeypatch, serve):
     assert KEY not in blob
     pack = hub.packs["api-anthropic"]
     assert KEY not in repr(pack) and KEY not in repr(hub._chats["s1"].adapter.__dict__)
+
+
+async def chat_turns(texts):
+    bridge = UiBridge("t")
+    studio = Studio(bridge)
+    hub = hub_from_env(bridge)
+    events = []
+    for text in texts:
+        hub.send("s1", text)
+        events.append(await studio.until_done())
+    return hub, events
+
+
+def tool_ids(messages, pack_id):
+    """(tool call ids, tool result ids) of a request's messages."""
+    if pack_id == "api-anthropic":
+        blocks = [b for m in messages if isinstance(m["content"], list) for b in m["content"]]
+        return (
+            [b["id"] for b in blocks if b["type"] == "tool_use"],
+            [b["tool_use_id"] for b in blocks if b["type"] == "tool_result"],
+        )
+    return (
+        [c["id"] for m in messages for c in m.get("tool_calls") or []],
+        [m["tool_call_id"] for m in messages if m["role"] == "tool"],
+    )
+
+
+def results_text(messages, pack_id):
+    if pack_id == "api-anthropic":
+        return [
+            b["content"] for m in messages if isinstance(m["content"], list)
+            for b in m["content"] if b["type"] == "tool_result"
+        ]
+    return [m["content"] for m in messages if m["role"] == "tool"]
+
+
+@pytest.mark.parametrize("pack_id", ["api-anthropic", "api-openai"])
+async def test_old_tool_results_elided_ids_still_pair(monkeypatch, serve, pack_id):
+    setup_pack(monkeypatch, pack_id)
+    turns = api_chat.KEEP_TURNS + 3
+    tool, text = (anthropic_tool, anthropic_text) if pack_id == "api-anthropic" else (openai_tool, openai_text)
+    chats = [r for i in range(turns) for r in (tool(tid=f"id{i}"), text(f"done {i}"))]
+    server = serve(Server(chats))
+    await chat_turns([f"turn {i}" for i in range(turns)])
+    last = server.bodies()[-1]["messages"]
+    calls, results = tool_ids(last, pack_id)
+    assert calls == results == [f"id{i}" for i in range(turns)]
+    texts = results_text(last, pack_id)
+    old = turns - api_chat.KEEP_TURNS
+    assert texts[:old] == [api_chat.ELIDED] * old
+    assert all(t != api_chat.ELIDED for t in texts[old:])  # newest turns intact
+
+
+async def test_history_size_stays_bounded(monkeypatch, serve):
+    setup_pack(monkeypatch, "api-openai")
+    monkeypatch.setattr(api_chat, "HISTORY_CHARS", 3000)
+    server = serve(Server([openai_text("ok") for _ in range(20)]))
+    await chat_turns([f"{i} " + "x" * 500 for i in range(20)])
+    sizes = [len(json.dumps(b["messages"][1:])) for b in server.bodies()]
+    assert max(sizes) <= 3000
+    newest = server.bodies()[-1]["messages"]
+    assert newest[1]["role"] == "user"  # starts on a whole turn
+    assert newest[-1] == {"role": "user", "content": "19 " + "x" * 500}
+
+
+@pytest.mark.parametrize(
+    ("pack_id", "error"),
+    [
+        ("api-anthropic", {"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long: 300000 tokens > 200000 maximum"}}),
+        ("api-openai", {"error": {"message": "too many tokens", "type": "invalid_request_error", "code": "context_length_exceeded"}}),
+    ],
+)
+async def test_context_too_long_drops_old_turns_and_retries_once(monkeypatch, serve, pack_id, error):
+    setup_pack(monkeypatch, pack_id)
+    text = anthropic_text if pack_id == "api-anthropic" else openai_text
+    chats = [text(f"a{i}") for i in range(4)] + [httpx.Response(400, json=error), text("fits")]
+    server = serve(Server(chats))
+    _, events = await chat_turns([f"t{i}" for i in range(5)])
+    assert events[-1][-1]["stop_reason"] == "end_turn"
+    failed, retried = server.bodies()[-2:]
+    assert failed["messages"] != retried["messages"]
+    users = [m["content"] for m in retried["messages"] if m["role"] == "user"]
+    assert users == ["t2", "t3", "t4"]  # the oldest half (2) of the 5 turns is gone
+
+
+async def test_context_too_long_with_one_turn_is_an_error(monkeypatch, serve):
+    setup_pack(monkeypatch, "api-openai")
+    error = {"error": {"message": "x", "type": "invalid_request_error", "code": "context_length_exceeded"}}
+    server = serve(Server([httpx.Response(400, json=error)]))
+    _, _, events = await run("api-openai")
+    assert next(e for e in events if e["type"] == "error")["code"] == "invalid_request_error"
+    assert len(server.bodies()) == 1
