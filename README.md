@@ -152,6 +152,12 @@ parser against it. With a web checkout (`DTK_WEB_DIR`, default
 `~/datatoolkit-web`), `tests/agent/test_web_contract.py` also checks the table
 against Studio's parser.
 
+Attached files (`POST /api/ui/agent/attachments`, paths under the upload dir)
+are **read-only** for the agent: `list_attachments`, and `read_attachment` for
+text files; tables are read with the usual tools and a `source` spec. No tool
+attaches a file or turns it into a workspace source
+(`docs/agent-chat-protocol.md`, "Attachments").
+
 ```bash
 uv sync --extra agent
 uv run dtk-api        # serves /mcp too; token + url in $DTK_HOME/agent/runtime.json

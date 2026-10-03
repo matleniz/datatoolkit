@@ -28,6 +28,7 @@ from typing import Any, Protocol
 
 from mcp.server.lowlevel import Server
 
+from dtk_engine.agent import attachments as _attachments
 from dtk_engine.agent.models import FREE_TEXT, ModelList
 from dtk_engine.agent.policy import AuditLog
 from dtk_engine.agent.ports import LocalUiPort
@@ -370,17 +371,22 @@ class AgentHub:
         chat.pack, chat.model = pack, model
         return not (same_pack and keep)
 
-    def send(self, session: str, text: str) -> str:
-        """Start a turn; its events stream on the session's SSE. Returns the turn id."""
+    def send(self, session: str, text: str, attachments: list[str] | None = None) -> str:
+        """Start a turn; its events stream on the session's SSE. Returns the turn id.
+
+        ``attachments``: ids of the session's attachments (``UnknownAttachmentError`` if any is
+        unknown); the turn echoes them and the adapter's text starts with a note about them.
+        """
         reason = self.unavailable(session)
         if reason is not None or self.pack_of(session) is None:
             raise NoAgentError(reason)
+        picked = _attachments.registry(self.bridge).pick(session, attachments or [])
         chat = self._chat(session)
         if chat.busy():
             raise AgentBusyError("a turn is already running")
         chat.turn = chat.next_turn()
         chat.cancelled = False
-        chat.task = asyncio.create_task(self._run(chat, text))
+        chat.task = asyncio.create_task(self._run(chat, text, picked))
         return chat.turn
 
     async def _start(self, chat: ChatSession) -> Adapter:
@@ -392,15 +398,16 @@ class AgentHub:
             chat.adapter = adapter
         return chat.adapter
 
-    async def _run(self, chat: ChatSession, text: str) -> None:
-        chat.emit("user_message", text=text)
+    async def _run(self, chat: ChatSession, text: str, picked: list[dict]) -> None:
+        extra = {"attachments": _attachments.echo(picked)} if picked else {}
+        chat.emit("user_message", text=text, **extra)
         stop = "end_turn"
         try:
             if chat.over_cap():
                 stop = "max_tokens"
             else:
                 adapter = await self._start(chat)
-                stop = await adapter.send(text) or "end_turn"
+                stop = await adapter.send(_attachments.turn_note(picked) + text) or "end_turn"
         except asyncio.CancelledError:
             stop = "cancelled"
         except Exception as exc:  # noqa: BLE001 - a pack failure ends the turn, not the server

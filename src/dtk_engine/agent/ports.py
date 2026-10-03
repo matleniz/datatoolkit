@@ -1,6 +1,6 @@
 """How a tool reaches Studio: in-process (``/mcp`` mount) or over HTTP (stdio ``dtk-mcp``).
 
-Both ports answer the same three calls, so every tool is written once.
+Both ports answer the same calls, so every tool is written once.
 ``RemoteUiPort`` uses stdlib ``urllib`` in a worker thread (no HTTP dependency).
 """
 
@@ -25,6 +25,8 @@ class UiPort(Protocol):
 
     async def command_status(self, cid: str) -> dict | None: ...
 
+    async def list_attachments(self, session: str) -> list[dict]: ...
+
 
 class LocalUiPort:
     """The bridge of the app this server is mounted in."""
@@ -40,6 +42,11 @@ class LocalUiPort:
 
     async def command_status(self, cid: str) -> dict | None:
         return self.bridge.command_status(cid)
+
+    async def list_attachments(self, session: str) -> list[dict]:
+        from dtk_engine.agent.attachments import registry
+
+        return registry(self.bridge).list(session)
 
 
 class RemoteUiPort:
@@ -65,6 +72,12 @@ class RemoteUiPort:
         path = f"/api/ui/commands/{urllib.parse.quote(cid, safe='')}"
         found = await asyncio.to_thread(self._request, "GET", path, {})
         return found if isinstance(found, dict) and "id" in found else None
+
+    async def list_attachments(self, session: str) -> list[dict]:
+        found = await asyncio.to_thread(
+            self._request, "GET", "/api/ui/agent/attachments", {"session": session}
+        )
+        return found if isinstance(found, list) else []
 
     @staticmethod
     def _request(

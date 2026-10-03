@@ -23,6 +23,7 @@ STATIC_TOOLS = {
     "list_keys", "key_schema", "run_key", "list_transforms", "transform_schema",
     "list_workspaces", "get_workspace", "get_rows", "get_profiles", "preview_step",
     "align_report", "source_columns", "get_ui_context", "get_command_status",
+    "list_attachments", "read_attachment",
 }
 
 

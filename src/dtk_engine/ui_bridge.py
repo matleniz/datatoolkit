@@ -61,6 +61,7 @@ import time
 from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 DEFAULT_REVIEW_TIMEOUT = 900.0
@@ -102,6 +103,7 @@ class UiBridge:
         self._reviews: dict[str, tuple[str, float]] = {}  # id -> (session, deadline)
         self._results: OrderedDict[str, dict] = OrderedDict()  # final, most recent last
         self._ids = itertools.count(1)
+        self.attachments: Any = None  # AttachmentRegistry (agent/attachments.py), built on first use
         self._closed = False
 
     # -- context ---------------------------------------------------------

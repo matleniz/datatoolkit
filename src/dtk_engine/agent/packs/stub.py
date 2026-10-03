@@ -14,6 +14,8 @@
     from the Studio context), then a one-line reply;
   - text ``drop <column>`` -> the same with ``drop_columns [<column>]``, a
     destructive proposal Studio holds for review (``pending: "review"``);
+  - text with ``attachments`` -> ``list_attachments`` through the real server
+    (``session`` pinned), then a reply naming the attached files;
   - anything else -> echoed back.
 
   Usage is fake but deterministic: 10 input + 5 output tokens per turn.
@@ -90,6 +92,8 @@ class StubAdapter:
         drop = _DROP.search(text)
         if "permission" in lowered or "add a step" in lowered:
             reply = await self._add_step(chat, ask="permission" in lowered)
+        elif "attachments" in lowered:
+            reply = await self._list_attachments(chat)
         elif drop:
             step = {"op": "drop_columns", "target": "both", "params": {"columns": [drop[1]]}}
             reply = await self._add_step(chat, ask=False, step=step)
@@ -97,6 +101,20 @@ class StubAdapter:
         chat.emit("assistant_delta", text=reply)
         chat.set_turn_usage(*TURN_USAGE)
         return "end_turn"
+
+    async def _list_attachments(self, chat: _chat.ChatSession) -> str:
+        self._calls += 1
+        tool_id = f"stub-{self._calls}"
+        args: dict[str, Any] = {"session": chat.session}
+        chat.emit("tool_call", id=tool_id, name="list_attachments", input=args)
+        async with Client(chat.mcp_server()) as client:
+            result = await client.call_tool("list_attachments", args)
+        text = "".join(getattr(c, "text", "") for c in result.content)
+        parsed = parse_tool_text(text)
+        chat.emit("tool_result", id=tool_id, **tool_result_fields(parsed, is_error=bool(result.is_error)))
+        found = parsed.get("data") if isinstance(parsed, dict) and not result.is_error else None
+        names = [a["name"] for a in found or []]
+        return f"stub: attachments: {', '.join(names) or 'none'}"
 
     async def _add_step(
         self, chat: _chat.ChatSession, *, ask: bool, step: dict | None = None
