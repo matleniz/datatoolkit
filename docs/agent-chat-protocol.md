@@ -85,7 +85,10 @@ once.
   `tool_result`, `assistant_delta`, `usage` (10 / 5 tokens), `done`. Text
   containing `permission` → the same, with a `permission_request` after the
   `tool_call` (deny → `tool_result {ok: false, error: "denied"}`). Any other
-  text → `assistant_delta "stub: <text>"`, `usage`, `done`.
+  text → `assistant_delta "stub: <text>"`, `usage`, `done`. Text containing
+  `attachments` → `tool_call list_attachments` through the real server
+  (`session` pinned), `tool_result`, then `assistant_delta "stub: attachments:
+  <names>"` (or `none`).
 
 ## Adapter interface (engine side)
 

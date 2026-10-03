@@ -30,6 +30,7 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from dtk_engine import contract
+from dtk_engine.agent.attachments import upload_dir
 from dtk_engine.agent.commands import command_schemas
 from dtk_engine.errors import (
     KeyParamsError,
@@ -64,10 +65,7 @@ def _cors_origins() -> list[str]:
 
 def _upload_dir() -> Path:
     """``$DTK_UPLOAD_DIR``, else ``$DTK_HOME/uploads`` (``~/.datatoolkit/uploads``)."""
-    if os.environ.get("DTK_UPLOAD_DIR"):
-        return Path(os.environ["DTK_UPLOAD_DIR"]).expanduser()
-    home = os.environ.get("DTK_HOME") or "~/.datatoolkit"
-    return Path(home).expanduser() / "uploads"
+    return upload_dir()
 
 
 def _save_upload(name: str, data: bytes, root: Path | None = None) -> Path:
@@ -467,6 +465,11 @@ class AgentSession(BaseModel):
 
 class AgentSend(AgentSession):
     text: str
+    attachments: list[str] = []
+
+
+class AgentAttach(AgentSession):
+    path: str
 
 
 class AgentConfig(AgentSession):
@@ -500,11 +503,14 @@ async def post_agent_send(body: AgentSend, request: Request):
     hub = _agent_hub(request)
     if hub is None:
         return _ui_error(503, "NoAgent", _NO_AGENT_EXTRA)
+    from dtk_engine.agent.attachments import UnknownAttachmentError
     from dtk_engine.agent.chat import AgentBusyError, NoAgentError
 
     await run_in_threadpool(hub.unavailable, body.session)  # first auth probe may spawn the CLI
     try:
-        turn = hub.send(body.session, body.text)
+        turn = hub.send(body.session, body.text, body.attachments)
+    except UnknownAttachmentError as exc:
+        return _ui_error(422, "UnknownAttachment", str(exc))
     except NoAgentError as exc:
         return _ui_error(503, "NoAgent", str(exc))
     except AgentBusyError as exc:
@@ -571,6 +577,52 @@ async def ui_terminal(websocket: WebSocket) -> None:
     from dtk_engine.agent.terminal import serve
 
     await serve(websocket, terminals, dict(websocket.query_params))
+
+
+# -- chat attachments (read-only): protocol in docs/agent-chat-protocol.md --
+
+
+def _attachments(request: Request):
+    """The app's attachment registry; None without the extra ``agent``."""
+    try:
+        from dtk_engine.agent.attachments import registry
+    except ImportError:
+        return None
+    return registry(_bridge(request))
+
+
+@ui_router.post("/agent/attachments", response_model=None)
+async def post_agent_attachment(body: AgentAttach, request: Request):
+    reg = _attachments(request)
+    if reg is None:
+        return _ui_error(503, "NoAgent", _NO_AGENT_EXTRA)
+    from dtk_engine.agent.attachments import NotAnUploadError, describe_upload
+
+    try:  # file checks off the loop; registering (and its SSE event) on it
+        described = await run_in_threadpool(describe_upload, body.path)
+    except NotAnUploadError as exc:
+        return _ui_error(422, "NotAnUpload", str(exc))
+    return reg.register(body.session, described)
+
+
+@ui_router.get("/agent/attachments", response_model=None)
+async def get_agent_attachments(session: str, request: Request):
+    reg = _attachments(request)
+    return [] if reg is None else reg.list(session)
+
+
+@ui_router.delete("/agent/attachments/{att_id}", response_model=None)
+async def delete_agent_attachment(att_id: str, session: str, request: Request):
+    reg = _attachments(request)
+    from dtk_engine.agent.attachments import UnknownAttachmentError
+
+    try:
+        if reg is None:
+            raise UnknownAttachmentError(f"no attachment {att_id!r}")
+        reg.remove(session, att_id)
+    except UnknownAttachmentError as exc:
+        return _ui_error(404, "UnknownAttachment", str(exc))
+    return {"removed": True}
 
 
 _ERROR_STATUS: dict[type[Exception], int] = {

@@ -14,7 +14,7 @@ from typing import Any
 import anyio.to_thread
 
 from dtk_engine import contract
-from dtk_engine.agent import policy
+from dtk_engine.agent import attachments, policy
 from dtk_engine.agent.commands import UI_COMMANDS, CommandSpec
 from dtk_engine.agent.ports import UiPort
 from dtk_engine.errors import KeyParamsError
@@ -206,6 +206,29 @@ class _Tools:
             raise KeyParamsError(f"no recent command {cid!r}")
         return policy.frame(status, identity=status.get("identity"))
 
+    # -- attachments (read-only) -----------------------------------------
+    async def _attachments(self, args: dict) -> tuple[str, list[dict]]:
+        session = args.get("session")
+        if session is None:
+            session = ((await self.port.get_context(None)) or {}).get("session")
+        if session is None:
+            raise KeyParamsError("no Studio session: pass session")
+        return session, await self.port.list_attachments(session)
+
+    async def list_attachments(self, args: dict) -> dict:
+        _, found = await self._attachments(args)
+        return policy.frame(found)
+
+    async def read_attachment(self, args: dict) -> dict:
+        att_id = str(_need(args, "id"))
+        _, found = await self._attachments(args)
+        att = next((a for a in found if a["id"] == att_id), None)
+        if att is None:
+            raise KeyParamsError(f"no attachment {att_id!r} in this session")
+        return await _compute(
+            attachments.read_text, att, int(args.get("offset") or 0), args.get("max_chars")
+        )
+
     def ui_command(self, spec: CommandSpec) -> Handler:
         async def handler(args: dict) -> dict:
             policy.check_command(spec.type)
@@ -285,6 +308,18 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
         ("get_ui_context",
          "What the user sees in Studio: workspace, role, version, selection, windows.",
          session_only, t.get_ui_context, True),
+        ("list_attachments",
+         ("Files the user attached to the chat (id, name, path, size, kind, columns). "
+          "Read-only: tables are read with the usual tools and a source spec on their "
+          "path; text with read_attachment."),
+         session_only, t.list_attachments, True),
+        ("read_attachment",
+         (f"Text of an attached file of kind text, framed as data (at most "
+          f"{policy.max_response_chars()} characters per call; continue at next_offset)."),
+         _schema({
+             "id": _STR, "offset": {"type": "integer", "minimum": 0},
+             "max_chars": {"type": "integer", "minimum": 1}, "session": _SESSION,
+         }, ("id",)), t.read_attachment, True),
         ("get_command_status",
          "Final ack of a UI command (poll after propose_steps returned pending: review).",
          _schema({"id": _STR}, ("id",)), t.get_command_status, True),
