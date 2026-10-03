@@ -14,6 +14,11 @@ session. The adapter drives its agent (``start`` / ``send`` / ``cancel`` /
 ``DTK_AGENT_MAX_TOKENS``) and ``mcp_server()`` (the dtk MCP server bound to
 this app's UI bridge: the agent's only tools). The hub owns turns: one at a
 time per session, ``usage`` then ``done`` always closing a turn.
+
+Idle sessions are reaped: ``IDLE_GRACE`` seconds after a Studio session loses
+its last SSE listener (closed tab), the hub cancels its turn, closes its
+adapter (e.g. the ``claude`` CLI of ``agent-sdk``) and drops its chat state
+and attachments. A reconnect within the grace (a reload keeps the id) keeps it.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from dtk_engine.ui_bridge import UiBridge, review_timeout_from_env
 
 EVENT = "agent"
 CANCEL_GRACE = 5.0
+IDLE_GRACE = 300.0  # seconds a session may have no listener before it is reaped
 
 
 class NoAgentError(Exception):
@@ -229,6 +235,10 @@ class AgentHub:
         self._unavailable = unavailable
         self._chats: dict[str, ChatSession] = {}
         self._discovery: dict[Any, asyncio.Future[ModelList]] = {}
+        self.idle_grace = IDLE_GRACE
+        self._idle: dict[str, asyncio.TimerHandle] = {}
+        self._reaping: set[asyncio.Task] = set()
+        bridge.listener_hooks.append(self._on_listening)
         port = LocalUiPort(bridge)
         self.session_tools = frozenset(
             spec.name for spec in build_tools(port)
@@ -446,10 +456,58 @@ class AgentHub:
         chat = self._chats.get(session)
         return chat is not None and chat.reply(pid, allow)
 
-    async def close(self) -> None:
-        for session in list(self._chats):
+    # -- idle sessions -----------------------------------------------------
+    def _on_listening(self, session: str, listening: bool) -> None:
+        timer = self._idle.pop(session, None)
+        if timer is not None:
+            timer.cancel()
+        if listening:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # no loop (sync caller): nothing to schedule on
+            return
+        self._idle[session] = loop.call_later(self.idle_grace, self._start_reap, session)
+
+    def _start_reap(self, session: str) -> None:
+        self._idle.pop(session, None)
+        task = asyncio.ensure_future(self.reap(session))
+        self._reaping.add(task)
+        task.add_done_callback(self._reaping.discard)
+
+    async def reap(self, session: str) -> bool:
+        """Release an idle session (turn, adapter, chat state, attachments).
+
+        False (nothing done) when the session listens again.
+        """
+        if self.bridge.has_listener(session):
+            return False
+        chat = self._chats.get(session)
+        if chat is not None:
             await self.cancel(session)
-            adapter = self._chats[session].adapter
+            if self.bridge.has_listener(session):  # came back while cancelling
+                return False
+            self._chats.pop(session, None)
+            adapter, chat.adapter = chat.adapter, None
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    await adapter.close()
+        _attachments.registry(self.bridge).drop(session)
+        return True
+
+    async def close(self) -> None:
+        for timer in self._idle.values():
+            timer.cancel()
+        self._idle.clear()
+        reaping = list(self._reaping)
+        for task in reaping:
+            task.cancel()
+        await asyncio.gather(*reaping, return_exceptions=True)
+        with contextlib.suppress(ValueError):
+            self.bridge.listener_hooks.remove(self._on_listening)
+        for session, chat in list(self._chats.items()):
+            await self.cancel(session)
+            adapter = chat.adapter
             if adapter is not None:
                 with contextlib.suppress(Exception):
                     await adapter.close()

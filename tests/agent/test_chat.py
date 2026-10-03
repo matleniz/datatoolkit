@@ -14,6 +14,7 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 
+from dtk_engine.agent import attachments
 from dtk_engine.agent.chat import AgentBusyError, AgentHub, NoAgentError, Pack
 from dtk_engine.agent.packs.chat_packs import hub_from_env, tool_result_fields
 from dtk_engine.agent.packs.stub import StubAdapter
@@ -279,6 +280,91 @@ async def test_sessions_are_separate_and_close():
     assert (await b.until_done())[1]["text"] == "stub: y"
     await hub.close()
     assert hub.status("a")["usage"] == {"input_tokens": 0, "output_tokens": 0}
+
+
+
+class ClosingAdapter(StubAdapter):
+    closed = 0
+
+    async def close(self) -> None:
+        type(self).closed += 1
+        await super().close()
+
+
+async def _chatted(bridge: UiBridge, hub: AgentHub) -> Studio:
+    studio = Studio(bridge)
+    hub.send("s1", "hi")
+    await studio.until_done()
+    return studio
+
+
+async def test_idle_session_is_reaped_after_the_grace(tmp_path):
+    ClosingAdapter.closed = 0
+    bridge = UiBridge("t")
+    hub = _hub(bridge, _pack(ClosingAdapter))
+    hub.idle_grace = 0.05
+    studio = await _chatted(bridge, hub)
+    upload = tmp_path / "home" / "uploads" / "notes.txt"
+    upload.parent.mkdir(parents=True)
+    upload.write_text("hello")
+    registry = attachments.registry(bridge)
+    registry.add("s1", str(upload))
+    assert hub.status("s1")["usage"]["input_tokens"] > 0
+    bridge.remove_listener("s1", studio.queue)  # the tab closes
+    await asyncio.sleep(0.01)
+    assert ClosingAdapter.closed == 0  # still within the grace
+    await asyncio.sleep(0.15)
+    assert ClosingAdapter.closed == 1
+    assert hub.status("s1")["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert registry.list("s1") == []
+    await hub.close()
+    assert ClosingAdapter.closed == 1  # not closed twice
+
+
+async def test_reconnect_within_the_grace_keeps_the_session():
+    ClosingAdapter.closed = 0
+    bridge = UiBridge("t")
+    hub = _hub(bridge, _pack(ClosingAdapter))
+    hub.idle_grace = 0.1
+    studio = await _chatted(bridge, hub)
+    usage = hub.status("s1")["usage"]
+    bridge.remove_listener("s1", studio.queue)
+    await asyncio.sleep(0.03)
+    again = Studio(bridge)  # a reload keeps the session id
+    await asyncio.sleep(0.2)
+    assert ClosingAdapter.closed == 0
+    assert hub.status("s1")["usage"] == usage
+    hub.send("s1", "still there")
+    assert (await again.until_done())[1]["text"] == "stub: still there"
+    await hub.close()
+    assert ClosingAdapter.closed == 1
+
+
+async def test_reap_cancels_a_running_turn(monkeypatch):
+    monkeypatch.setattr("dtk_engine.agent.chat.CANCEL_GRACE", 0.05)
+    bridge = UiBridge("t")
+    hub = _hub(bridge, _pack(StuckAdapter))
+    hub.idle_grace = 0.01
+    studio = Studio(bridge)
+    hub.send("s1", "x")
+    await asyncio.sleep(0.01)
+    assert hub.status("s1")["running"]
+    bridge.remove_listener("s1", studio.queue)
+    await asyncio.sleep(0.3)
+    assert hub.status("s1")["running"] is False
+    assert "s1" not in hub._chats
+    await hub.close()
+
+
+def test_bridge_listener_hooks_fire_on_first_and_last_listener():
+    bridge = UiBridge("t")
+    seen: list = []
+    bridge.listener_hooks.append(lambda s, on: seen.append((s, on)))
+    one, two = bridge.add_listener("s"), bridge.add_listener("s")
+    bridge.remove_listener("s", one)
+    bridge.remove_listener("s", two)
+    bridge.remove_listener("s", two)  # already gone: no second notice
+    assert seen == [("s", True), ("s", False)]
 
 
 def test_no_pack_and_env_selection(monkeypatch):

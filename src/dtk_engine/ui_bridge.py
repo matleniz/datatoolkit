@@ -66,6 +66,7 @@ import secrets
 import tempfile
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,9 @@ class UiBridge:
         self._results: OrderedDict[str, dict] = OrderedDict()  # final, most recent last
         self._ids = itertools.count(1)
         self.attachments: Any = None  # AttachmentRegistry (agent/attachments.py), built on first use
+        # Called with (session, listening) when a session gets its first listener
+        # (True) or loses its last one (False); the agent hub reaps idle chats with it.
+        self.listener_hooks: list[Callable[[str, bool], None]] = []
         self._closed = False
 
     # -- context ---------------------------------------------------------
@@ -130,7 +134,10 @@ class UiBridge:
         queue: asyncio.Queue = asyncio.Queue()
         if self._closed:
             queue.put_nowait(None)
+        first = not self._listeners.get(session)
         self._listeners.setdefault(session, []).append(queue)
+        if first:
+            self._notify(session, True)
         return queue
 
     def remove_listener(self, session: str, queue: asyncio.Queue) -> None:
@@ -138,8 +145,14 @@ class UiBridge:
         if queue in queues:
             queues.remove(queue)
         if not queues:
-            self._listeners.pop(session, None)
+            had = self._listeners.pop(session, None) is not None
             self._fail_pending(session, "no_studio")
+            if had:
+                self._notify(session, False)
+
+    def _notify(self, session: str, listening: bool) -> None:
+        for hook in self.listener_hooks:
+            hook(session, listening)
 
     def has_listener(self, session: str) -> bool:
         return bool(self._listeners.get(session))
