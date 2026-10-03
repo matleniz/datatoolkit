@@ -20,11 +20,12 @@ from typing import Literal
 
 # FastAPI is an optional dependency; keep the import inside this module so
 # ``import dtk_engine`` still works without the ``api`` extra.
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from starlette.requests import HTTPConnection
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
@@ -268,24 +269,34 @@ async def _ui_guard_response(_request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=exc.status, content=body)
 
 
-def _bridge(request: Request) -> UiBridge:
+def _bridge(request: HTTPConnection) -> UiBridge:
     return request.app.state.ui_bridge
 
 
-def _presented_token(request: Request) -> str:
+def _presented_token(request: HTTPConnection) -> str:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return request.query_params.get("token", "")
 
 
-def _check_access(request: Request, token: str) -> None:
-    """Host (DNS rebinding), then Origin, then token; shared by ``/api/ui`` and ``/mcp``."""
+_HTTP_SCHEME = {"ws": "http", "wss": "https"}
+
+
+def _check_access(request: HTTPConnection, token: str, *, need_origin: bool = False) -> None:
+    """Host (DNS rebinding), then Origin, then token; shared by ``/api/ui`` and ``/mcp``.
+
+    ``need_origin``: a browser always sends ``Origin`` on a WebSocket, and no
+    CORS preflight protects one, so the terminal socket refuses a missing one.
+    """
     if host_name(request.headers.get("host", "")) not in allowed_hosts():
         raise _UiGuardError(403, "host not allowed")
     origin = request.headers.get("origin")
+    if origin is None and need_origin:
+        raise _UiGuardError(403, "origin required")
     if origin is not None:
-        same = f"{request.url.scheme}://{request.headers.get('host', '')}"
+        scheme = _HTTP_SCHEME.get(request.url.scheme, request.url.scheme)
+        same = f"{scheme}://{request.headers.get('host', '')}"
         if origin != same and origin not in _cors_origins():
             raise _UiGuardError(403, "origin not allowed")
     presented = _presented_token(request).encode()
@@ -540,6 +551,28 @@ async def post_agent_permission(body: AgentPermission, request: Request):
     return {"ok": True}
 
 
+# -- agent terminal (WS /api/ui/terminal): a CLI in a PTY, docs/agent-chat-protocol.md --
+
+_NO_TERMINAL = "extra agent not installed, or no POSIX PTY here (uv sync --extra agent)"
+
+
+async def ui_terminal(websocket: WebSocket) -> None:
+    """Accepted first, then refused with a 44xx code, so the browser sees why."""
+    await websocket.accept()
+    try:
+        _check_access(websocket, _bridge(websocket).token, need_origin=True)
+    except _UiGuardError as exc:
+        await websocket.close(4401 if exc.status == 401 else 4403, str(exc))
+        return
+    terminals = getattr(websocket.app.state, "terminals", None)
+    if terminals is None:
+        await websocket.close(4403, _NO_TERMINAL)
+        return
+    from dtk_engine.agent.terminal import serve
+
+    await serve(websocket, terminals, dict(websocket.query_params))
+
+
 _ERROR_STATUS: dict[type[Exception], int] = {
     **dict.fromkeys((UnknownKeyError, UnknownTransformError, WorkspaceNotFoundError), 404),
     **dict.fromkeys((KeyParamsError, SourceError), 422),
@@ -566,6 +599,10 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
         from dtk_engine.agent.server import mcp_http_app
     except ImportError:
         mcp_http_app = None
+    try:  # terminal packs: extra ``agent`` and a POSIX PTY
+        from dtk_engine.agent.terminal import Terminals
+    except ImportError:
+        Terminals = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -577,12 +614,16 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
                 # Built here, not at import: ``dtk-api --agent`` sets DTK_AGENT_PACK first.
                 app.state.agent_hub = hub_from_env(bridge, audit)
                 stack.push_async_callback(app.state.agent_hub.close)
+            if Terminals is not None:
+                stack.push_async_callback(app.state.terminals.close)
             yield
             app.state.ui_bridge.close()
 
     application = FastAPI(title="dtk-api", docs_url=None, redoc_url=None, lifespan=lifespan)
     application.state.ui_bridge = bridge
     application.state.ui_ping_interval = ui_ping_interval
+    if Terminals is not None:
+        application.state.terminals = Terminals()
     application.add_middleware(
         CORSMiddleware, allow_origins=_cors_origins(), allow_credentials=True,
         allow_methods=["*"], allow_headers=["*"],
@@ -598,6 +639,7 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
     if mcp_http_app is not None:
         guarded = _McpGuard(bridge)
         application.router.routes.extend(Route(path, guarded) for path in ("/mcp", "/mcp/"))
+    application.add_api_websocket_route("/api/ui/terminal", ui_terminal)
     return application
 
 
@@ -605,7 +647,7 @@ app = create_app()
 
 
 def main(argv: list[str] | None = None) -> None:
-    """CLI entry: ``dtk-api [--host HOST] [--port PORT] [--agent [PACK]]``."""
+    """CLI entry: ``dtk-api [--host HOST] [--port PORT] [--agent [PACK]] [--terminal]``."""
     parser = argparse.ArgumentParser(prog="dtk-api", description="datatoolkit HTTP API")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -614,9 +656,16 @@ def main(argv: list[str] | None = None) -> None:
         help="enable the in-Studio agent chat (pack: agent-sdk (default) or stub; "
         "same as DTK_AGENT_PACK)",
     )
+    parser.add_argument(
+        "--terminal", action="store_true",
+        help="allow agent CLIs (claude, gemini, opencode) in a Studio terminal "
+        "(same as DTK_AGENT_TERMINAL=1)",
+    )
     args = parser.parse_args(argv)
     if args.agent:
         os.environ["DTK_AGENT_PACK"] = args.agent
+    if args.terminal:
+        os.environ["DTK_AGENT_TERMINAL"] = "1"
     import uvicorn
 
     # Runtime file: lets the Vite dev server and dtk-mcp find this run's token.

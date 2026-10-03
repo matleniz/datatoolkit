@@ -35,10 +35,18 @@ def terminal_lister(pack_id: str) -> Lister:
     return opencode_models if pack_id == "opencode" else gemini_models
 
 
+def terminal_unavailable() -> str | None:
+    """Why no terminal can open at all (None = the terminal is on)."""
+    if os.name != "posix":
+        return "terminal packs need a POSIX PTY (Linux, macOS, WSL)"
+    return None if terminal_enabled() else TERMINAL_OFF
+
+
 def terminal_reason(pack_id: str) -> str | None:
     """Why a terminal pack cannot be opened (None = ready)."""
-    if not terminal_enabled():
-        return TERMINAL_OFF
+    reason = terminal_unavailable()
+    if reason is not None:
+        return reason
     pack = EXTERNAL_PACKS[pack_id]
     return None if pack.detect() else f"{pack.cli} not found on PATH"
 

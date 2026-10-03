@@ -17,9 +17,12 @@ dependencies = [
 
 [project.optional-dependencies]
 api = ["fastapi", "uvicorn"]
-agent = ["mcp>=2.2,<3", "fastapi", "uvicorn"]
+# websockets: uvicorn's WebSocket support, for the terminal packs (WS /api/ui/terminal).
+agent = ["mcp>=2.2,<3", "fastapi", "uvicorn", "websockets"]
 # In-Studio chat with Claude (agent-sdk pack): the SDK runs the claude CLI.
-agent-sdk = ["claude-agent-sdk>=0.2.163,<0.3", "mcp>=2.2,<3", "fastapi", "uvicorn"]
+agent-sdk = [
+    "claude-agent-sdk>=0.2.163,<0.3", "mcp>=2.2,<3", "fastapi", "uvicorn", "websockets",
+]
 
 [project.scripts]
 dtk-api = "dtk_engine.http:main"
@@ -29,7 +32,7 @@ dtk-mcp = "dtk_engine.agent.cli:main"
 # fastapi/uvicorn also listed here so `uv sync` (gate) can run the HTTP tests;
 # the optional extra `api` is what consumers install for `dtk-api`.
 dev = [
-    "ruff", "pytest", "httpx", "fastapi", "uvicorn", "mcp>=2.2,<3",
+    "ruff", "pytest", "httpx", "fastapi", "uvicorn", "mcp>=2.2,<3", "websockets",
     "claude-agent-sdk>=0.2.163,<0.3",
 ]
 

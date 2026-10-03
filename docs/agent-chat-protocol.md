@@ -250,6 +250,9 @@ listed by the pack's `tool_policy`). Opt-in: `DTK_AGENT_TERMINAL=1` or
   grace. One terminal per (session, pack); reopening after a close starts a
   fresh CLI.
 - Usage and the token cap do not apply: the CLI bills its own plan.
+- First launch: Claude Code asks whether to trust the terminal folder (it
+  only holds the dtk config); the user answers in the terminal, the CLI
+  remembers it.
 
 ### Attachments (#121)
 
