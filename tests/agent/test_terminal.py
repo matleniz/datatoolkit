@@ -247,3 +247,84 @@ def test_dtk_api_terminal_flag_sets_the_env(monkeypatch):
     monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
     main(["--terminal"])
     assert options.terminal_enabled()
+
+
+SLOW_READER = """\
+import os, sys, time, tty
+tty.setraw(0)
+print("ready", flush=True)
+time.sleep(2.0)
+total = 0
+while total < int(sys.argv[1]):
+    total += len(os.read(0, 65536))
+sys.stdout.write(f"total:{total}\\r\\n")
+sys.stdout.flush()
+time.sleep(30)
+"""
+
+FLOOD = """\
+import os, sys, tty
+tty.setraw(0)
+chunk = b"x" * 65536
+while True:
+    os.write(1, chunk)
+"""
+
+
+def test_big_write_to_a_busy_cli_does_not_block_the_engine(tmp_path):
+    size = 1 << 20  # far above the PTY input buffer
+    script = tmp_path / "slow_reader.py"
+    script.write_text(SLOW_READER)
+    app = create_app()
+    app.state.terminals.argv_for = lambda pack, d, m: [sys.executable, str(script), str(size)]
+    with TestClient(app) as client, client.websocket_connect(
+        _url(), headers=dict(ORIGIN)
+    ) as ws:
+        ws.receive_text()
+        _until(ws, "ready")
+        ws.send_bytes(b"a" * size)
+        time.sleep(0.2)  # let the engine hit the full PTY buffer
+        started = time.monotonic()
+        assert client.get("/api/keys").status_code == 200
+        assert time.monotonic() - started < 1.0  # the CLI is still asleep
+        assert f"total:{size}" in _until(ws, f"total:{size}")
+
+
+class _SlowSocket:
+    def __init__(self) -> None:
+        self.sent = 0
+        self.max_backlog = 0
+        self.reads = 0
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent += 1
+        self.max_backlog = max(self.max_backlog, self.reads - self.sent)
+        await asyncio.sleep(0.005)
+
+
+@pytest.mark.anyio
+async def test_flooding_cli_with_a_slow_socket_keeps_the_queue_bounded(tmp_path):
+    script = tmp_path / "flood.py"
+    script.write_text(FLOOD)
+    term = terminal.Terminal([sys.executable, str(script)], tmp_path, (80, 24))
+    ws = _SlowSocket()
+    read = term.read
+
+    def counting_read():
+        data = read()
+        if data:
+            ws.reads += 1
+        return data
+
+    term.read = counting_read
+    pump = asyncio.create_task(terminal._pump_out(term, ws))
+    try:
+        await asyncio.sleep(1.0)
+    finally:
+        pump.cancel()
+        await asyncio.gather(pump, return_exceptions=True)
+        await term.stop()
+    assert ws.sent > 20  # the reader resumed after each pause
+    assert ws.max_backlog <= terminal.OUT_QUEUE + 1
+    assert ws.reads - ws.sent <= terminal.OUT_QUEUE + 1
+

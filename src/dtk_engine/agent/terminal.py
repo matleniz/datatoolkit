@@ -46,6 +46,7 @@ MAX_SIZE = 1000
 HUP_GRACE = 1.0
 TERM_GRACE = 3.0
 READ_CHUNK = 65536
+OUT_QUEUE = 64  # PTY output chunks buffered for the socket; the reader pauses when full
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}$")
 
 # WebSocket close codes (the contract's; 1000 = the CLI exited, 1011 = spawn failure).
@@ -144,15 +145,34 @@ class Terminal:
         os.set_blocking(master, False)
         self.fd: int | None = master
 
-    def write(self, data: bytes) -> None:
+    async def write(self, data: bytes) -> None:
+        """Write all of ``data``; on a full PTY, wait for writability (never spin).
+
+        The caller awaits it before reading the next frame: a CLI that does not
+        read its input back-pressures the socket, not the event loop.
+        """
         view = memoryview(data)
         while view and self.fd is not None:
             try:
                 view = view[os.write(self.fd, view):]
-            except BlockingIOError:
                 continue
+            except BlockingIOError:
+                pass
             except OSError:
                 return
+            await self._writable()
+
+    async def _writable(self) -> None:
+        loop = asyncio.get_running_loop()
+        fd = self.fd
+        assert fd is not None
+        ready = loop.create_future()
+        loop.add_writer(fd, lambda: ready.done() or ready.set_result(None))
+        try:
+            await ready
+        finally:
+            with contextlib.suppress(ValueError, OSError):
+                loop.remove_writer(fd)
 
     def resize(self, cols: int, rows: int) -> None:
         if self.fd is not None:
@@ -239,23 +259,33 @@ class Terminals:
 
 
 async def _pump_out(terminal: Terminal, ws: Socket) -> None:
-    """PTY output -> binary frames, until the CLI closes the PTY."""
+    """PTY output -> binary frames, until the CLI closes the PTY.
+
+    The queue is bounded: while it is full the PTY reader is paused, so a slow
+    socket back-pressures the CLI instead of growing memory.
+    """
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[bytes] = asyncio.Queue()
+    queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=OUT_QUEUE)
+    state = {"reading": True, "eof": False}
 
     def readable() -> None:
         data = terminal.read()
         if data is None:
             return
-        if not data:
-            loop.remove_reader(fd)
         queue.put_nowait(data)
+        if not data or queue.full():
+            loop.remove_reader(fd)
+            state["reading"] = False
+            state["eof"] = not data
 
     fd = terminal.fd
     assert fd is not None
     loop.add_reader(fd, readable)
     try:
         while data := await queue.get():
+            if not state["reading"] and not state["eof"]:
+                loop.add_reader(fd, readable)
+                state["reading"] = True
             await ws.send_bytes(data)
     finally:
         with contextlib.suppress(ValueError, OSError):
@@ -279,7 +309,7 @@ async def _pump_in(terminal: Terminal, ws: Socket) -> None:
         if message["type"] == "websocket.disconnect":
             return
         if message.get("bytes") is not None:
-            terminal.write(message["bytes"])
+            await terminal.write(message["bytes"])
         elif message.get("text") is not None:
             _control(terminal, message["text"])
 
