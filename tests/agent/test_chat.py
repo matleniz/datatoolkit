@@ -128,6 +128,26 @@ async def test_review_pending_is_reported_on_the_tool_result():
     assert result["ok"] is True and result["pending"] == "review" and result["command"]
 
 
+async def test_drop_column_is_a_destructive_proposal_held_for_review():
+    bridge = UiBridge("t")
+    bridge.put_context({"session": "s1", "workspace": "parkinson", "identity": "id-1"})
+    studio = Studio(bridge, ack={"pending": "review"})
+    hub = _hub(bridge)
+    hub.send("s1", "please drop time_since_intake_off")
+    events = await studio.until_done()
+    (cmd,) = studio.commands
+    assert cmd["ops"] == [{"add": {"step": {
+        "op": "drop_columns", "target": "both",
+        "params": {"columns": ["time_since_intake_off"]},
+    }}}]
+    result = next(e for e in events if e["type"] == "tool_result")
+    assert result["ok"] is True and result["pending"] == "review"
+    assert result["command"] == cmd["id"]
+    reply = next(e for e in events if e["type"] == "assistant_delta")
+    assert reply["text"] == "stub: waiting for your review in Studio"
+    assert bridge.command_status(cmd["id"]) == {"id": cmd["id"], "ok": None, "pending": "review"}
+
+
 async def test_permission_denied_and_allowed():
     bridge = UiBridge("t")
     studio, hub = Studio(bridge), _hub(bridge)
