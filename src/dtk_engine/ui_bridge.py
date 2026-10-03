@@ -47,6 +47,11 @@ way Jupyter publishes its server info. Readers (``read_runtime``): the Vite dev
 plugin (token for a plain ``npm run dev``), ``dtk-mcp`` (stdio proxy to the
 running ``/mcp``) and ``dtk-mcp doctor``. ``DTK_UI_RUNTIME_FILE=0`` skips it.
 The token is still never stored in a workspace, localStorage or a log.
+
+Log redaction: ``EventSource`` / browser WebSockets pass the token as
+``?token=``, which uvicorn prints in its access and WebSocket lines.
+``RedactTokenFilter`` (installed by ``dtk-api`` on uvicorn's handlers, see
+``dtk_engine.http.uvicorn_log_config``) rewrites it to ``token=***``.
 """
 
 from __future__ import annotations
@@ -54,7 +59,9 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import logging
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -66,6 +73,7 @@ from typing import Any
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 DEFAULT_REVIEW_TIMEOUT = 900.0
 MAX_RESULTS = 200
+_TOKEN_IN_QUERY = re.compile(r"([?&]token=)[^&\s\"']*", re.IGNORECASE)
 
 
 def review_timeout_from_env() -> float:
@@ -322,3 +330,32 @@ def clear_runtime(pid: int | None = None) -> None:
         return
     if isinstance(data, dict) and data.get("pid") == (os.getpid() if pid is None else pid):
         path.unlink(missing_ok=True)
+
+
+# -- log redaction ------------------------------------------------------------
+
+
+def redact_token(text: str) -> str:
+    """``...?token=<value>`` -> ``...?token=***`` (any query position)."""
+    return _TOKEN_IN_QUERY.sub(r"\1***", text)
+
+
+def _redact_arg(value: Any) -> Any:
+    return redact_token(value) if isinstance(value, str) else value
+
+
+class RedactTokenFilter(logging.Filter):
+    """Redacts ``token=`` query values in a record's message and args.
+
+    Args are redacted in place (not merged into ``msg``) because uvicorn's
+    ``AccessFormatter`` unpacks ``record.args``.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_token(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redact_arg(a) for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: _redact_arg(v) for k, v in record.args.items()}
+        return True
