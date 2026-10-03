@@ -109,3 +109,20 @@ def test_main_clears_on_crash(home, monkeypatch):
     with pytest.raises(RuntimeError):
         http.main([])
     assert not runtime_path().exists()
+
+
+def test_one_dtk_home_resolver_expands_user(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from dtk_engine.agent import attachments, policy
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("DTK_UPLOAD_DIR", raising=False)
+    monkeypatch.setenv("DTK_HOME", "~/dtk")
+    home = tmp_path / "dtk"
+    assert ui_bridge.dtk_home() == home
+    assert runtime_path() == home / "agent" / "runtime.json"  # was left unexpanded
+    assert attachments.upload_dir() == home / "uploads"
+    assert Path(os.path.realpath(home)) in policy.allowed_roots()
+    monkeypatch.delenv("DTK_HOME")
+    assert ui_bridge.dtk_home() == tmp_path / ".datatoolkit"

@@ -82,8 +82,9 @@ def test_ui_bridge_is_isolated_and_only_http_and_agent_import_it():
         if path != bridge and f"{PACKAGE}.ui_bridge" in _imports(path, ROOT)
     ]
     assert importers == [
-        "agent/chat.py", "agent/configure.py", "agent/doctor.py", "agent/packs/chat_packs.py",
-        "agent/ports.py", "agent/server.py", "http.py",
+        "agent/attachments.py", "agent/chat.py", "agent/configure.py", "agent/doctor.py",
+        "agent/packs/agent_sdk.py", "agent/packs/chat_packs.py", "agent/policy.py",
+        "agent/ports.py", "agent/server.py", "agent/terminal.py", "http.py",
     ]
 
 
