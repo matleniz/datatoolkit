@@ -229,9 +229,9 @@ Env: `DTK_AGENT_PACK` (`agent-sdk`, `stub`; unset = off),
 `DTK_AGENT_MAX_TOKENS` (per Studio session, input + output, cache reads
 included; stops the turn), `DTK_AGENT_MODEL` (default: the CLI's),
 `DTK_AGENT_MAX_TURNS` (default 25 tool round trips per message),
-`DTK_AGENT_CLI`. The `stub` pack (`dtk-api --agent stub`) is scripted and
-makes no network calls; Studio's e2e tests use it (models `stub-small`,
-`stub-large`).
+`DTK_AGENT_CLI`, `DTK_AGENT_TERMINAL` (terminal packs, below). The `stub`
+pack (`dtk-api --agent stub`) is scripted and makes no network calls;
+Studio's e2e tests use it (models `stub-small`, `stub-large`).
 
 `DTK_AGENT_PACK` and `DTK_AGENT_MODEL` are only the defaults: Studio picks the
 pack and the model per session (`GET /api/ui/agent/options`, `POST
@@ -240,6 +240,27 @@ the Claude Code CLI which models your account may use (cached per run,
 `?refresh=1` re-runs it). `DTK_AGENT_TERMINAL=1` lists the terminal packs
 (`claude-code`, `gemini`, `opencode`) as available; off, they are listed with
 the reason. See `docs/agent-chat-protocol.md`.
+
+### Terminal in Studio (opt-in)
+
+Studio can also run an agent CLI itself (`claude`, `gemini`, `opencode`) in
+a terminal panel, rendered natively. The engine starts the CLI in a PTY,
+without a shell, with the same dtk-only config as `dtk-mcp config <pack>`
+(written to `$DTK_HOME/agent/terminal/<pack>`), and bridges it over
+`WS /api/ui/terminal` (same token, Host and Origin checks as `/api/ui`).
+Closing the panel or stopping the engine stops the CLI (SIGHUP, SIGTERM,
+then SIGKILL). Protocol:
+[`docs/agent-chat-protocol.md`](docs/agent-chat-protocol.md), "v2 / Terminal".
+
+```bash
+uv sync --extra agent
+uv run dtk-api --terminal       # = DTK_AGENT_TERMINAL=1; Linux, macOS, WSL
+```
+
+Weaker guarantee than the chat packs: a CLI only turns off what it lets us
+(see "turned off" in the pack table above; its own settings, memory files and
+hooks still load). Auth and cost are the CLI's own. Claude Code asks once
+whether to trust the terminal folder; answer in the panel.
 
 Develop:
 
