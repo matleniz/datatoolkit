@@ -268,6 +268,34 @@ Weaker guarantee than the chat packs: a CLI only turns off what it lets us
 hooks still load). Auth and cost are the CLI's own. Claude Code asks once
 whether to trust the terminal folder; answer in the panel.
 
+### Direct API chat (`api-anthropic`, `api-openai`)
+
+Two more packs call a model API directly over `httpx` (extra `agent`; no CLI,
+no vendor SDK). Same dtk tools, session pinning, turn and token caps as
+`agent-sdk`. Credentials come from the environment only and never appear in
+an event, a status or an option.
+
+| Pack | Env |
+|---|---|
+| `api-anthropic` | `ANTHROPIC_API_KEY` (required), `DTK_ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`), `DTK_ANTHROPIC_MODEL` |
+| `api-openai` | `DTK_OPENAI_BASE_URL` (required, e.g. `http://127.0.0.1:11434/v1`), `DTK_OPENAI_API_KEY` (optional), `DTK_OPENAI_MODEL` |
+
+Models come from the provider (`GET /v1/models`, `GET {base}/models`). Without
+a `*_MODEL` env var, `api-anthropic` uses the first listed `sonnet`, else the
+first listed model; `api-openai` the first listed.
+
+```bash
+# a local model through Ollama's OpenAI-compatible endpoint
+ollama pull llama3.1
+export DTK_OPENAI_BASE_URL=http://127.0.0.1:11434/v1 DTK_OPENAI_MODEL=llama3.1
+uv run dtk-api --agent api-openai
+```
+
+Data egress: the conversation and the tool results (column names, profiles,
+sample rows) go to the base URL's host. A loopback URL (`127.0.0.1`,
+`localhost`) keeps them on your machine; any other host receives them. Studio
+shows the host in the pack's `provider`.
+
 Develop:
 
 ```bash

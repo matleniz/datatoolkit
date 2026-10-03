@@ -294,6 +294,7 @@ dependencies = [
 [package.optional-dependencies]
 agent = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "mcp" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -301,6 +302,7 @@ agent = [
 agent-sdk = [
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "mcp" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -328,6 +330,8 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'agent'" },
     { name = "fastapi", marker = "extra == 'agent-sdk'" },
     { name = "fastapi", marker = "extra == 'api'" },
+    { name = "httpx", marker = "extra == 'agent'" },
+    { name = "httpx", marker = "extra == 'agent-sdk'" },
     { name = "mcp", marker = "extra == 'agent'", specifier = ">=2.2,<3" },
     { name = "mcp", marker = "extra == 'agent-sdk'", specifier = ">=2.2,<3" },
     { name = "numpy" },
