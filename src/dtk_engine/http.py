@@ -653,8 +653,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
         "--agent", nargs="?", const="agent-sdk", metavar="PACK",
-        help="enable the in-Studio agent chat (pack: agent-sdk (default) or stub; "
-        "same as DTK_AGENT_PACK)",
+        help="enable the in-Studio agent chat (pack: agent-sdk (default), api-anthropic, "
+        "api-openai or stub; same as DTK_AGENT_PACK)",
     )
     parser.add_argument(
         "--terminal", action="store_true",

@@ -1,4 +1,4 @@
-"""Chat packs: ``stub`` (scripted, no network) and ``agent-sdk`` (Claude Agent SDK).
+"""Chat packs: ``stub`` (scripted), ``agent-sdk`` (Claude Agent SDK), ``api-anthropic`` / ``api-openai``.
 
 A chat pack (``chat.Pack``) runs the agent loop inside the engine for Studio's
 agent panel; the registry in ``packs/__init__.py`` (``base.Pack``) describes
@@ -27,9 +27,14 @@ OFF = ("", "0", "off", "none", "false", "no")
 
 
 def _loaders() -> dict[str, Callable[[], Pack]]:
-    from dtk_engine.agent.packs import agent_sdk, stub
+    from dtk_engine.agent.packs import agent_sdk, api_chat, stub
 
-    return {"stub": stub.chat_pack, "agent-sdk": agent_sdk.chat_pack}
+    return {
+        "stub": stub.chat_pack,
+        "agent-sdk": agent_sdk.chat_pack,
+        "api-anthropic": api_chat.anthropic_pack,
+        "api-openai": api_chat.openai_pack,
+    }
 
 
 def pack_names() -> list[str]:

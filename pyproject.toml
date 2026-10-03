@@ -17,11 +17,12 @@ dependencies = [
 
 [project.optional-dependencies]
 api = ["fastapi", "uvicorn"]
+# Direct API chat packs (api-anthropic, api-openai) call the provider with httpx.
 # websockets: uvicorn's WebSocket support, for the terminal packs (WS /api/ui/terminal).
-agent = ["mcp>=2.2,<3", "fastapi", "uvicorn", "websockets"]
+agent = ["mcp>=2.2,<3", "httpx", "fastapi", "uvicorn", "websockets"]
 # In-Studio chat with Claude (agent-sdk pack): the SDK runs the claude CLI.
 agent-sdk = [
-    "claude-agent-sdk>=0.2.163,<0.3", "mcp>=2.2,<3", "fastapi", "uvicorn", "websockets",
+    "claude-agent-sdk>=0.2.163,<0.3", "mcp>=2.2,<3", "httpx", "fastapi", "uvicorn", "websockets",
 ]
 
 [project.scripts]
