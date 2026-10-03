@@ -275,11 +275,16 @@ class UiBridge:
 # -- runtime file ($DTK_HOME/agent/runtime.json) ---------------------------
 
 
-def runtime_path() -> Path:
-    """``$DTK_HOME/agent/runtime.json`` (``~/.datatoolkit`` when unset)."""
+def dtk_home() -> Path:
+    """``$DTK_HOME`` (``~`` expanded), ``~/.datatoolkit`` when unset: the one resolver
+    for http and agent (stdlib-only here so both may import it)."""
     home = os.environ.get("DTK_HOME")
-    base = Path(home) if home else Path.home() / ".datatoolkit"
-    return base / "agent" / "runtime.json"
+    return Path(home).expanduser() if home else Path.home() / ".datatoolkit"
+
+
+def runtime_path() -> Path:
+    """``$DTK_HOME/agent/runtime.json``."""
+    return dtk_home() / "agent" / "runtime.json"
 
 
 def runtime_file_enabled() -> bool:

@@ -20,6 +20,7 @@ from typing import Any
 from dtk_engine import contract
 from dtk_engine.agent import policy
 from dtk_engine.errors import KeyParamsError
+from dtk_engine.ui_bridge import dtk_home
 
 EVENT = "agent"
 TEXT_LIMIT = 1_000_000  # bytes: larger files are kind "other"
@@ -38,8 +39,7 @@ def upload_dir() -> Path:
     """``$DTK_UPLOAD_DIR``, else ``$DTK_HOME/uploads`` (``~/.datatoolkit/uploads``)."""
     if os.environ.get("DTK_UPLOAD_DIR"):
         return Path(os.environ["DTK_UPLOAD_DIR"]).expanduser()
-    home = os.environ.get("DTK_HOME") or "~/.datatoolkit"
-    return Path(home).expanduser() / "uploads"
+    return dtk_home() / "uploads"
 
 
 def resolve_upload(path: str) -> Path:

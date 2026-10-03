@@ -18,6 +18,7 @@ from typing import Any
 from dtk_engine import contract
 from dtk_engine.agent import commands as _commands
 from dtk_engine.errors import KeyParamsError
+from dtk_engine.ui_bridge import dtk_home
 
 DEFAULT_ROWS = 50
 MAX_ROWS = 500
@@ -33,14 +34,9 @@ class PolicyError(KeyParamsError):
     """The agent asked for something the policy refuses."""
 
 
-def _home() -> Path:
-    home = os.environ.get("DTK_HOME")
-    return Path(home).expanduser() if home else Path.home() / ".datatoolkit"
-
-
 def allowed_roots() -> list[Path]:
     """Realpaths of ``$DTK_HOME`` and, when set, ``$DTK_UPLOAD_DIR``."""
-    roots = [Path(os.path.realpath(_home()))]
+    roots = [Path(os.path.realpath(dtk_home()))]
     upload = os.environ.get("DTK_UPLOAD_DIR")
     if upload:
         roots.append(Path(os.path.realpath(Path(upload).expanduser())))
@@ -288,7 +284,7 @@ class AuditLog:
         if os.environ.get("DTK_AGENT_LOG", "").lower() not in _TRUTHY:
             return
         try:
-            folder = _home() / "agent"
+            folder = dtk_home() / "agent"
             folder.mkdir(mode=0o700, parents=True, exist_ok=True)
             with (folder / "log.jsonl").open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, default=str) + "\n")

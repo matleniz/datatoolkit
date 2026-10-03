@@ -40,6 +40,7 @@ from dtk_engine.agent.packs.chat_packs import (
     parse_tool_text,
     tool_result_fields,
 )
+from dtk_engine.ui_bridge import dtk_home
 
 DEFAULT_MAX_TURNS = 25
 _PROVIDER_ENVS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
@@ -149,9 +150,7 @@ def _max_turns() -> int:
 
 def _workdir() -> Path:
     """An empty cwd for the CLI (nothing to pick up, nothing to touch)."""
-    home = os.environ.get("DTK_HOME")
-    base = Path(home).expanduser() if home else Path.home() / ".datatoolkit"
-    path = base / "agent" / "sdk-cwd"
+    path = dtk_home() / "agent" / "sdk-cwd"
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return path
 

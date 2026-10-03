@@ -39,6 +39,7 @@ from typing import Any
 from dtk_engine.agent.configure import stdio_server, write_files
 from dtk_engine.agent.options import TERMINAL_IDS, terminal_unavailable
 from dtk_engine.agent.packs import PACKS, Pack
+from dtk_engine.ui_bridge import dtk_home
 
 MODEL_FLAGS = {"claude-code": "--model", "gemini": "-m", "opencode": "-m"}
 DEFAULT_SIZE = (120, 32)
@@ -61,11 +62,6 @@ class TerminalError(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
         self.code = code
-
-
-def _home() -> Path:
-    home = os.environ.get("DTK_HOME")
-    return Path(home).expanduser() if home else Path.home() / ".datatoolkit"
 
 
 def terminal_pack(pack_id: str) -> Pack:
@@ -97,7 +93,7 @@ def check_size(cols: str | None, rows: str | None) -> tuple[int, int]:
 
 def prepare(pack: Pack) -> Path:
     """Write the pack's dtk-only config into its terminal directory; return it."""
-    directory = _home() / "agent" / "terminal" / pack.id
+    directory = dtk_home() / "agent" / "terminal" / pack.id
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     write_files(pack.files(stdio_server()), directory, force=True, secret=False)
     return directory

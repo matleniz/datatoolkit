@@ -30,7 +30,13 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from dtk_engine import contract
-from dtk_engine.agent.attachments import upload_dir
+from dtk_engine.agent.attachments import (
+    NotAnUploadError,
+    UnknownAttachmentError,
+    describe_upload,
+    registry,
+    upload_dir,
+)
 from dtk_engine.agent.commands import command_schemas
 from dtk_engine.errors import (
     KeyParamsError,
@@ -63,11 +69,6 @@ def _cors_origins() -> list[str]:
     return origins
 
 
-def _upload_dir() -> Path:
-    """``$DTK_UPLOAD_DIR``, else ``$DTK_HOME/uploads`` (``~/.datatoolkit/uploads``)."""
-    return upload_dir()
-
-
 def _save_upload(name: str, data: bytes, root: Path | None = None) -> Path:
     """Write an uploaded file under ``root`` and return its absolute path.
 
@@ -78,7 +79,7 @@ def _save_upload(name: str, data: bytes, root: Path | None = None) -> Path:
     base = PurePath(name.replace("\\", "/")).name
     if base in ("", ".", ".."):
         base = "upload"
-    path = (root or _upload_dir()) / digest / base
+    path = (root or upload_dir()) / digest / base
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
@@ -582,44 +583,24 @@ async def ui_terminal(websocket: WebSocket) -> None:
 # -- chat attachments (read-only): protocol in docs/agent-chat-protocol.md --
 
 
-def _attachments(request: Request):
-    """The app's attachment registry; None without the extra ``agent``."""
-    try:
-        from dtk_engine.agent.attachments import registry
-    except ImportError:
-        return None
-    return registry(_bridge(request))
-
-
 @ui_router.post("/agent/attachments", response_model=None)
 async def post_agent_attachment(body: AgentAttach, request: Request):
-    reg = _attachments(request)
-    if reg is None:
-        return _ui_error(503, "NoAgent", _NO_AGENT_EXTRA)
-    from dtk_engine.agent.attachments import NotAnUploadError, describe_upload
-
     try:  # file checks off the loop; registering (and its SSE event) on it
         described = await run_in_threadpool(describe_upload, body.path)
     except NotAnUploadError as exc:
         return _ui_error(422, "NotAnUpload", str(exc))
-    return reg.register(body.session, described)
+    return registry(_bridge(request)).register(body.session, described)
 
 
 @ui_router.get("/agent/attachments", response_model=None)
 async def get_agent_attachments(session: str, request: Request):
-    reg = _attachments(request)
-    return [] if reg is None else reg.list(session)
+    return registry(_bridge(request)).list(session)
 
 
 @ui_router.delete("/agent/attachments/{att_id}", response_model=None)
 async def delete_agent_attachment(att_id: str, session: str, request: Request):
-    reg = _attachments(request)
-    from dtk_engine.agent.attachments import UnknownAttachmentError
-
     try:
-        if reg is None:
-            raise UnknownAttachmentError(f"no attachment {att_id!r}")
-        reg.remove(session, att_id)
+        registry(_bridge(request)).remove(session, att_id)
     except UnknownAttachmentError as exc:
         return _ui_error(404, "UnknownAttachment", str(exc))
     return {"removed": True}
