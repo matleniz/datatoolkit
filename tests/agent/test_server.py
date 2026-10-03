@@ -97,6 +97,9 @@ async def test_tool_list_is_static_plus_generated(client):
     tools = {t.name: t for t in (await client.list_tools()).tools}
     assert tools["get_rows"].annotations.read_only_hint is True
     assert not (tools["propose_steps"].annotations and tools["propose_steps"].annotations.read_only_hint)
+    # Studio reuses an open window and keeps omitted params: the agent must know how to clear `by`.
+    assert "one window per tool" in tools["open_window"].description
+    assert 'params.by ""' in tools["open_window"].description
 
 
 async def test_run_key_without_context_uses_demo_data(client):
