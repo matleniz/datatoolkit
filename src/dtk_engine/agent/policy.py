@@ -47,6 +47,12 @@ def allowed_roots() -> list[Path]:
     return roots
 
 
+def control_dir() -> Path:
+    """Realpath of ``$DTK_HOME/agent``: the engine's own files (UI token, audit
+    log, terminal configs), never readable by the agent."""
+    return Path(os.path.realpath(_home() / "agent"))
+
+
 def _map_windows(path: str) -> str:
     """Same Windows-drive -> ``/mnt/<d>/`` mapping as the readers (Linux only)."""
     match = _WINDOWS_DRIVE.match(path)
@@ -99,8 +105,14 @@ def check_args(args: Any) -> None:
         return
     roots = allowed_roots()
     known = workspace_paths()
+    control = control_dir()
     for path in paths:
         real = _real(path)
+        if Path(real).is_relative_to(control):
+            raise PolicyError(
+                f"path not allowed for the agent: {path} "
+                "(engine control files under $DTK_HOME/agent)"
+            )
         if any(Path(real).is_relative_to(root) for root in roots):
             continue
         if path in known or real in known:
@@ -295,6 +307,7 @@ __all__ = [
     "check_args",
     "check_command",
     "compact_result",
+    "control_dir",
     "frame",
     "row_limit",
     "workspace_paths",

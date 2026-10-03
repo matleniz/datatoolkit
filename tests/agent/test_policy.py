@@ -173,3 +173,43 @@ def test_audit_ring_and_file_sink(home, monkeypatch):
     (home / "agent" / "log.jsonl").unlink()
     (home / "agent" / "log.jsonl").mkdir()
     log.record("t", {}, status="ok")
+
+
+@pytest.mark.parametrize(
+    "rel",
+    ["agent/runtime.json", "agent/log.jsonl", "agent/terminal/claude/settings.json"],
+)
+def test_control_files_refused(home, rel):
+    target = home / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{"token": "secret"}')
+    with pytest.raises(policy.PolicyError, match="control files"):
+        policy.check_args({"source": {"kind": "json", "path": str(target)}})
+
+
+def test_control_files_refused_through_symlink(home):
+    (home / "agent").mkdir()
+    (home / "agent" / "runtime.json").write_text('{"token": "secret"}')
+    uploads = home / "uploads"
+    uploads.mkdir()
+    link = uploads / "innocent.json"
+    link.symlink_to(home / "agent" / "runtime.json")
+    with pytest.raises(policy.PolicyError, match="control files"):
+        policy.check_args({"path": str(link)})
+    (uploads / "data.csv").write_text("x\n1\n")
+    policy.check_args({"path": str(uploads / "data.csv")})
+
+
+def test_control_files_refused_even_if_workspace_references_them(home):
+    runtime = home / "agent" / "runtime.json"
+    runtime.parent.mkdir()
+    runtime.write_text('{"token": "secret"}')
+    contract.save_workspace(
+        {
+            "name": "leak",
+            "datasets": {"train": {"x": {"kind": "json", "path": str(runtime)}}},
+        }
+    )
+    assert str(runtime) in policy.workspace_paths()
+    with pytest.raises(policy.PolicyError):
+        policy.check_args({"path": str(runtime)})
