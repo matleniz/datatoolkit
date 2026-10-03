@@ -698,6 +698,26 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
 app = create_app()
 
 
+def uvicorn_log_config() -> dict:
+    """uvicorn's default logging config with ``RedactTokenFilter`` on every handler.
+
+    The UI token travels as ``?token=`` (EventSource / WebSocket) and uvicorn
+    logs paths with their query string; pass this as ``log_config`` to any
+    ``uvicorn.run`` serving this app.
+    """
+    import copy
+
+    from uvicorn.config import LOGGING_CONFIG
+
+    config = copy.deepcopy(LOGGING_CONFIG)
+    config.setdefault("filters", {})["redact_token"] = {
+        "()": "dtk_engine.ui_bridge.RedactTokenFilter"
+    }
+    for handler in config["handlers"].values():
+        handler.setdefault("filters", []).append("redact_token")
+    return config
+
+
 def main(argv: list[str] | None = None) -> None:
     """CLI entry: ``dtk-api [--host HOST] [--port PORT] [--agent [PACK]] [--terminal]``."""
     parser = argparse.ArgumentParser(prog="dtk-api", description="datatoolkit HTTP API")
@@ -726,7 +746,13 @@ def main(argv: list[str] | None = None) -> None:
     write_runtime(f"http://{url_host}:{args.port}", app.state.ui_bridge.token)
     try:
         # SSE streams never end by themselves: cap the graceful wait so Ctrl-C exits.
-        uvicorn.run(app, host=args.host, port=args.port, timeout_graceful_shutdown=2)
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            timeout_graceful_shutdown=2,
+            log_config=uvicorn_log_config(),
+        )
     finally:
         clear_runtime()
 
