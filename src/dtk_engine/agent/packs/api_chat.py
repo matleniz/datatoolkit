@@ -6,6 +6,12 @@ tool loop (``ApiAdapter``) drives the in-process dtk MCP server exactly like
 ``DTK_AGENT_MAX_TURNS`` tool round trips, token cap, cancel); a small
 ``Provider`` per API builds the request and decodes the SSE stream.
 
+History is bounded (``ApiAdapter._compact``, before every request): the latest
+``KEEP_TURNS`` user turns stay whole, older tool results become a placeholder
+(ids kept, so tool_use / tool_result pairs stay valid), and the oldest whole
+turns are dropped while the history is over ``HISTORY_CHARS``. A provider
+"context too long" answer drops the oldest half of the turns and retries once.
+
 Credentials come from the environment only and are never put in an event, a
 status, an option, a log or an exception message (``_scrub`` also masks them in
 provider error text).
@@ -36,6 +42,10 @@ from dtk_engine.agent.packs.chat_packs import parse_tool_text, tool_result_field
 ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_MAX_OUTPUT = 8192
+KEEP_TURNS = 4  # latest user turns sent whole
+HISTORY_CHARS = 400_000  # JSON size of the history above which the oldest turns go
+ELIDED = "[older tool result elided]"
+_TOO_LONG = ("context_length_exceeded", "prompt is too long", "context length", "maximum context")
 TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
 
 
@@ -49,11 +59,13 @@ def _client(timeout: httpx.Timeout | float = TIMEOUT) -> httpx.AsyncClient:
 
 
 class ApiError(Exception):
-    """A provider failure ending the turn: ``code`` is the event's error code."""
+    """A provider failure ending the turn: ``code`` is the event's error code,
+    ``detail`` the provider's finer code when it has one (OpenAI ``error.code``)."""
 
-    def __init__(self, message: str, code: str) -> None:
+    def __init__(self, message: str, code: str, detail: str = "") -> None:
         super().__init__(message)
         self.code = code
+        self.detail = detail
 
 
 def _env(name: str) -> str:
@@ -98,7 +110,7 @@ def _error_of(status: int, body: bytes) -> ApiError:
     if not isinstance(err, dict):
         err = {}
     code = err.get("type") or err.get("code") or f"http_{status}"
-    return ApiError(str(err.get("message") or f"HTTP {status}"), str(code))
+    return ApiError(str(err.get("message") or f"HTTP {status}"), str(code), str(err.get("code") or ""))
 
 
 # -- providers ----------------------------------------------------------------
@@ -347,6 +359,41 @@ class OpenAIProvider(Provider):
         return [{"role": "tool", "tool_call_id": cid, "content": text} for cid, text, _ in results]
 
 
+# -- history bounds -----------------------------------------------------------
+
+
+def _is_turn_start(message: dict) -> bool:
+    """A user's own message (not an Anthropic tool_result carrier)."""
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    return not (
+        isinstance(content, list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+    )
+
+
+def _turn_starts(history: list[dict]) -> list[int]:
+    return [i for i, m in enumerate(history) if _is_turn_start(m)]
+
+
+def _elide(message: dict) -> dict:
+    """``message`` with its tool result text replaced by ``ELIDED`` (ids kept)."""
+    if message.get("role") == "tool":  # OpenAI
+        return {**message, "content": ELIDED}
+    content = message.get("content")
+    if message.get("role") == "user" and isinstance(content, list):  # Anthropic
+        return {**message, "content": [
+            {**b, "content": ELIDED} if b.get("type") == "tool_result" else b for b in content
+        ]}
+    return message
+
+
+def _too_long(exc: ApiError) -> bool:
+    text = f"{exc.code} {exc.detail} {exc}".lower()
+    return any(marker in text for marker in _TOO_LONG)
+
+
 # -- SSE ----------------------------------------------------------------------
 async def _sse_events(response: httpx.Response) -> AsyncIterator[dict]:
     """The JSON ``data:`` objects of an SSE response (``[DONE]`` and junk skipped)."""
@@ -399,6 +446,7 @@ class ApiAdapter:
         self._tools: list[dict] | None = None
         self._work: asyncio.Task | None = None
         self._cancelled = False
+        self._mark = 0  # where the running turn starts in ``history``
 
     async def start(self, chat: ChatSession) -> None:
         self.chat = chat
@@ -417,7 +465,7 @@ class ApiAdapter:
 
     async def send(self, text: str) -> str | None:
         self._cancelled = False
-        mark = len(self.history)
+        self._mark = len(self.history)  # moved back when old turns are dropped
         self._work = asyncio.ensure_future(self._turn(text))
         try:
             stop = await self._work
@@ -426,7 +474,7 @@ class ApiAdapter:
                 raise
             stop = "cancelled"
         if stop in ("error", "cancelled"):
-            del self.history[mark:]  # keep the history well-formed for the next turn
+            del self.history[self._mark:]  # keep the history well-formed for the next turn
         return stop
 
     async def _turn(self, text: str) -> str:
@@ -453,7 +501,7 @@ class ApiAdapter:
         self.history.append(self.provider.user(text))
         used_in = used_out = rounds = 0
         while True:
-            round_ = await self._respond(chat, model)
+            round_ = await self._respond_bounded(chat, model)
             used_in += round_.input_tokens
             used_out += round_.output_tokens
             capped = chat.set_turn_usage(used_in, used_out)
@@ -477,6 +525,36 @@ class ApiAdapter:
             raise ApiError(listing.error or "no model available", "no_model")
         self.model = self.provider.pick_default(listing.ids())
         return self.model
+
+    def _drop_oldest_turns(self, count: int) -> bool:
+        """Drop the ``count`` oldest whole turns (never the newest); False if none."""
+        starts = _turn_starts(self.history)
+        cut = starts[min(count, len(starts) - 1)] if starts else 0
+        if cut <= 0:
+            return False
+        del self.history[:cut]
+        self._mark = max(0, self._mark - cut)
+        return True
+
+    def _compact(self) -> None:
+        starts = _turn_starts(self.history)
+        if len(starts) > KEEP_TURNS:
+            cut = starts[-KEEP_TURNS]
+            self.history[:cut] = [_elide(m) for m in self.history[:cut]]
+        while len(json.dumps(self.history)) > HISTORY_CHARS and self._drop_oldest_turns(1):
+            pass
+
+    async def _respond_bounded(self, chat: ChatSession, model: str) -> Round:
+        """``_respond`` on the compacted history; on "context too long", drop the
+        oldest half of the turns and retry once."""
+        self._compact()
+        try:
+            return await self._respond(chat, model)
+        except ApiError as exc:
+            half = max(1, len(_turn_starts(self.history)) // 2)
+            if not _too_long(exc) or not self._drop_oldest_turns(half):
+                raise
+        return await self._respond(chat, model)
 
     async def _respond(self, chat: ChatSession, model: str) -> Round:
         round_ = Round()
