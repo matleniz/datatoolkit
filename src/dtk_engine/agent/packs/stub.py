@@ -29,11 +29,13 @@ from typing import Any
 from mcp import Client
 
 from dtk_engine.agent import chat as _chat
+from dtk_engine.agent.models import ModelList
 from dtk_engine.agent.packs.base import Pack
 from dtk_engine.agent.packs.chat_packs import parse_tool_text, tool_result_fields
 
 STEP = {"op": "scale", "target": "both", "params": {"columns": ["age"]}}
 TURN_USAGE = (10, 5)
+MODELS = ("stub-small", "stub-large")
 _DROP = re.compile(r"\bdrop (\w+)", re.IGNORECASE)
 
 
@@ -68,9 +70,13 @@ PACK = StubPack(
 
 
 class StubAdapter:
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         self.chat: _chat.ChatSession | None = None
+        self.model = model
         self._calls = 0
+
+    async def set_model(self, model: str | None) -> None:
+        self.model = model
 
     async def start(self, chat: _chat.ChatSession) -> None:
         self.chat = chat
@@ -79,7 +85,8 @@ class StubAdapter:
         assert self.chat is not None
         chat = self.chat
         lowered = text.lower()
-        reply = f"stub: {text}"
+        label = f"stub[{self.model}]" if self.model else "stub"
+        reply = f"{label}: {text}"
         drop = _DROP.search(text)
         if "permission" in lowered or "add a step" in lowered:
             reply = await self._add_step(chat, ask="permission" in lowered)
@@ -120,11 +127,19 @@ class StubAdapter:
         self.chat = None
 
 
+async def _models() -> ModelList:
+    return ModelList([{"id": m, "label": m, "description": "scripted"} for m in MODELS])
+
+
 def chat_pack() -> _chat.Pack:
     return _chat.Pack(
         id="stub",
         provider=lambda: "stub (no network)",
-        model=lambda: "stub",
+        model=lambda: None,
         detect=lambda: None,
         create=StubAdapter,
+        title="Scripted stub (tests)",
+        mode="test",
+        panel="chat",
+        models=_models,
     )

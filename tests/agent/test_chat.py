@@ -192,8 +192,8 @@ async def test_permission_times_out_as_denied(monkeypatch):
 
 
 class SlowAdapter(StubAdapter):
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, model: str | None = None) -> None:
+        super().__init__(model)
         self.cancelled = asyncio.Event()
 
     async def send(self, text: str) -> str | None:
@@ -294,7 +294,7 @@ def test_no_pack_and_env_selection(monkeypatch):
     monkeypatch.setenv("DTK_AGENT_PACK", "stub")
     status = hub_from_env(bridge).status(None)
     assert status["available"] is True and status["pack"] == "stub"
-    assert status["model"] == "stub" and status["max_tokens"] is None
+    assert status["model"] is None and status["max_tokens"] is None
     monkeypatch.setenv("DTK_AGENT_PACK", "agent-sdk")
     assert hub_from_env(bridge).status(None)["pack"] == "agent-sdk"
 

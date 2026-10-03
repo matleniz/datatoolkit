@@ -37,16 +37,24 @@ def pack_names() -> list[str]:
 
 
 def hub_from_env(bridge: UiBridge, audit: AuditLog | None = None) -> AgentHub:
-    """The hub for ``DTK_AGENT_PACK`` (an unknown name is reported, not raised)."""
+    """The hub for ``DTK_AGENT_PACK`` (an unknown name is reported, not raised).
+
+    The offered packs are every registered one except ``stub``, which is only
+    offered when it is the default.
+    """
     name = os.environ.get("DTK_AGENT_PACK", "").strip().lower()
     if name in OFF:
         reason = "agent off: set DTK_AGENT_PACK=agent-sdk (or run dtk-api --agent)"
         return AgentHub(bridge, None, audit=audit, unavailable=reason)
-    loader = _loaders().get(name)
+    loaders = _loaders()
+    loader = loaders.get(name)
     if loader is None:
         reason = f"unknown DTK_AGENT_PACK {name!r} (known: {', '.join(pack_names())})"
         return AgentHub(bridge, None, audit=audit, unavailable=reason)
-    return AgentHub(bridge, loader(), audit=audit)
+    default = loader()
+    packs = {i: load() for i, load in loaders.items() if i != "stub"}
+    packs[default.id] = default
+    return AgentHub(bridge, default, audit=audit, packs=packs)
 
 
 def bare_tool_name(name: str) -> str:

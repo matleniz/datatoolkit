@@ -107,7 +107,7 @@ new pack is a `Pack(id, provider, model, detect, create)` registered in
 
 Contract fixed 2026-10-03 (datatoolkit-issues#117), built by #118 (options and
 selection), #119 (API packs), #120 (terminal), #121 (attachments). Until a
-sub-issue lands, its routes answer `404`. Everything stays under the `/api/ui`
+sub-issue lands, its routes answer `404` (options and selection, #118, have landed). Everything stays under the `/api/ui`
 guard. Nothing below changes the v1 routes and events above; v2 only adds
 fields and routes.
 
