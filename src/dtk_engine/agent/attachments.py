@@ -171,12 +171,22 @@ def turn_note(attachments: list[dict]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _read_bounded(att: dict) -> str:
+    """The attachment's text, read once at most ``TEXT_LIMIT + 1`` bytes: a file
+    that grew past the ``text`` limit since it was attached is refused."""
+    real = resolve_upload(att["path"])  # re-checked: the file may have been swapped since
+    with real.open("rb") as handle:
+        data = handle.read(TEXT_LIMIT + 1)
+    if len(data) > TEXT_LIMIT:
+        raise KeyParamsError(f"attachment {att['id']!r} changed since it was attached (over the text limit)")
+    return data.decode("utf-8", errors="replace")
+
+
 def read_text(att: dict, offset: int = 0, max_chars: int | None = None) -> dict:
     """A framed slice of a ``text`` attachment, at most ``DTK_AGENT_MAX_CHARS`` characters."""
     if att["kind"] != "text":
         raise KeyParamsError(f"attachment {att['id']!r} is {att['kind']}, not text")
-    real = resolve_upload(att["path"])  # re-checked: the file may have been swapped since
-    text = real.read_bytes().decode("utf-8", errors="replace")
+    text = _read_bounded(att)
     cap = policy.max_response_chars()
     limit = min(max_chars, cap) if max_chars else cap
     start = max(int(offset or 0), 0)

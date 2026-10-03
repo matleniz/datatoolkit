@@ -294,6 +294,30 @@ async def test_read_refuses_a_file_swapped_for_an_escaping_symlink(mcp, env):
 
 
 @pytest.mark.anyio
+async def test_read_refuses_a_text_attachment_grown_past_the_limit(mcp, monkeypatch):
+    from pathlib import Path
+
+    from dtk_engine.agent import attachments
+
+    (path,) = [a["path"] for a in mcp.bridge.attachments.list("s") if a["name"] == "notes.txt"]
+    monkeypatch.setattr(attachments, "TEXT_LIMIT", 100)
+    Path(path).write_text("x" * 10_000)
+    reads = []
+    real_open = Path.open
+
+    def spy_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        real_read = handle.read
+        handle.read = lambda size=-1: reads.append(size) or real_read(size)
+        return handle
+
+    monkeypatch.setattr(Path, "open", spy_open)
+    result = await mcp.call_tool("read_attachment", {"id": "a2", "session": "s"})
+    assert result.is_error and "changed since it was attached" in result.content[0].text
+    assert reads == [101]  # one bounded read, never the whole file
+
+
+@pytest.mark.anyio
 async def test_no_tool_writes_or_adds_a_source(mcp):
     names = {t.name for t in (await mcp.list_tools()).tools}
     assert not {n for n in names if "attach" in n} - {"list_attachments", "read_attachment"}
