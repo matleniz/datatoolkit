@@ -230,7 +230,16 @@ Env: `DTK_AGENT_PACK` (`agent-sdk`, `stub`; unset = off),
 included; stops the turn), `DTK_AGENT_MODEL` (default: the CLI's),
 `DTK_AGENT_MAX_TURNS` (default 25 tool round trips per message),
 `DTK_AGENT_CLI`. The `stub` pack (`dtk-api --agent stub`) is scripted and
-makes no network calls; Studio's e2e tests use it.
+makes no network calls; Studio's e2e tests use it (models `stub-small`,
+`stub-large`).
+
+`DTK_AGENT_PACK` and `DTK_AGENT_MODEL` are only the defaults: Studio picks the
+pack and the model per session (`GET /api/ui/agent/options`, `POST
+/api/ui/agent/config`). The model list is never hard-coded: `agent-sdk` asks
+the Claude Code CLI which models your account may use (cached per run,
+`?refresh=1` re-runs it). `DTK_AGENT_TERMINAL=1` lists the terminal packs
+(`claude-code`, `gemini`, `opencode`) as available; off, they are listed with
+the reason. See `docs/agent-chat-protocol.md`.
 
 Develop:
 

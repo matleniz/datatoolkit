@@ -458,6 +458,11 @@ class AgentSend(AgentSession):
     text: str
 
 
+class AgentConfig(AgentSession):
+    pack: str
+    model: str | None = None
+
+
 class AgentPermission(AgentSession):
     id: str
     allow: bool
@@ -486,7 +491,7 @@ async def post_agent_send(body: AgentSend, request: Request):
         return _ui_error(503, "NoAgent", _NO_AGENT_EXTRA)
     from dtk_engine.agent.chat import AgentBusyError, NoAgentError
 
-    await run_in_threadpool(hub.unavailable)  # first auth probe may spawn the CLI
+    await run_in_threadpool(hub.unavailable, body.session)  # first auth probe may spawn the CLI
     try:
         turn = hub.send(body.session, body.text)
     except NoAgentError as exc:
@@ -494,6 +499,31 @@ async def post_agent_send(body: AgentSend, request: Request):
     except AgentBusyError as exc:
         return _ui_error(409, "AgentBusy", str(exc))
     return {"turn": turn}
+
+
+@ui_router.get("/agent/options")
+async def get_agent_options(request: Request, refresh: bool = False) -> dict:
+    hub = _agent_hub(request)
+    if hub is None:
+        return {"available": False, "reason": _NO_AGENT_EXTRA, "default": None, "packs": []}
+    return await hub.options(refresh)
+
+
+@ui_router.post("/agent/config", response_model=None)
+async def post_agent_config(body: AgentConfig, request: Request):
+    hub = _agent_hub(request)
+    if hub is None:
+        return _ui_error(503, "NoAgent", _NO_AGENT_EXTRA)
+    from dtk_engine.agent.chat import AgentBusyError, ConfigError, NoAgentError
+
+    try:
+        return await hub.configure(body.session, body.pack, body.model)
+    except NoAgentError as exc:
+        return _ui_error(503, "NoAgent", str(exc))
+    except AgentBusyError as exc:
+        return _ui_error(409, "AgentBusy", str(exc))
+    except ConfigError as exc:
+        return _ui_error(422, exc.code, str(exc))
 
 
 @ui_router.post("/agent/cancel")

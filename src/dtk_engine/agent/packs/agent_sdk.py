@@ -21,6 +21,7 @@ Env: ``DTK_AGENT_MODEL`` (default: the CLI's), ``DTK_AGENT_MAX_TURNS``
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import importlib.util
 import json
@@ -32,6 +33,7 @@ from typing import Any
 
 from dtk_engine.agent.chat import ChatSession, Pack
 from dtk_engine.agent.commands import UI_COMMANDS
+from dtk_engine.agent.models import DISCOVERY_TIMEOUT, ModelList, failed
 from dtk_engine.agent.packs.chat_packs import (
     TOOL_PREFIX,
     bare_tool_name,
@@ -169,7 +171,8 @@ def _block_text(content: Any) -> str:
 class SdkAdapter:
     """One ``ClaudeSDKClient`` (one CLI process, one conversation) per Studio session."""
 
-    def __init__(self) -> None:
+    def __init__(self, model_name: str | None = None) -> None:
+        self.model_name = model_name or model()
         self.chat: ChatSession | None = None
         self.client: Any = None
         self._usage: dict[str, tuple[int, int]] = {}
@@ -192,7 +195,7 @@ class SdkAdapter:
             include_partial_messages=True,
             permission_mode="default",
             max_turns=_max_turns(),
-            model=model(),
+            model=self.model_name,
             cli_path=cli_path(),
             cwd=str(_workdir()),
         )
@@ -292,6 +295,12 @@ class SdkAdapter:
             return "max_turns"
         return message.stop_reason or "end_turn"
 
+    async def set_model(self, model_name: str | None) -> None:
+        """Switch the live conversation's model (None = the env / CLI default)."""
+        self.model_name = model_name or model()
+        if self.client is not None:
+            await self.client.set_model(self.model_name)
+
     async def cancel(self) -> None:
         if self.client is not None:
             await self.client.interrupt()
@@ -302,7 +311,55 @@ class SdkAdapter:
             self.client = None
 
 
+def _model_entries(raw: list[dict]) -> list[dict]:
+    """The CLI's ``initialize`` models -> ``{id, label, description, resolved}``."""
+    return [
+        {
+            "id": m["value"],
+            "label": m.get("displayName") or m["value"],
+            "description": m.get("description") or "",
+            "resolved": m.get("resolvedModel"),
+        }
+        for m in raw if isinstance(m, dict) and m.get("value")
+    ]
+
+
+async def _initialize_models() -> list[dict]:
+    from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+    options = ClaudeAgentOptions(
+        tools=[], setting_sources=[], strict_mcp_config=True,
+        cli_path=cli_path(), cwd=str(_workdir()),
+    )
+    client = ClaudeSDKClient(options)
+    await client.connect()
+    try:
+        info = await client.get_server_info() or {}
+    finally:
+        await client.disconnect()
+    return _model_entries(info.get("models") or [])
+
+
+async def discover_models() -> ModelList:
+    """The models this account may use, from the Claude Code CLI's ``initialize`` answer."""
+    if not _sdk_installed():
+        return failed("extra agent-sdk not installed (uv sync --extra agent-sdk)")
+    try:
+        entries = await asyncio.wait_for(_initialize_models(), DISCOVERY_TIMEOUT)
+    except TimeoutError:
+        return failed(f"claude CLI model discovery timed out after {DISCOVERY_TIMEOUT:.0f} s")
+    except Exception as exc:  # noqa: BLE001 - discovery never makes the pack unavailable
+        return failed(f"claude CLI model discovery failed: {exc}")
+    return ModelList(entries) if entries else failed("the claude CLI listed no models")
+
+
+def refresh() -> None:
+    _cli_auth.cache_clear()
+
+
 def chat_pack() -> Pack:
     return Pack(
         id="agent-sdk", provider=provider, model=model, detect=detect, create=SdkAdapter,
+        title="Claude (Agent SDK, claude CLI)", mode="cli", panel="chat",
+        models=discover_models, refresh=refresh,
     )

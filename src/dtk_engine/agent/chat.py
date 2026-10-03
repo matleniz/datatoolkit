@@ -22,12 +22,13 @@ import asyncio
 import contextlib
 import itertools
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from mcp.server.lowlevel import Server
 
+from dtk_engine.agent.models import FREE_TEXT, ModelList
 from dtk_engine.agent.policy import AuditLog
 from dtk_engine.agent.ports import LocalUiPort
 from dtk_engine.agent.server import build_server
@@ -69,15 +70,48 @@ class Adapter(Protocol):
     async def close(self) -> None: ...
 
 
+class ConfigError(Exception):
+    """``POST /agent/config`` refused: ``code`` is the error ``type`` (a 422)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+async def _free_text() -> ModelList:
+    return FREE_TEXT
+
+
+def _no_refresh() -> None:
+    return None
+
+
 @dataclass(frozen=True)
 class Pack:
-    """A pack descriptor: ``detect()`` returns why it is unusable, or None when ready."""
+    """A chat pack descriptor.
+
+    ``detect()`` returns why it is unusable, or None when ready; ``model()`` is the
+    env default model (None = the provider's own); ``models()`` discovers what
+    the user may pick (never raises, see ``models.ModelList``); ``create(model)``
+    builds one adapter for the model the session chose (None = the default).
+    An adapter may offer ``async set_model(model)``: the conversation then goes
+    on across a model change, otherwise the hub resets it.
+    """
 
     id: str
     provider: Callable[[], str | None]
     model: Callable[[], str | None]
     detect: Callable[[], str | None]
-    create: Callable[[], Adapter]
+    create: Callable[..., Adapter]
+    title: str = ""
+    mode: str = "cli"
+    panel: str = "chat"
+    models: Callable[[], Awaitable[ModelList]] = _free_text
+    refresh: Callable[[], None] = _no_refresh  # drop cached detection (options?refresh=1)
+
+    @property
+    def default_model(self) -> str | None:
+        return self.model()
 
 
 class ChatSession:
@@ -88,6 +122,8 @@ class ChatSession:
         self.session = session
         self.turn: str | None = None
         self.adapter: Adapter | None = None
+        self.pack: Pack | None = None  # the session's choice; None = the hub default
+        self.model: str | None = None
         self.task: asyncio.Task | None = None
         self.cancelled = False
         self.totals = {"input_tokens": 0, "output_tokens": 0}
@@ -169,7 +205,7 @@ class ChatSession:
 
 
 class AgentHub:
-    """Chat sessions per Studio session over one pack (or none)."""
+    """Chat sessions per Studio session over the offered packs (``pack`` = the default)."""
 
     def __init__(
         self,
@@ -179,14 +215,19 @@ class AgentHub:
         audit: AuditLog | None = None,
         unavailable: str | None = None,
         max_tokens: int | None = None,
+        packs: dict[str, Pack] | None = None,
     ) -> None:
         self.bridge = bridge
         self.pack = pack
+        self.packs: dict[str, Pack] = packs if packs is not None else (
+            {pack.id: pack} if pack else {}
+        )
         self.audit = audit or AuditLog()
         self.max_tokens = max_tokens if max_tokens is not None else max_tokens_from_env()
         self.review_timeout = review_timeout_from_env()
         self._unavailable = unavailable
         self._chats: dict[str, ChatSession] = {}
+        self._discovery: dict[Any, asyncio.Future[ModelList]] = {}
         port = LocalUiPort(bridge)
         self.session_tools = frozenset(
             spec.name for spec in build_tools(port)
@@ -196,37 +237,145 @@ class AgentHub:
     def mcp_server(self) -> Server:
         return build_server(LocalUiPort(self.bridge), self.audit)
 
-    def unavailable(self) -> str | None:
-        """Why no agent can run (None when the pack is ready)."""
-        if self.pack is None:
+    def _chat(self, session: str) -> ChatSession:
+        chat = self._chats.get(session)
+        if chat is None:
+            chat = self._chats[session] = ChatSession(self, session)
+        return chat
+
+    def pack_of(self, session: str | None) -> Pack | None:
+        """The session's pack: its own choice, else the default."""
+        chat = self._chats.get(session or "")
+        return (chat.pack if chat else None) or self.pack
+
+    def unavailable(self, session: str | None = None) -> str | None:
+        """Why no agent can run (None when the session's pack is ready)."""
+        pack = self.pack_of(session)
+        if pack is None:
             return self._unavailable or "no agent pack configured (DTK_AGENT_PACK)"
-        return self.pack.detect()
+        return pack.detect()
 
     def status(self, session: str | None) -> dict:
-        reason = self.unavailable()
+        reason = self.unavailable(session)
         chat = self._chats.get(session or "")
+        pack = self.pack_of(session)
         out: dict[str, Any] = {
             "available": reason is None,
-            "pack": self.pack.id if self.pack else None,
+            "pack": pack.id if pack else None,
             "running": bool(chat and chat.busy()),
             "usage": dict(chat.totals) if chat else {"input_tokens": 0, "output_tokens": 0},
             "max_tokens": self.max_tokens,
         }
-        if self.pack is not None:
-            out["provider"] = self.pack.provider()
-            out["model"] = self.pack.model()
+        if pack is not None:
+            out["provider"] = pack.provider()
+            out["model"] = chat.model if chat and chat.pack else pack.model()
+            out.update(mode=pack.mode, panel=pack.panel, title=pack.title or pack.id)
         if reason is not None:
             out["reason"] = reason
         return out
 
+    # -- options and per-session selection --------------------------------
+    async def models_of(self, lister: Callable[[], Awaitable[ModelList]]) -> ModelList:
+        """A lister's answer, run once per run (concurrent callers share it)."""
+        future = self._discovery.get(lister)
+        if future is None:
+            future = self._discovery[lister] = asyncio.ensure_future(lister())
+        return await asyncio.shield(future)
+
+    async def options(self, refresh: bool = False) -> dict:
+        """The offered packs (chat packs, then terminal packs) and the default."""
+        from dtk_engine.agent import options
+
+        if refresh:
+            self._discovery.clear()
+            for pack in self.packs.values():
+                pack.refresh()
+        chat_entries = [self._chat_entry(p) for p in self.packs.values()]
+        terminal_entries = [self._terminal_entry(i) for i in options.TERMINAL_IDS]
+        packs = await asyncio.gather(*chat_entries, *terminal_entries)
+        out: dict[str, Any] = {
+            "default": {"pack": self.pack.id if self.pack else None, "model": None},
+            "packs": list(packs),
+        }
+        if self.pack is None:
+            out.update(available=False, reason=self.unavailable())
+        return out
+
+    async def _chat_entry(self, pack: Pack) -> dict:
+        from dtk_engine.agent import options
+
+        reason = await asyncio.to_thread(pack.detect)
+        listing = FREE_TEXT if reason else await self.models_of(pack.models)
+        return options.entry(
+            id=pack.id, title=pack.title or pack.id, mode=pack.mode, panel=pack.panel,
+            reason=reason, provider=await asyncio.to_thread(pack.provider),
+            default_model=pack.default_model, listing=listing,
+        )
+
+    async def _terminal_entry(self, pack_id: str) -> dict:
+        from dtk_engine.agent import options
+
+        pack = options.EXTERNAL_PACKS[pack_id]
+        reason = await asyncio.to_thread(options.terminal_reason, pack_id)
+        listing = FREE_TEXT if reason else await self.models_of(options.terminal_lister(pack_id))
+        return options.entry(
+            id=pack_id, title=pack.title, mode="cli", panel="terminal", reason=reason,
+            provider=pack.auth, default_model=None, listing=listing,
+        )
+
+    async def configure(self, session: str, pack_id: str, model: str | None) -> dict:
+        """Pick the session's pack and model; returns its status (see the protocol doc)."""
+        from dtk_engine.agent import options
+
+        if not self.packs:
+            raise NoAgentError(self.unavailable())
+        chat = self._chat(session)
+        if chat.busy():
+            raise AgentBusyError("a turn is running: wait for it or cancel it")
+        pack = self.packs.get(pack_id)
+        if pack is None:
+            if pack_id in options.TERMINAL_IDS:
+                raise ConfigError("WrongPanel", f"{pack_id} is a terminal pack: open /api/ui/terminal")
+            raise ConfigError("UnknownPack", f"unknown pack {pack_id!r} (known: {', '.join(self.packs)})")
+        reason = await asyncio.to_thread(pack.detect)
+        if reason is not None:
+            raise ConfigError("PackUnavailable", reason)
+        model = model or None
+        if model is not None:
+            listing = await self.models_of(pack.models)
+            if not listing.free_text and model not in listing.ids():
+                raise ConfigError("UnknownModel", f"unknown model {model!r} for {pack.id}")
+        reset = await self._apply(chat, pack, model)
+        chat.emit("config", pack=pack.id, model=model, reset=reset)
+        return self.status(session)
+
+    async def _apply(self, chat: ChatSession, pack: Pack, model: str | None) -> bool:
+        """Switch the session; True when its conversation was reset."""
+        same_pack = pack.id == (chat.pack or self.pack or pack).id
+        adapter = chat.adapter
+        switched = False
+        if same_pack and adapter is not None and chat.model != model:
+            set_model = getattr(adapter, "set_model", None)
+            if set_model is not None:
+                try:
+                    await set_model(model)
+                    switched = True
+                except Exception:  # noqa: BLE001 - fall back to a fresh conversation
+                    switched = False
+        keep = adapter is None or (same_pack and (chat.model == model or switched))
+        if not keep and adapter is not None:
+            with contextlib.suppress(Exception):
+                await adapter.close()
+            chat.adapter = None
+        chat.pack, chat.model = pack, model
+        return not (same_pack and keep)
+
     def send(self, session: str, text: str) -> str:
         """Start a turn; its events stream on the session's SSE. Returns the turn id."""
-        reason = self.unavailable()
-        if reason is not None or self.pack is None:
+        reason = self.unavailable(session)
+        if reason is not None or self.pack_of(session) is None:
             raise NoAgentError(reason)
-        chat = self._chats.get(session)
-        if chat is None:
-            chat = self._chats[session] = ChatSession(self, session)
+        chat = self._chat(session)
         if chat.busy():
             raise AgentBusyError("a turn is already running")
         chat.turn = chat.next_turn()
@@ -236,8 +385,9 @@ class AgentHub:
 
     async def _start(self, chat: ChatSession) -> Adapter:
         if chat.adapter is None:
-            assert self.pack is not None
-            adapter = self.pack.create()
+            pack = chat.pack or self.pack
+            assert pack is not None
+            adapter = pack.create(chat.model)
             await adapter.start(chat)
             chat.adapter = adapter
         return chat.adapter
