@@ -24,6 +24,14 @@ Each Studio session has its own conversation, usage totals and turn counter.
 A session's events reach only that session's SSE listeners. An event sent
 while nobody listens is dropped (not replayed).
 
+Idle sessions are reaped: 5 minutes (`IDLE_GRACE`) after a Studio session
+loses its last `/api/ui/events` listener (tab closed), the engine cancels its
+running turn, closes its adapter (for `agent-sdk`, the `claude` CLI process)
+and drops its conversation, usage totals and attachments. A reconnect within
+the grace (a reload keeps the session id) keeps everything. A reaped session
+that comes back starts from zero: new conversation, totals at 0 (so the
+`DTK_AGENT_MAX_TOKENS` cap counts again from 0).
+
 Status:
 
 ```json
@@ -280,7 +288,8 @@ sources, label join or merges, as #86). Upload with the existing
   `columns` from `source_columns`, omitted if that fails), `text` (txt, md,
   and other UTF-8 text up to 1 MB), `other` (listed, not readable).
 - Attachments are per Studio session, in memory, kept across turns and
-  across a pack change; detach removes one.
+  across a pack change; detach removes one Like the conversation, they are dropped
+  when the session is reaped (below).
 - `POST /api/ui/agent/send` takes optional `attachments: [id, …]` (default:
   none): the turn's `user_message` echoes them (`attachments: [{id, name,
   kind}]`) and the text the adapter gets starts with a short note naming

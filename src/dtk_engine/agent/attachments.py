@@ -138,6 +138,11 @@ class AttachmentRegistry:
         del self._items[session][att_id]
         self.bridge.emit(session, EVENT, {"type": "attachment_removed", "turn": None, "id": att_id})
 
+    def drop(self, session: str) -> None:
+        """Forget a session's attachments (the session was reaped; no event)."""
+        self._items.pop(session, None)
+        self._ids.pop(session, None)
+
     def pick(self, session: str, ids: list[str]) -> list[dict]:
         """The attachments for ``ids`` (UnknownAttachmentError when one is missing)."""
         return [self.get(session, i) for i in ids]
