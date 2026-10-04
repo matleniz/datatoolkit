@@ -104,6 +104,121 @@ jobs:
       - name: Cleanup (root scenario)
         if: always()
         run: docker rm -f dtk-root
+      - name: Agent off by default (agent routes guarded, chat unavailable)
+        run: |
+          # The default container (no DTK_AGENT) is gone: start a fresh one on the root-owned dir.
+          docker run -d --name dtk-off -p 127.0.0.1:8767:8765 -v "$PWD/data-root:/data" \
+            -e DTK_AGENT_PACK=stub dtk-engine:smoke
+          for _ in $(seq 1 45); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' dtk-off)" = healthy ] && break
+            sleep 2
+          done
+          docker exec dtk-off cat /proc/1/cmdline | tr '\0' ' ' | tee cmdline; echo
+          ! grep -q -- --agent cmdline || exit 1
+          code=$(curl -s -o /dev/null -w '%{http_code}' localhost:8767/api/ui/agent/options)
+          echo "options without token: $code"
+          [ "$code" = 401 ]
+          token=$(sudo python3 -c "import json; print(json.load(open('data-root/agent/runtime.json'))['token'])")
+          curl -fsS -H "Authorization: Bearer $token" localhost:8767/api/ui/agent/options | tee off.json; echo
+          python3 -c "
+          import json
+          o = json.load(open('off.json'))
+          assert o['available'] is False and not (o['default'] or {}).get('pack'), o
+          "
+      - name: Logs on failure (agent off)
+        if: failure()
+        run: docker logs dtk-off
+      - name: Cleanup (agent off)
+        if: always()
+        run: docker rm -f dtk-off
+      - name: Agent on (DTK_AGENT=1 + DTK_UI_TOKEN)
+        run: |
+          token=$(openssl rand -hex 24)
+          echo "$token" > agent-token
+          docker run -d --name dtk-agent -p 127.0.0.1:8768:8765 \
+            -e DTK_AGENT=1 -e DTK_UI_TOKEN="$token" -e DTK_AGENT_TERMINAL=1 dtk-engine:smoke
+          status=starting
+          for _ in $(seq 1 45); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' dtk-agent)
+            echo "health: $status"
+            if [ "$status" = healthy ]; then break; fi
+            sleep 2
+          done
+          [ "$status" = healthy ]
+          docker exec dtk-agent cat /proc/1/cmdline | tr '\0' ' ' | tee cmdline; echo
+          grep -q -- '--agent api-anthropic' cmdline
+          ! grep -q -- --terminal cmdline || exit 1
+          url=localhost:8768/api/ui/agent/options
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+          echo "without token: $code"; [ "$code" = 401 ]
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong' "$url")
+          echo "wrong token: $code"; [ "$code" = 401 ]
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+            -H 'Host: evil.example' "$url")
+          echo "foreign Host: $code"; [ "$code" = 403 ]
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+            -H 'Origin: http://evil.example' "$url")
+          echo "foreign Origin: $code"; [ "$code" = 403 ]
+          # Same origin, as Studio behind nginx sends it (Host and Origin both the browser's).
+          curl -fsS -H "Authorization: Bearer $token" -H 'Origin: http://localhost:8768' \
+            "$url" > /dev/null
+          # EventSource style: the token in the query string (redacted in the logs below).
+          curl -fsS "$url?token=$token" | tee on.json | head -c 500; echo
+          python3 -c "
+          import json
+          o = json.load(open('on.json'))
+          assert o.get('available', True) is not False, o
+          assert o['default']['pack'] == 'api-anthropic', o
+          ids = {p['id']: p for p in o['packs']}
+          assert {'api-anthropic', 'api-openai'} <= set(ids), ids
+          assert ids['api-anthropic']['available'] is False, ids['api-anthropic']  # no key baked in
+          for t in ('agent-sdk', 'claude-code', 'gemini', 'opencode'):
+              assert ids[t]['available'] is False, ids[t]
+          "
+      - name: Agent image has no agent-sdk, no CLI, no key
+        run: |
+          ! docker exec dtk-agent python -c "import claude_agent_sdk" || exit 1
+          for cli in claude gemini opencode; do
+            ! docker exec dtk-agent sh -c "command -v $cli" || exit 1
+          done
+          docker exec dtk-agent python -c "import mcp, httpx, websockets"
+          env=$(docker image inspect dtk-engine:smoke --format '{{json .Config.Env}}')
+          echo "$env"
+          ! echo "$env" | grep -qE 'ANTHROPIC|DTK_OPENAI|DTK_UI_TOKEN|DTK_AGENT' || exit 1
+      - name: Token never logged
+        run: |
+          docker logs dtk-agent > agent.log 2>&1
+          ! grep -qF "$(cat agent-token)" agent.log || exit 1
+          cat agent.log
+          grep -q 'token=\*\*\*' agent.log
+      - name: Logs on failure (agent on)
+        if: failure()
+        run: docker logs dtk-agent
+      - name: Cleanup (agent on)
+        if: always()
+        run: docker rm -f dtk-agent
+      - name: Agent without token refuses to start
+        run: |
+          set +e
+          timeout 60 docker run --rm -e DTK_AGENT=1 dtk-engine:smoke > notoken.log 2>&1
+          code=$?
+          set -e
+          cat notoken.log
+          echo "exit: $code"
+          [ "$code" = 64 ]
+          grep -q DTK_UI_TOKEN notoken.log
+      - name: Image size
+        run: |
+          size=$(docker image inspect dtk-engine:smoke --format '{{.Size}}')
+          echo "image size: $size bytes ($((size / 1024 / 1024)) MiB)"
+          line="Engine image (amd64): $((size / 1024 / 1024)) MiB"
+          # Growth against the published image (informative, never fails the job).
+          if docker pull -q "$IMAGE:latest" > /dev/null 2>&1; then
+            base=$(docker image inspect "$IMAGE:latest" --format '{{.Size}}')
+            line="$line ($(((size - base) / 1024 / 1024)) MiB vs latest, $((base / 1024 / 1024)) MiB)"
+          fi
+          echo "$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     needs: smoke
