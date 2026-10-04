@@ -37,8 +37,8 @@ Access guard (applied by ``http.py`` on every ``/api/ui/*`` route):
   never logged or persisted;
 - ``Origin`` (when present) must be a CORS origin or the request's own origin;
 - ``Host`` hostname must be ``localhost`` / ``127.0.0.1`` / ``[::1]`` or listed
-  in ``DTK_UI_ALLOWED_HOSTS`` (comma separated hostnames; a Docker / nginx
-  setup would need it, the bridge is not in the image in phase 1).
+  in ``DTK_UI_ALLOWED_HOSTS`` (comma separated hostnames; needed behind a
+  proxy that rewrites ``Host``, see the README's "Agent in the Docker image").
 
 Runtime file: while ``dtk-api`` runs, ``write_runtime`` publishes
 ``{url, token, pid, started}`` at ``$DTK_HOME/agent/runtime.json`` (owner-only

@@ -46,7 +46,7 @@ def allowed_roots() -> list[Path]:
 def control_dir() -> Path:
     """Realpath of ``$DTK_HOME/agent``: the engine's own files (UI token, audit
     log, terminal configs), never readable by the agent."""
-    return Path(os.path.realpath(_home() / "agent"))
+    return Path(os.path.realpath(dtk_home() / "agent"))
 
 
 def _map_windows(path: str) -> str:

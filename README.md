@@ -296,6 +296,35 @@ sample rows) go to the base URL's host. A loopback URL (`127.0.0.1`,
 `localhost`) keeps them on your machine; any other host receives them. Studio
 shows the host in the pack's `provider`.
 
+### Agent in the Docker image (opt-in)
+
+The image has the extra `agent` (no `agent-sdk`, no CLI, no key). The chat is
+off unless `DTK_AGENT=1`; then the entrypoint runs `dtk-api ... --agent
+<pack>` and refuses to start (exit 64) without `DTK_UI_TOKEN`. The terminal
+packs are never on in the image.
+
+| Env | Meaning |
+|---|---|
+| `DTK_AGENT` | `1` (or `true` / `yes` / `on`) turns the chat on; anything else = off as before (a `DTK_AGENT_PACK` alone is ignored) |
+| `DTK_UI_TOKEN` | required with `DTK_AGENT=1`: the bearer token Studio sends on `/api/ui/*` and `/mcp`; never logged |
+| `DTK_AGENT_PACK` | default pack: `api-anthropic` (default), `api-openai` or `stub`; anything else refuses to start |
+| `ANTHROPIC_API_KEY`, `DTK_ANTHROPIC_*`, `DTK_OPENAI_*` | provider settings, from the environment only (table above) |
+| `DTK_UI_ALLOWED_HOSTS` | extra hostnames accepted in `Host` (comma separated); `localhost` / `127.0.0.1` / `[::1]` always are. Needed only when the browser reaches the proxy by another name |
+| `DTK_CORS_ORIGINS` | extra origins (comma separated, e.g. `https://dtk.example`). Not needed when Studio and `/api` share an origin (nginx in front) |
+
+```bash
+docker run -d -p 127.0.0.1:8765:8765 -v dtk-data:/data \
+  -e DTK_AGENT=1 -e DTK_UI_TOKEN=$(openssl rand -hex 24) -e ANTHROPIC_API_KEY dtk-engine
+```
+
+Behind a proxy that forwards the browser's `Host` (the web `compose.yml`'s
+nginx: `proxy_set_header Host $host`), Studio is same-origin and the defaults
+suffice. A proxy that rewrites `Host` (e.g. to `engine`) needs that name in
+`DTK_UI_ALLOWED_HOSTS`; TLS terminated in front (`https://` origin, `http`
+to the engine) needs the `https://` origin in `DTK_CORS_ORIGINS`. A model on
+the host (Ollama) is `DTK_OPENAI_BASE_URL=http://host.docker.internal:11434/v1`
+(Linux: add `--add-host=host.docker.internal:host-gateway`), not `127.0.0.1`.
+
 Develop:
 
 ```bash

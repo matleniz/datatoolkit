@@ -11,12 +11,14 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Dependency layer: cached until pyproject.toml / uv.lock change.
+# Extra agent: the chat packs that need no CLI (api-anthropic, api-openai, stub),
+# off unless DTK_AGENT=1 (docker/entrypoint.sh). Not agent-sdk: no claude CLI here.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --extra api --no-install-project
+RUN uv sync --frozen --no-dev --extra api --extra agent --no-install-project
 
 # Project layer: only re-run when the source changes.
 COPY src ./src
-RUN uv sync --frozen --no-dev --extra api
+RUN uv sync --frozen --no-dev --extra api --extra agent
 
 ENV PATH="/app/.venv/bin:$PATH" \
     DTK_HOME=/data
