@@ -248,6 +248,9 @@ Env: `DTK_AGENT_PACK` (`agent-sdk`, `stub`; unset = off),
 `DTK_AGENT_MAX_TOKENS` (per Studio session, input + output, cache reads
 included; stops the turn), `DTK_AGENT_MODEL` (default: the CLI's),
 `DTK_AGENT_MAX_TURNS` (default 25 tool round trips per message),
+`DTK_AGENT_COMPACT_AT` (`agent-sdk`: the CLI summarises older turns once the
+context nears this many tokens, default 60000, `off` = the CLI's default near
+the model window; passed as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`),
 `DTK_AGENT_CLI`, `DTK_AGENT_TERMINAL` (terminal packs, below). The `stub`
 pack (`dtk-api --agent stub`) is scripted and makes no network calls;
 Studio's e2e tests use it (models `stub-small`, `stub-large`).

@@ -154,6 +154,27 @@ def _max_turns() -> int:
     return value if value > 0 else DEFAULT_MAX_TURNS
 
 
+DEFAULT_COMPACT_AT = 60_000
+_OFF = {"0", "off", "none", "false"}
+
+
+def compact_window() -> int | None:
+    """Auto-compaction window (tokens) for the CLI, ``DTK_AGENT_COMPACT_AT``
+    (default 60k; ``off`` = the CLI's own default, near the model window).
+
+    Passed as ``CLAUDE_CODE_AUTO_COMPACT_WINDOW``: the CLI summarises older
+    turns once the context approaches it (datatoolkit-issues#151).
+    """
+    raw = os.environ.get("DTK_AGENT_COMPACT_AT", "").strip().lower()
+    if raw in _OFF:
+        return None
+    try:
+        value = int(raw) if raw else DEFAULT_COMPACT_AT
+    except ValueError:
+        return DEFAULT_COMPACT_AT
+    return value if value > 0 else None
+
+
 def _workdir() -> Path:
     """An empty cwd for the CLI (nothing to pick up, nothing to touch)."""
     path = dtk_home() / "agent" / "sdk-cwd"
@@ -169,6 +190,11 @@ def _tokens(usage: dict | None) -> tuple[int, int, int, int]:
     read = int(usage.get("cache_read_input_tokens") or 0)
     total_in = int(usage.get("input_tokens") or 0) + write + read
     return total_in, int(usage.get("output_tokens") or 0), write, read
+
+
+def _compact_env() -> dict[str, str]:
+    window = compact_window()
+    return {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(window)} if window else {}
 
 
 def _set_usage(chat: ChatSession, tokens: tuple[int, int, int, int], context: int | None) -> bool:
@@ -214,9 +240,18 @@ class SdkAdapter:
             model=self.model_name,
             cli_path=cli_path(),
             cwd=str(_workdir()),
+            env=_compact_env(),
         )
         self.client = ClaudeSDKClient(options)
         await self.client.connect()
+
+    def _on_system(self, message: Any) -> None:
+        """A CLI compaction: tell the panel (older turns are now a summary)."""
+        assert self.chat is not None
+        if message.subtype != "compact_boundary":
+            return
+        meta = (message.data or {}).get("compact_metadata") or {}
+        self.chat.emit("compacted", trigger=meta.get("trigger"), pre_tokens=meta.get("pre_tokens"))
 
     async def _can_use_tool(self, name: str, tool_input: dict, context: Any) -> Any:
         from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
@@ -242,6 +277,7 @@ class SdkAdapter:
             AssistantMessage,
             ResultMessage,
             StreamEvent,
+            SystemMessage,
             UserMessage,
         )
 
@@ -253,6 +289,8 @@ class SdkAdapter:
             self._on_user(message)
         elif isinstance(message, ResultMessage):
             return self._on_result(message)
+        elif isinstance(message, SystemMessage):
+            self._on_system(message)
         return None
 
     def _on_stream(self, message: Any) -> None:
