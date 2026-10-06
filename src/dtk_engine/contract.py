@@ -356,6 +356,8 @@ def evaluate(
     return _inspect.evaluate(
         parse_workspace(ws), role, exprs, steps=steps, where=where, version=version
     )
+
+
 def column_notes(ws: dict, role: str = "train", version: int | None = None) -> dict:
     """Column notes resolved at ``version``: ``{notes: {name: text}, keys:
     {name: origin key}}`` (``keys``: renamed columns only; write a note on

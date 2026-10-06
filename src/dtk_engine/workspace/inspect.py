@@ -727,6 +727,8 @@ def _formula(frame: pd.DataFrame, expr: str) -> Any:
         return _evaluate_expr(frame, expr)
     except (ValueError, KeyError, TypeError) as exc:
         raise KeyParamsError(f"expression {expr!r}: {exc}") from exc
+
+
 # Ops that rename columns in place (same count, same order): notes follow them.
 RENAME_OPS = frozenset({"rename", "rename_columns_bulk"})
 

@@ -286,6 +286,7 @@ class _Tools:
         )
         identity = None if steps else _identity(view, ws)
         return policy.frame(data, identity=identity)
+
     async def get_notes(self, args: dict) -> dict:
         view = await self._view(args)
         ws = await self._workspace_dict(view)
