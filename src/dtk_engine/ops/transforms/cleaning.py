@@ -593,6 +593,44 @@ def filter_rows(
     return df[np.asarray(combine.reduce(masks), dtype=bool)]
 
 
+class SortRowsParams(TransformParams):
+    by: list[str] = columns_field(
+        "Columns to sort by, most significant first",
+        source="step",
+        required=True,
+        min_length=1,
+    )
+    ascending: bool | list[bool] = Field(
+        default=True,
+        description="Ascending order: one bool for all columns, or one per column",
+    )
+    na_position: Literal["first", "last"] = Field(
+        default="last", description="Where missing values go"
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> SortRowsParams:
+        if len(set(self.by)) != len(self.by):
+            raise ValueError("by must not repeat")
+        if isinstance(self.ascending, list) and len(self.ascending) != len(self.by):
+            raise ValueError("ascending list must have one entry per column in by")
+        return self
+
+
+@transform("sort_rows", params_model=SortRowsParams, title="Sort rows")
+def sort_rows(df: pd.DataFrame, params: SortRowsParams, state: dict) -> pd.DataFrame:
+    """Stable sort by one or more columns; each row keeps its index (row id)."""
+    missing = [c for c in params.by if c not in df.columns]
+    if missing:
+        raise KeyError(f"columns not in frame: {missing}")
+    return df.sort_values(
+        params.by,
+        ascending=params.ascending,
+        na_position=params.na_position,
+        kind="stable",
+    )
+
+
 class ClipParams(TransformParams):
     columns: list[str] = columns_field(
         "Numeric columns to clip",
