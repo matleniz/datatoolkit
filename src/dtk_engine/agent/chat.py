@@ -491,17 +491,18 @@ class AgentHub:
         return note + await self._intro_note(chat, name)
 
     async def _intro_note(self, chat: ChatSession, name: str) -> str:
-        """What a conversation gets once per workspace: its documents (#178)
-        and the agent memory (#179)."""
+        """What a conversation gets once per workspace: the analysis keys (#180),
+        its documents (#178) and the agent memory (#179)."""
         if name in chat.introduced:
             return ""
         try:
             docs = await asyncio.to_thread(contract.list_documents, name)
             memory = await asyncio.to_thread(contract.workspace_memory, name)
+            keys = await asyncio.to_thread(contract.list_keys)
         except (KeyError, KeyParamsError, OSError, ValueError):
             return ""
         chat.introduced.add(name)
-        return intro_note(docs, memory)
+        return intro_note(docs, memory, keys)
 
     async def cancel(self, session: str) -> bool:
         """Stop the running turn (the adapter first, then the task); False when idle."""

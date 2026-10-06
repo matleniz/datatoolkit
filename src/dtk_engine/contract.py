@@ -252,11 +252,28 @@ def save_workspace(workspace: dict) -> dict:
     """Validate (shape, step ops and params) and store (create or overwrite);
     returns the normalized dict. A document path not already in the stored
     workspace must be a file under the upload dir (KeyParamsError otherwise)."""
-    parsed = parse_workspace(workspace)
     store = JsonWorkspaceStore()
+    parsed = parse_workspace(_with_stored_counters(store, workspace))
     _check_new_documents(store, parsed)
     store.save(parsed)
     return parsed.model_dump(mode="json")
+
+
+def _with_stored_counters(store: JsonWorkspaceStore, workspace: dict) -> dict:
+    """``workspace`` with the stored workspace's id counters as a floor, so a
+    client that drops ``id_counters`` cannot make a memory / document id come
+    back (datatoolkit-issues#180)."""
+    try:
+        stored = store.get(workspace.get("name")).id_counters
+    except (WorkspaceNotFoundError, KeyParamsError, ValueError, TypeError, OSError):
+        return workspace
+    sent = workspace.get("id_counters")
+    sent = sent if isinstance(sent, dict) else {}
+    merged = {
+        k: max(stored.get(k, 0), sent[k] if isinstance(sent.get(k), int) else 0)
+        for k in ("m", "d")
+    }
+    return {**workspace, "id_counters": merged}
 
 
 def _check_new_documents(store: JsonWorkspaceStore, ws: Workspace) -> None:
