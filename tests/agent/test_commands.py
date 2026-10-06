@@ -50,6 +50,8 @@ EXAMPLES: dict[str, dict] = {
     "add_variable": {"name": "mean_age", "stat": "mean", "column": "age"},
     "set_note": {"kind": "column", "column": "age", "text": "imputed once per patient"},
     "keep_attachment": {"attachment_id": "a1", "note": "data dictionary"},
+    "remember": {"text": "ledd is in mg/day, 0 means untreated", "kind": "fact", "memory_id": "m2"},
+    "forget": {"memory_id": "m2"},
     "draft_chart": {"params": {"chart": "scatter", "x": "age", "y": "fare", "log_y": True}},
     "add_chart": {"name": "Age vs fare", "params": {"chart": "scatter", "x": "age", "y": "fare"}},
     "edit_step": {"index": 0},
@@ -74,6 +76,11 @@ INVALID: list[tuple[str, dict]] = [
     ("fill_editor", {"target": "all"}),
     ("keep_attachment", {"note": "no id"}),
     ("keep_attachment", {"attachment_id": ""}),
+    ("remember", {"text": ""}),
+    ("remember", {"text": "x" * 501}),
+    ("remember", {"text": "x", "kind": "note"}),
+    ("remember", {"text": "x", "memory_id": "d1"}),
+    ("forget", {}),
 ]
 # Added by datatoolkit-issues#100 (Studio commands beyond phase 1).
 NEW_TOOLS = {

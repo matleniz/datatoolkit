@@ -370,6 +370,10 @@ class _Tools:
             attachments.read_text, att, int(args.get("offset") or 0), args.get("max_chars")
         )
 
+    async def get_memory(self, args: dict) -> dict:
+        name = await self._workspace_name(args)
+        return policy.frame(await _compute(contract.memory_summary, name))
+
     # -- workspace documents (read-only) ----------------------------------
     async def list_documents(self, args: dict) -> dict:
         name = await self._workspace_name(args)
@@ -553,6 +557,11 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
          ("The user's and your notes: on the workspace, on steps (by id) and on "
           "columns (names at the version, renames followed). Write with set_note."),
          _schema(dict(_VIEW)), t.get_notes, True),
+        ("get_memory",
+         ("Your workspace memory: the short facts saved with remember (also given at "
+          "the start of each chat), with their ids, and its size against the cap."),
+         _schema({"workspace": _VIEW["workspace"], "session": _SESSION}),
+         t.get_memory, True),
         ("export_workspace",
          ("Export the workspace into $DTK_HOME/exports/<workspace> (the only place): "
           "formats ipynb (default: a notebook replaying the steps, with the notes as "

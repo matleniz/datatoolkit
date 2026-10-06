@@ -161,15 +161,21 @@ def turn_note(ctx: dict, steps: list[dict], changes: dict | None, first: bool) -
 _NOTE_DOCUMENTS = 20  # documents named in an intro
 
 
-def intro_note(docs: list[dict]) -> str:
+def intro_note(docs: list[dict], memory: list[dict] | None = None) -> str:
     """What a conversation's first turn on a workspace adds after the Studio
-    note: ``[Workspace documents (read_document): d1 dictionary.md, …]``, or ""."""
-    if not docs:
-        return ""
-    names = ", ".join(f"{d.get('id')} {d.get('name')}" for d in docs[:_NOTE_DOCUMENTS])
-    more = len(docs) - _NOTE_DOCUMENTS
-    tail = f", … {more} more (list_documents)" if more > 0 else ""
-    return f"[Workspace documents (read_document): {names}{tail}]\n\n"
+    note: ``[Workspace documents (read_document): d1 dictionary.md, …]`` and the
+    agent memory, one entry per line (#179); "" when there is neither."""
+    out = ""
+    if docs:
+        names = ", ".join(f"{d.get('id')} {d.get('name')}" for d in docs[:_NOTE_DOCUMENTS])
+        more = len(docs) - _NOTE_DOCUMENTS
+        tail = f", … {more} more (list_documents)" if more > 0 else ""
+        out += f"[Workspace documents (read_document): {names}{tail}]\n\n"
+    if memory:
+        lines = [f"- {e.get('id')} ({e.get('kind') or 'fact'}) {e.get('text')}" for e in memory]
+        head = "[Workspace memory (yours, from earlier chats; update with remember / forget):"
+        out += "\n".join([head, *lines]) + "]\n\n"
+    return out
 
 
 # -- engine-side data identity (mirrors Studio's dataIdentity.ts) -------------

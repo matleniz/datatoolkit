@@ -60,6 +60,9 @@ CHART_AGGS = ["count", "mean", "sum", "median"]
 FILTER_OPS = ["eq", "ne", "gt", "ge", "lt", "le", "isin", "notin", "isna", "notna"]
 CHART_NAME_MAX = 64
 NOTE_MAX = 4000  # engine ``workspace.models.NOTE_MAX``
+MEMORY_ENTRY_MAX = 500  # engine ``workspace.models.MEMORY_ENTRY_MAX``
+MEMORY_KINDS = ["fact", "decision", "preference", "todo"]
+_MEMORY_ID = {"type": "string", "pattern": "^m[0-9a-z-]{1,32}$", "description": "Memory entry id."}
 
 _COLUMN_OR_NULL = {"type": ["string", "null"], "minLength": 1}
 _CHART_PARAMS = {
@@ -339,6 +342,39 @@ _WORKSPACE_COMMANDS = (
             },
             ("attachment_id",),
         ),
+        context_fill=("workspace",),
+    ),
+    CommandSpec(
+        type="remember",
+        tool_name="remember",
+        description=(
+            "Save a short fact in the workspace memory, which you get at the start of "
+            "every later chat on this workspace (data quirks, decisions, the user's "
+            "preferences, todos). One fact per entry, short; pass memory_id to rewrite "
+            "an entry (update rather than duplicate). One undoable change; the ack's "
+            "memory_id is the entry's id. Acked `bad_command: memory full` over the "
+            "caps (forget first). workspace defaults to the Studio context. Read the "
+            "whole memory with get_memory."
+        ),
+        input_schema=_args(
+            {
+                "text": {"type": "string", "minLength": 1, "maxLength": MEMORY_ENTRY_MAX},
+                "kind": {"type": "string", "enum": MEMORY_KINDS},
+                "memory_id": _MEMORY_ID,
+                "workspace": _STR,
+            },
+            ("text",),
+        ),
+        context_fill=("workspace",),
+    ),
+    CommandSpec(
+        type="forget",
+        tool_name="forget",
+        description=(
+            "Remove one entry from the workspace memory (it became wrong or done). "
+            "One undoable change. workspace defaults to the Studio context."
+        ),
+        input_schema=_args({"memory_id": _MEMORY_ID, "workspace": _STR}, ("memory_id",)),
         context_fill=("workspace",),
     ),
     CommandSpec(

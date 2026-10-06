@@ -353,3 +353,27 @@ already stored must be under the upload dir (`422 NotAnUploadError`).
   documents (read_document): d1 dictionary.md, d2 protocol.pdf]`.
 - Export: the manifest lists them (`documents: [{id, name, path, mime, size,
   note, sha256 | missing}]`), files not copied.
+
+### Agent memory (datatoolkit-issues#179)
+
+Short facts the agent keeps **per workspace, across chats**, in the workspace
+JSON (so they travel with duplicate / rename / export): `Workspace.memory:
+[{id, text, kind, updated_at}]`, `id` `m<n>` (filled by the engine when
+absent), `text` 1–500 characters, `kind` `fact | decision | preference |
+todo` (default `fact`). Caps checked on every save (`422` beyond): 100
+entries, 8000 characters of text in all (~2k tokens). Studio edits it with
+its normal workspace save (no dedicated route).
+
+- UI commands (Studio applies each as one undoable change, toast + Undo, and
+  saves): `remember {text, kind?, memory_id?, workspace?}` (no `memory_id` =
+  add; Studio sets `updated_at` and the new id, ack `{id, ok, memory_id}`)
+  and `forget {memory_id, workspace?}`. Errors: `bad_command: unknown memory
+  id …`, `bad_command: memory full (…)`, `save_failed: …`. (`memory_id`, not
+  `id`: a command's `id` is the relay's.)
+- MCP tool `get_memory(workspace?, session?)` → `{entries, chars, max_chars}`.
+- A conversation's first turn on a workspace gets it after the `[Studio: …]`
+  note (and the documents line): `[Workspace memory (yours, from earlier
+  chats; update with remember / forget):\n- m1 (fact) …]`. Later turns do not
+  repeat it; a new adapter (new chat, pack change, reaped session) starts over.
+- System prompt: notes (`set_note`) hold a finding on a step / column; memory
+  holds session-spanning context (quirks, decisions, preferences, todos).
