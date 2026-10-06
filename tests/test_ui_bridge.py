@@ -203,6 +203,27 @@ def test_stale_ack_passed_through_and_session_targeting():
             }
 
 
+def test_ack_keeps_document_id():
+    with Server() as srv:
+        client, cm = _open_stream(srv, "s1")
+        with client, cm as r:
+            lines = r.iter_lines()
+            _read_until(lines, lambda line: line.startswith(": connected"))
+            results: list = []
+            t = threading.Thread(target=_post_command, args=(srv, {"type": "x"}, results))
+            t.start()
+            cid = json.loads(
+                _read_until(lines, lambda line: line.startswith("data:")).removeprefix("data: ")
+            )["id"]
+            httpx.post(
+                f"{srv.url}/api/ui/ack",
+                json={"id": cid, "ok": True, "document_id": "d1"},
+                headers=AUTH, timeout=5,
+            )
+            t.join(timeout=10)
+            assert results[0].json() == {"id": cid, "ok": True, "document_id": "d1"}
+
+
 def test_no_studio_when_no_listener():
     with Server() as srv:
         r = httpx.post(

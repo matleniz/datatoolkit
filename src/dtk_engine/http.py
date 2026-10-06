@@ -409,6 +409,8 @@ class UiAck(BaseModel):
     # and on ``stale`` the targeted steps that moved: ``{id, reason, step?}``.
     added_ids: list[str] | None = None
     stale: list[dict[str, Any]] | None = None
+    # keep_attachment (datatoolkit-issues#178): id of the kept document.
+    document_id: str | None = None
 
     @model_validator(mode="after")
     def _one_kind(self) -> UiAck:
