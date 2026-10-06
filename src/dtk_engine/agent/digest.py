@@ -106,6 +106,8 @@ def _param_text(value: Any) -> str | None:
 def step_line(step: dict) -> str:
     """``s3 impute columns=age strategy=median`` (cut to a line)."""
     parts = [f"{step.get('id')} {step.get('op')}"]
+    if step.get("note"):
+        parts.append("(note)")
     if step.get("target") not in (None, "both"):
         parts.append(f"[{step['target']}]")
     for key, value in (step.get("params") or {}).items():

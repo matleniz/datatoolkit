@@ -358,6 +358,13 @@ def evaluate(
     )
 
 
+def column_notes(ws: dict, role: str = "train", version: int | None = None) -> dict:
+    """Column notes resolved at ``version``: ``{notes: {name: text}, keys:
+    {name: origin key}}`` (``keys``: renamed columns only; write a note on
+    column ``X`` under ``keys.get(X, X)`` in ``notes.columns``)."""
+    return _inspect.column_notes(parse_workspace(ws), role, version)
+
+
 def align_report(ws: dict) -> dict:
     """Train / test column alignment after the workspace's steps.
 

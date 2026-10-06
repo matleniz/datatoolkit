@@ -59,7 +59,7 @@ JSON contract (what fronts call, `src/dtk_engine/contract.py`): `run_key`,
 `list_keys`, `key_schema`, `list_transforms`, `transform_schema`, workspaces
 (`list_workspaces`, `get_workspace`, `save_workspace`, rename / duplicate /
 delete, `export_workspace`) and the studio reads (`source_columns`,
-`preview_workspace`, `preview_step`, `preview_steps`, `evaluate`,
+`preview_workspace`, `preview_step`, `preview_steps`, `evaluate`, `column_notes`,
 `workspace_rows`, `column_profiles`,
 `align_report`):
 
@@ -135,7 +135,10 @@ command, which drives the open Studio. Reads are capped and path-scoped, and
 every call is audited (`dtk_engine.agent.policy`). `preview_steps` (a list of
 steps dry-run in memory) and `evaluate` (statistics of formula expressions at
 a version or after draft steps) let the agent explore without touching the
-pipeline or the undo history.
+pipeline or the undo history. Notes (`get_notes` / `set_note`): free text
+on steps (`Step.note`), columns (`notes.columns`, keyed by the column's origin
+name so a note survives `rename` steps; `column_notes` resolves names) and the
+workspace (`notes.workspace`); not part of the data identity.
 
 | Studio tools | what changes in Studio |
 | --- | --- |
@@ -145,6 +148,7 @@ pipeline or the undo history.
 | `select_columns`, `pick_row`, `pick_cell`, `clear_selection` | the grid selection |
 | `set_view`, `set_grid_view` | role / version shown, view-only filter and sort |
 | `add_variable`, `draft_chart`, `add_chart` | workspace variables, the chart builder, saved charts |
+| `set_note` | a note on a step, a column (follows renames) or the workspace |
 
 Each one is acked `{id, ok, error?, identity?}`. Studio applies it as one
 undoable change and highlights what it touched. Steps carry a stable `id`

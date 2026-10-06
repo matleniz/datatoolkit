@@ -13,6 +13,7 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
 VARIABLE_NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
 # A step id names a pipeline slot (kept when the step is replaced), opaque.
 STEP_ID_PATTERN = r"^s[0-9a-z-]{1,32}$"
+NOTE_MAX = 4000  # characters per note
 VariableStat = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
 
 
@@ -69,6 +70,7 @@ class Step(_Strict):
     op: str
     target: Literal["train", "test", "both"]
     params: dict[str, Any] = Field(default_factory=dict)
+    note: str | None = Field(default=None, max_length=NOTE_MAX)
 
 
 class MergeSpec(_Strict):
@@ -97,6 +99,23 @@ class ChartSpec(_Strict):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkspaceNotes(_Strict):
+    """Free-text notes: on the workspace, and per column keyed by the column's
+    origin name (its source name, or the name a step created it with), so a
+    note survives ``rename`` steps (``inspect.column_notes`` resolves names)."""
+
+    workspace: str | None = Field(default=None, max_length=NOTE_MAX)
+    columns: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("columns")
+    @classmethod
+    def _column_notes(cls, notes: dict[str, str]) -> dict[str, str]:
+        long = [k for k, v in notes.items() if len(v) > NOTE_MAX]
+        if long:
+            raise ValueError(f"column notes over {NOTE_MAX} characters: {long}")
+        return {k: v for k, v in notes.items() if v}
+
+
 class Workspace(_Strict):
     name: str = Field(pattern=NAME_PATTERN)
     datasets: Datasets
@@ -105,6 +124,7 @@ class Workspace(_Strict):
     variables: list[VariableSpec] = Field(default_factory=list)
     charts: list[ChartSpec] = Field(default_factory=list)
     steps: list[Step] = Field(default_factory=list)
+    notes: WorkspaceNotes = Field(default_factory=WorkspaceNotes)
 
     @field_validator("steps")
     @classmethod
