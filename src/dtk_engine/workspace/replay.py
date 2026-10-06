@@ -63,14 +63,15 @@ def validate_steps(steps: list[Step]) -> None:
 
 
 @contextmanager
-def _step_context(i: int, step: Step) -> Iterator[None]:
+def _step_context(i: int, step: Step, split: str | None = None) -> Iterator[None]:
     try:
         yield
     except (SourceError, KeyParamsError):
         raise
     except (KeyError, ValueError, TypeError) as exc:
         raise SourceError(
-            f"step {i} ({step.op!r} on {step.target}) failed: {exc}"
+            f"step {i} ({step.op!r} on {step.target}) failed"
+            f"{f' on the {split} set' if split else ''}: {exc}"
         ) from exc
 
 
@@ -105,7 +106,8 @@ def _run(
             if step.target != "test" and i < train_until:
                 train = t.apply(train, params, state)
             if step.target != "train" and test is not None:
-                test = t.apply(test, params, state)
+                with _step_context(i, step, split="test"):
+                    test = t.apply(test, params, state)
         fitted.append({"fitted_on": fitted_on, "state": state})
     return train, test, fitted
 

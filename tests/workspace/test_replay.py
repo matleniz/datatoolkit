@@ -131,3 +131,20 @@ def test_replay_fitted_matches_replay(ops):
     # no test frame: the "test" step is recorded as not fitted
     _, te, fitted = replay_fitted(steps, train)
     assert te is None and fitted[2] == {"fitted_on": None, "state": {}}
+
+
+def test_reorder_columns_on_target_with_a_test_set():
+    train = pd.DataFrame({"x": [1, 2], "target": [0, 1], "z": [3, 4]})
+    test = pd.DataFrame({"x": [5], "z": [6]})  # labeled workspace: no target in test
+    params = {"columns": ["target"], "position": "last"}
+
+    strict = [Step(op="reorder_columns", target="both", params=params)]
+    with pytest.raises(SourceError, match=r"failed on the test set: .*target"):
+        replay_fitted(strict, train, test)
+
+    lenient = [
+        Step(op="reorder_columns", target="both", params={**params, "missing_ok": True})
+    ]
+    out_train, out_test, _ = replay_fitted(lenient, train, test)
+    assert out_train.columns.tolist() == ["x", "z", "target"]
+    assert out_test.columns.tolist() == ["x", "z"]
