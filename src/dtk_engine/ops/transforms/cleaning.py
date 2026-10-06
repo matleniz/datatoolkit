@@ -39,7 +39,10 @@ class SelectColumnsParams(TransformParams):
         "Columns to keep, in this order", source="step", required=True, min_length=1
     )
     missing_ok: bool = Field(
-        default=False, description="Ignore listed columns absent from the frame"
+        default=False,
+        description="Ignore listed columns absent from the frame. Set true when a "
+        "column exists in one split only (the target is absent from the test set; "
+        "train-only steps create columns test lacks), else the test replay fails",
     )
 
     @field_validator("columns")
@@ -76,7 +79,10 @@ class ReorderColumnsParams(TransformParams):
         extra=when(position=["before", "after"]),
     )
     missing_ok: bool = Field(
-        default=False, description="Ignore listed columns absent from the frame"
+        default=False,
+        description="Ignore listed columns absent from the frame. Set true when a "
+        "column exists in one split only (the target is absent from the test set; "
+        "train-only steps create columns test lacks), else the test replay fails",
     )
 
     @model_validator(mode="after")
@@ -99,7 +105,10 @@ class ReorderColumnsParams(TransformParams):
 def reorder_columns(
     df: pd.DataFrame, params: ReorderColumnsParams, state: dict
 ) -> pd.DataFrame:
-    """Move the listed columns to the start, the end, or next to an anchor column."""
+    """Move the listed columns to the start, the end, or next to an anchor column.
+
+    Set ``missing_ok`` for the target or any column absent from the test set.
+    """
     missing = [c for c in params.columns if c not in df.columns]
     if missing and not params.missing_ok:
         raise KeyError(f"columns not in frame: {missing}")
