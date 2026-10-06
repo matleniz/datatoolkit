@@ -245,3 +245,52 @@ async def test_audit_records_calls_without_values(client, bridge, audit):
     assert propose["args"]["ops"] == "<list 1>"
     assert "secret_value_42" not in json.dumps(audit.entries())
     assert refused["status"] == "error"
+
+
+def _save_longitudinal(home, name: str = "long") -> None:
+    """7,000 patients x 3 visits; ``ledd`` missing on the middle visit."""
+    import pandas as pd
+
+    n = 7000
+    df = pd.DataFrame({
+        "patient_id": [i for i in range(n) for _ in range(3)],
+        "age": [50 + v for _ in range(n) for v in range(3)],
+        "ledd": [float(v * 10) if v != 1 else None for _ in range(n) for v in range(3)],
+    })
+    path = home / "long.csv"
+    df.to_csv(path, index=False)
+    contract.save_workspace(
+        {"name": name, "datasets": {"train": {"x": {"kind": "csv", "path": str(path)}}}}
+    )
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"op": "group_agg", "params": {"group": "patient_id", "value": "age", "aggs": ["mean", "count"]}},
+        {"op": "impute", "params": {
+            "columns": ["ledd"], "strategy": "group_interp", "by": "patient_id", "order": "age",
+        }},
+    ],
+)
+async def test_preview_step_stays_small_on_high_cardinality(client, home, step):
+    """#154: a 7k-group group_agg / a 7k-cell group_interp preview fits ~10k chars."""
+    _save_longitudinal(home)
+    result = await client.call_tool("preview_step", {"workspace": "long", "step": step})
+    text = result.content[0].text
+    assert not result.is_error, text
+    assert len(text) < 10_000
+    out = json.loads(text)
+    data = out["data"]
+    assert isinstance(data, dict) and "truncated" not in out
+    assert data["shape"][0] == 21_000
+    if step["op"] == "impute":
+        assert data["changed_total"] == 7000 and data["elided"]["changed"] == 2000
+    else:
+        assert data["elided"]["state.groups"] == 7000
+    detail = await client.call_tool(
+        "preview_step", {"workspace": "long", "step": step, "detail": True}
+    )
+    more = json.loads(detail.content[0].text)["data"]
+    sample = more["state"]["groups"] if step["op"] == "group_agg" else more["changed"]
+    assert len(sample) == policy.PREVIEW_DETAIL_ITEMS
