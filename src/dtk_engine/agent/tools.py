@@ -253,6 +253,40 @@ class _Tools:
         compact = policy.compact_preview(data, bool(args.get("detail")))
         return policy.frame(compact, identity=_identity(view, ws))
 
+    async def preview_steps(self, args: dict) -> dict:
+        steps = _need(args, "steps")
+        if not isinstance(steps, list):
+            raise KeyParamsError("steps must be a list")
+        steps = [{"target": "both", **s} if isinstance(s, dict) else s for s in steps]
+        view = await self._view(args, use_version=False)
+        ws = await self._workspace_dict(view)
+        data = await _compute(contract.preview_steps, ws, steps, view.role)
+        detail = bool(args.get("detail"))
+        compact = policy.compact_preview(data, detail)
+        elided: dict[str, int] = dict(compact.get("elided") or {})
+        limit = policy.PREVIEW_DETAIL_ITEMS if detail else policy.PREVIEW_ITEMS
+        compact["steps"] = [
+            {**s, "state": policy.cap_lists(s["state"], limit, elided, f"steps[{i}].state")}
+            for i, s in enumerate(data["steps"])
+        ]
+        if elided:
+            compact["elided"] = elided
+        return policy.frame(compact, identity=_identity(view, ws))
+
+    async def evaluate(self, args: dict) -> dict:
+        exprs = _need(args, "exprs")
+        steps = args.get("steps")
+        if isinstance(steps, list):
+            steps = [{"target": "both", **s} if isinstance(s, dict) else s for s in steps]
+        view = await self._view(args, use_version=not steps)
+        ws = await self._workspace_dict(view)
+        data = await _compute(
+            contract.evaluate, ws, view.role, exprs,
+            steps=steps or None, where=args.get("where"), version=view.version,
+        )
+        identity = None if steps else _identity(view, ws)
+        return policy.frame(data, identity=identity)
+
     async def align_report(self, args: dict) -> dict:
         view = await self._view(args, use_version=False)
         ws = await self._workspace_dict(view)
@@ -430,6 +464,35 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
              "detail": {"type": "boolean", "description": "Larger samples (default false)."},
              "workspace": _VIEW["workspace"], "role": _VIEW["role"], "session": _SESSION,
          }, ("step",)), t.preview_step, True),
+        ("preview_steps",
+         ("Dry-run a LIST of steps on top of the workspace steps (nothing saved, no "
+          "undo entry, invisible to the user): use it to explore / compare options, "
+          "then propose_steps only the final steps. Returns the diff of the whole "
+          "list and each step's fitted state (cut like preview_step)."),
+         _schema({
+             "steps": {
+                 "type": "array", "minItems": 1, "maxItems": 50,
+                 "items": {"type": "object", "description": "{op, target?, params?}"},
+             },
+             "detail": {"type": "boolean", "description": "Larger samples (default false)."},
+             "workspace": _VIEW["workspace"], "role": _VIEW["role"], "session": _SESSION,
+         }, ("steps",)), t.preview_steps, True),
+        ("evaluate",
+         ("Statistics (count, missing, mean, std, min, q25, median, q75, max, sum) of "
+          "formula expressions (same language as the formula op, e.g. \"age\", "
+          "\"abs(a - b)\", \"isna(x)\") on the data at a version, or after draft "
+          "`steps` applied in memory like preview_steps. `where`: expression selecting "
+          "rows (non-zero, not NaN). Read-only."),
+         _schema({
+             "exprs": {"type": "array", "minItems": 1, "maxItems": 20, "items": _STR},
+             "where": _STR,
+             "steps": {
+                 "type": "array", "maxItems": 50,
+                 "items": {"type": "object", "description": "{op, target?, params?}"},
+                 "description": "Draft steps applied in memory first (latest version only).",
+             },
+             **_VIEW,
+         }, ("exprs",)), t.evaluate, True),
         ("align_report",
          ("Train / test column alignment after the workspace's steps; matching columns "
           "are listed by name only unless detail."),

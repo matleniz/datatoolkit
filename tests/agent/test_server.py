@@ -23,7 +23,7 @@ STATIC_TOOLS = {
     "list_keys", "key_schema", "run_key", "list_transforms", "transform_schema",
     "list_workspaces", "get_workspace", "get_rows", "get_profiles", "preview_step",
     "align_report", "source_columns", "get_ui_context", "get_command_status",
-    "list_attachments", "read_attachment",
+    "list_attachments", "read_attachment", "preview_steps", "evaluate",
 }
 
 
@@ -313,3 +313,46 @@ async def test_heavy_reads_are_compact_by_default(client, bridge):
     assert all("description" not in k for k in keys)
     ops = _payload(await client.call_tool("list_transforms", {"detail": True}))["data"]
     assert all("description" in o for o in ops)
+
+
+async def test_study_in_memory_leaves_no_trace(client, bridge, home):
+    """#155 acceptance: the ledd study (mask 1 row in 5, impute two ways, score)
+    runs with preview_steps + evaluate only: no command reaches Studio, the
+    workspace is unchanged."""
+    import pandas as pd
+
+    n = 500  # patients x 4 visits, ledd linear in the visit
+    pd.DataFrame({
+        "patient_id": [i for i in range(n) for _ in range(4)],
+        "age": [50 + v for _ in range(n) for v in range(4)],
+        "ledd": [10.0 * v + i for i in range(n) for v in range(4)],
+    }).to_csv(home / "long.csv", index=False)
+    contract.save_workspace(
+        {"name": "long", "datasets": {"train": {"x": {"kind": "csv", "path": str(home / "long.csv")}}}}
+    )
+    picked = "(patient_id - 5 * floor(patient_id / 5) == 0) * (age == 51)"
+    bridge.put_context({**_context(), "workspace": "long", "identity": "long|train|v0|x"})
+    queue = bridge.add_listener("s1")
+    stored = contract.get_workspace("long")
+    mask = {"op": "formula", "params": {
+        "name": "ledd_masked", "expr": f"where({picked}, -999, ledd)",
+    }}
+    unmask = {"op": "replace_sentinels", "params": {"sentinels": {"ledd_masked": [-999]}}}
+    scores = {}
+    for strategy in ("group_interp", "group_mean"):
+        impute = {"op": "impute", "params": {
+            "columns": ["ledd_masked"], "strategy": strategy, "by": "patient_id", "order": "age",
+        }}
+        steps = [mask, unmask, impute]
+        preview = _payload(await client.call_tool("preview_steps", {"steps": steps}))
+        assert [s["op"] for s in preview["data"]["steps"]] == ["formula", "replace_sentinels", "impute"]
+        out = _payload(await client.call_tool("evaluate", {
+            "steps": steps, "exprs": ["abs(ledd_masked - ledd)"],
+            "where": picked,
+        }))
+        scores[strategy] = out["data"]["results"][0]
+    assert scores["group_interp"]["count"] == 100
+    assert scores["group_interp"]["mean"] == pytest.approx(0)  # linear visits: exact
+    assert scores["group_mean"]["mean"] > 0
+    assert queue.empty()
+    assert contract.get_workspace("long") == stored

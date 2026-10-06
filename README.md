@@ -59,7 +59,8 @@ JSON contract (what fronts call, `src/dtk_engine/contract.py`): `run_key`,
 `list_keys`, `key_schema`, `list_transforms`, `transform_schema`, workspaces
 (`list_workspaces`, `get_workspace`, `save_workspace`, rename / duplicate /
 delete, `export_workspace`) and the studio reads (`source_columns`,
-`preview_workspace`, `preview_step`, `workspace_rows`, `column_profiles`,
+`preview_workspace`, `preview_step`, `preview_steps`, `evaluate`,
+`workspace_rows`, `column_profiles`,
 `align_report`):
 
 ```python
@@ -131,7 +132,10 @@ under `$DTK_HOME/workspaces`; `DTK_HOME` defaults to `~/.datatoolkit`.
 Optional extra `agent` (the official `mcp` SDK): the contract as MCP tools
 (keys, transforms, workspaces, rows / profiles) plus one tool per Studio
 command, which drives the open Studio. Reads are capped and path-scoped, and
-every call is audited (`dtk_engine.agent.policy`).
+every call is audited (`dtk_engine.agent.policy`). `preview_steps` (a list of
+steps dry-run in memory) and `evaluate` (statistics of formula expressions at
+a version or after draft steps) let the agent explore without touching the
+pipeline or the undo history.
 
 | Studio tools | what changes in Studio |
 | --- | --- |

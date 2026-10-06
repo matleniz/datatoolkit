@@ -41,6 +41,7 @@ from dtk_engine.ops.profile import (
 )
 from dtk_engine.ops.suggested import suggested_params as _suggested_params
 from dtk_engine.ops.transforms.cleaning import FilterRowsParams, _condition_mask
+from dtk_engine.ops.transforms.formula import evaluate as _evaluate_expr
 from dtk_engine.sources import load
 from dtk_engine.workspace.dataset import cached_frame, raw_workspace_frame
 from dtk_engine.workspace.models import Step, Workspace
@@ -598,9 +599,13 @@ def preview_step(ws: Workspace, step: dict | Step, role: str) -> dict:
     if after is None:
         raise SourceError(f"workspace {ws.name!r} has no {role} dataset")
 
-    state = last["state"]
+    return _preview_payload(before, after, last)
+
+
+def _preview_payload(before: pd.DataFrame, after: pd.DataFrame, last: dict) -> dict:
+    """Shape / column / cell diffs of ``before`` -> ``after`` + ``last``'s fit."""
     # Ensure state is plain JSON (numpy scalars etc.).
-    state_json = json.loads(json.dumps(state, default=str))
+    state_json = json.loads(json.dumps(last["state"], default=str))
 
     before_cols = [str(c) for c in before.columns]
     after_cols = [str(c) for c in after.columns]
@@ -619,6 +624,109 @@ def preview_step(ws: Workspace, step: dict | Step, role: str) -> dict:
         "state": state_json,
         "fitted_on": last["fitted_on"],
     }
+
+
+MAX_DRAFT_STEPS = 50
+MAX_EXPRS = 20
+_QUANTILES = {"q25": 0.25, "median": 0.5, "q75": 0.75}
+
+
+def _parse_draft(ws: Workspace, steps: list) -> list[Step]:
+    if not isinstance(steps, list) or not steps:
+        raise KeyParamsError("steps must be a non-empty list")
+    if len(steps) > MAX_DRAFT_STEPS:
+        raise KeyParamsError(f"at most {MAX_DRAFT_STEPS} draft steps")
+    parsed = [s if isinstance(s, Step) else _parse_step(s) for s in steps]
+    validate_steps([*ws.steps, *parsed])
+    return parsed
+
+
+def _draft_frames(
+    ws: Workspace, steps: list[Step], role: str
+) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
+    """``role`` before / after ``steps`` appended in memory, and each step's fit."""
+    before = _replay_role(ws, role, ws.steps)
+    train = before.copy(deep=False) if role == "train" else _replay_role(ws, "train", ws.steps)
+    test = None
+    if ws.datasets.test is not None:
+        test = before.copy(deep=False) if role == "test" else _replay_role(ws, "test", ws.steps)
+    fitted = []
+    for offset, step in enumerate(steps):
+        train, test, last = replay_step(step, len(ws.steps) + offset, train, test)
+        fitted.append(last)
+    after = train if role == "train" else test
+    if after is None:
+        raise SourceError(f"workspace {ws.name!r} has no {role} dataset")
+    return before, after, fitted
+
+
+def preview_steps(ws: Workspace, steps: list, role: str) -> dict:
+    """Dry run of several steps appended to the workspace (nothing saved): the
+    ``preview_step`` diff of the whole list, plus each step's fitted state."""
+    _check_role(role)
+    parsed = _parse_draft(ws, steps)
+    before, after, fitted = _draft_frames(ws, parsed, role)
+    out = _preview_payload(before, after, fitted[-1])
+    del out["state"], out["fitted_on"]
+    out["steps"] = [
+        {"op": step.op, "state": json.loads(json.dumps(f["state"], default=str)),
+         "fitted_on": f["fitted_on"]}
+        for step, f in zip(parsed, fitted, strict=True)
+    ]
+    return out
+
+
+def _stats(values: pd.Series) -> dict:
+    known = values.dropna()
+    out: dict[str, Any] = {"count": int(known.size), "missing": int(values.size - known.size)}
+    if known.empty:
+        return out
+    out.update(
+        mean=py(known.mean()), std=py(known.std()), min=py(known.min()),
+        **{k: py(known.quantile(q)) for k, q in _QUANTILES.items()},
+        max=py(known.max()), sum=py(known.sum()),
+    )
+    return out
+
+
+def evaluate(
+    ws: Workspace,
+    role: str,
+    exprs: list[str],
+    *,
+    steps: list | None = None,
+    where: str | None = None,
+    version: int | None = None,
+) -> dict:
+    """Statistics of formula expressions on ``role`` (read-only): at ``version``,
+    or after the draft ``steps`` appended in memory. ``where``: an expression
+    selecting the rows (non-zero, not NaN)."""
+    _check_role(role)
+    if not isinstance(exprs, list) or not exprs or len(exprs) > MAX_EXPRS:
+        raise KeyParamsError(f"exprs must be a list of 1 to {MAX_EXPRS} expressions")
+    if steps:
+        if version is not None:
+            raise KeyParamsError("version and steps exclude each other (steps apply to the latest)")
+        _, frame, _ = _draft_frames(ws, _parse_draft(ws, steps), role)
+    else:
+        frame = _replay_role(ws, role, ws.steps[: resolve_version(len(ws.steps), version)])
+    rows = pd.Series(True, index=frame.index)
+    if where:
+        mask = pd.Series(_formula(frame, where), index=frame.index)
+        rows = mask.notna() & (mask != 0)
+    picked = frame[rows.to_numpy()]
+    results = [
+        {"expr": e, **_stats(pd.Series(_formula(picked, e), index=picked.index))}
+        for e in exprs
+    ]
+    return {"rows": len(frame), "selected": len(picked), "results": results}
+
+
+def _formula(frame: pd.DataFrame, expr: str) -> Any:
+    try:
+        return _evaluate_expr(frame, expr)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise KeyParamsError(f"expression {expr!r}: {exc}") from exc
 
 
 def _label_name(ws: Workspace) -> str | None:

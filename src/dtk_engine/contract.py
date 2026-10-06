@@ -335,6 +335,29 @@ def preview_step(ws: dict, step: dict, role: str) -> dict:
     return _inspect.preview_step(parse_workspace(ws), step, role)
 
 
+def preview_steps(ws: dict, steps: list[dict], role: str) -> dict:
+    """Dry run of a list of steps appended in memory (nothing saved, no undo
+    entry): ``preview_step``'s diff for the whole list, plus ``steps``: each
+    step's ``{op, state, fitted_on}``."""
+    return _inspect.preview_steps(parse_workspace(ws), steps, role)
+
+
+def evaluate(
+    ws: dict,
+    role: str,
+    exprs: list[str],
+    steps: list[dict] | None = None,
+    where: str | None = None,
+    version: int | None = None,
+) -> dict:
+    """Read-only statistics of formula expressions (``count, missing, mean,
+    std, min, q25, median, q75, max, sum`` each) on ``role`` at ``version``, or
+    after the draft ``steps``; ``where`` selects rows (non-zero, not NaN)."""
+    return _inspect.evaluate(
+        parse_workspace(ws), role, exprs, steps=steps, where=where, version=version
+    )
+
+
 def align_report(ws: dict) -> dict:
     """Train / test column alignment after the workspace's steps.
 
