@@ -742,3 +742,51 @@ def clip(df: pd.DataFrame, params: ClipParams, state: dict) -> pd.DataFrame:
         lo, hi = state["bounds"][col]
         out[col] = out[col].clip(lower=lo, upper=hi)
     return out
+
+
+class SampleRowsParams(TransformParams):
+    mode: Literal["random", "head"] = Field(
+        default="random", description="Random subsample, or the first rows"
+    )
+    n: int | None = Field(
+        default=None, ge=1, description="Number of rows to keep (or give `frac`)"
+    )
+    frac: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+        description="Fraction of the rows to keep (or give `n`)",
+    )
+    random_state: int | None = Field(
+        default=None,
+        description="Seed of the random draw (required: replay must be deterministic)",
+        json_schema_extra=when(mode="random"),
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> SampleRowsParams:
+        if (self.n is None) == (self.frac is None):
+            raise ValueError("give exactly one of n or frac")
+        if self.mode == "random" and self.random_state is None:
+            raise ValueError("random_state is required when mode is 'random'")
+        if self.mode == "head" and self.random_state is not None:
+            raise ValueError("random_state only applies to mode 'random'")
+        return self
+
+
+@transform("sample_rows", params_model=SampleRowsParams, title="Sample rows")
+def sample_rows(
+    df: pd.DataFrame, params: SampleRowsParams, state: dict
+) -> pd.DataFrame:
+    """Keep the first n rows, or a seeded random subsample (original order).
+
+    Stateless; rows kept keep their index (row id). Allowed on any target:
+    sampling the test frame changes what is scored, so prefer target ``train``.
+    """
+    total = len(df)
+    k = params.n if params.n is not None else round(total * params.frac)
+    k = min(k, total)
+    if params.mode == "head":
+        return df.iloc[:k]
+    rng = np.random.default_rng(params.random_state)
+    return df.iloc[np.sort(rng.choice(total, size=k, replace=False))]
