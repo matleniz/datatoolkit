@@ -11,7 +11,7 @@ import pandas as pd
 from pydantic import Field, field_validator, model_validator
 
 from dtk_engine.ops.profile import hashable_frame
-from dtk_engine.params import column_field, columns_field
+from dtk_engine.params import column_field, columns_field, when
 from dtk_engine.transform_registry import TransformParams, transform
 
 
@@ -44,6 +44,7 @@ class ReorderColumnsParams(TransformParams):
     anchor: str | None = column_field(
         None, "Column to sit before / after (required for 'before' / 'after')",
         source="step",
+        extra=when(position=["before", "after"]),
     )
     missing_ok: bool = Field(
         default=False, description="Ignore listed columns absent from the frame"
