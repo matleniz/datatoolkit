@@ -470,6 +470,63 @@ def replace_sentinels(
     return out
 
 
+class ReplaceValuesParams(TransformParams):
+    mapping: dict[str, dict[str, Scalar | None]] = Field(
+        min_length=1,
+        description=(
+            "Column -> {old value: new value}; a null new value gives NaN, values "
+            "absent from the mapping are untouched. JSON keys are strings: on a "
+            "numeric column a key matches the numbers equal to it ('1' matches 1 "
+            "and 1.0; a non-numeric key matches nothing), on a boolean column "
+            "'true' / 'false', otherwise the exact text of the value"
+        ),
+    )
+
+    @field_validator("mapping")
+    @classmethod
+    def _non_empty(cls, v: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        empty = [c for c, m in v.items() if not m]
+        if empty:
+            raise ValueError(f"empty mapping for columns: {empty}")
+        return v
+
+
+def _key_matches(col: pd.Series, key: str) -> pd.Series:
+    if pd.api.types.is_bool_dtype(col):
+        return col.astype(str).str.lower().eq(key.strip().lower())
+    if pd.api.types.is_numeric_dtype(col):
+        try:
+            return col.eq(float(key))
+        except ValueError:
+            return pd.Series(False, index=col.index)
+    return col.astype(object).map(lambda v: isinstance(v, str) and v == key).astype(bool)
+
+
+@transform("replace_values", params_model=ReplaceValuesParams, title="Replace values")
+def replace_values(
+    df: pd.DataFrame, params: ReplaceValuesParams, state: dict
+) -> pd.DataFrame:
+    """Recode explicit values to others, per column (old -> new, new may be null)."""
+    missing = [c for c in params.mapping if c not in df.columns]
+    if missing:
+        raise KeyError(f"columns not in frame: {missing}")
+    out = df.copy()
+    for name, recode in params.mapping.items():
+        col = df[name]
+        hits = {k: _key_matches(col, k) for k in recode}
+        for a, b in [(a, b) for a in hits for b in hits if a < b]:
+            if (hits[a] & hits[b]).any():
+                raise ValueError(f"keys {a!r} and {b!r} match the same value in {name!r}")
+        if not any(m.any() for m in hits.values()):
+            continue
+        new = col.astype(object)
+        for key, mask in hits.items():
+            value = recode[key]
+            new = new.mask(mask, np.nan if value is None else value)
+        out[name] = new.infer_objects()
+    return out
+
+
 class DropMissingTargetParams(TransformParams):
     target: str = column_field(
         ..., "Target column; rows missing it are dropped", source="step"
