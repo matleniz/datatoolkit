@@ -535,3 +535,53 @@ def test_group_function_errors(expr, match):
 def test_group_by_unknown_column():
     with pytest.raises(KeyParamsError, match="unknown column 'nope'"):
         _run(_visits(), name="y", expr="group_mean(ledd, by=nope)")
+
+
+# --- NaN-aware functions (datatoolkit-issues#158) ---
+
+_NAN = float("nan")
+
+
+def _ev(values, expr, **cols):
+    from dtk_engine.ops.transforms.formula import evaluate
+
+    return evaluate(pd.DataFrame({"x": values, **cols}), expr)
+
+
+def test_where_nan_condition_is_nan():
+    out = _ev([1.0, _NAN], "where(x > 0, 1, 2)")
+    assert out[0] == 1 and np.isnan(out[1])
+
+
+@pytest.mark.parametrize("fn,all_nan,no_nan", [("isna", 1.0, 0.0), ("notna", 0.0, 1.0)])
+def test_isna_notna(fn, all_nan, no_nan):
+    mixed = _ev([1.0, _NAN], f"{fn}(x)").tolist()
+    assert mixed == [no_nan, all_nan]
+    assert set(_ev([_NAN, _NAN], f"{fn}(x)")) == {all_nan}
+    assert set(_ev([1.0, 2.0], f"{fn}(x)")) == {no_nan}
+
+
+def test_fillna():
+    assert _ev([1.0, _NAN], "fillna(x, 9)").tolist() == [1.0, 9.0]
+    assert _ev([_NAN, _NAN], "fillna(x, 0)").tolist() == [0.0, 0.0]
+    assert _ev([1.0, 2.0], "fillna(x, 0)").tolist() == [1.0, 2.0]
+    assert _ev([_NAN, 2.0], "fillna(x, y)", y=[5.0, 6.0]).tolist() == [5.0, 2.0]
+
+
+def test_fill_only_missing_rows():
+    out = _ev([40.0, _NAN, _NAN], "where(isna(x), age - 5.6, x)", age=[50.0, 60.0, 70.0])
+    assert out.tolist() == pytest.approx([40.0, 54.4, 64.4])
+
+
+def test_nan_functions_validation():
+    from dtk_engine.ops.transforms.formula import check_expr
+
+    with pytest.raises(ValueError, match="takes 2 arguments"):
+        check_expr("fillna(x)")
+    with pytest.raises(ValueError, match="not allowed"):
+        check_expr("np.isna(x)")
+
+
+def test_description_mentions_nan_functions():
+    desc = get_transform("formula").description
+    assert "isna" in desc and "fillna" in desc

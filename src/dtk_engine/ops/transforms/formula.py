@@ -48,6 +48,8 @@ _NP_MODULES = frozenset({"np", "numpy"})
 
 
 def _where(cond: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``a`` where cond != 0 else ``b``; a NaN condition gives NaN (unknown),
+    test missingness first with ``isna(x)`` (always 0/1, never NaN)."""
     out = np.asarray(np.where(cond != 0, a, b), dtype=float)
     out[np.isnan(cond)] = np.nan
     return out
@@ -70,6 +72,7 @@ class _Func:
     np_name: str | None = None  # np.<np_name> spelling; defaults to the name
     int_tail: bool = False  # arguments after the first must be int constants
     keywords: tuple[str, ...] = ()  # required keyword arguments (group functions)
+    numpy: bool = True  # False: no np.<name> spelling (not a numpy function)
 
 
 _FUNCS: dict[str, _Func] = {
@@ -86,13 +89,18 @@ _FUNCS: dict[str, _Func] = {
     "clip": _Func(np.clip, (3, 3)),
     "where": _Func(_where, (3, 3)),
     "isnull": _Func(lambda x: np.isnan(x).astype(float), np_name="isnan"),
+    "isna": _Func(lambda x: np.isnan(x).astype(float), numpy=False),
+    "notna": _Func(lambda x: (~np.isnan(x)).astype(float), numpy=False),
+    "fillna": _Func(lambda x, v: np.where(np.isnan(x), v, x), (2, 2), numpy=False),
     "group_mean": _Func(groups.group_mean, keywords=("by",)),
     "group_prev": _Func(_group_prev, keywords=("by", "order")),
     "group_interp": _Func(groups.group_interp, keywords=("by", "order")),
 }
 # np.<name> -> canonical whitelist name (same function, numpy spelling).
 _NP_FUNCS = {
-    f.np_name or name: name for name, f in _FUNCS.items() if not f.keywords
+    f.np_name or name: name
+    for name, f in _FUNCS.items()
+    if not f.keywords and f.numpy
 }
 
 
@@ -562,7 +570,10 @@ def _fit_formula(df: pd.DataFrame, params: FormulaParams) -> dict:
     description=(
         "Add a float column from a whitelisted expression over columns, "
         "numbers, functions (incl. where/clip/comparisons) and train-fitted "
-        "@variables."
+        "@variables. Missing values: isna(x) / notna(x) give 0/1 (never NaN), "
+        "fillna(x, v) replaces NaN in x by v; where(c, a, b) returns NaN when "
+        "c is NaN, so test missingness first, e.g. "
+        "where(isna(x), y - 5.6, x) fills only the missing rows."
     ),
 )
 def formula(df: pd.DataFrame, params: FormulaParams, state: dict) -> pd.DataFrame:
