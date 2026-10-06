@@ -33,12 +33,15 @@ from typing import Any, Protocol
 
 from mcp.server.lowlevel import Server
 
+from dtk_engine import contract
 from dtk_engine.agent import attachments as _attachments
+from dtk_engine.agent.digest import TRACKER, turn_note
 from dtk_engine.agent.models import FREE_TEXT, ModelList
 from dtk_engine.agent.policy import AuditLog
 from dtk_engine.agent.ports import LocalUiPort
 from dtk_engine.agent.server import build_server
 from dtk_engine.agent.tools import build_tools
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.ui_bridge import UiBridge, review_timeout_from_env
 
 EVENT = "agent"
@@ -121,6 +124,17 @@ class Pack:
         return self.model()
 
 
+# Usage counters; input_tokens includes the cache writes and reads.
+USAGE_KEYS = (
+    "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+)
+
+
+def _with_uncached(usage: dict) -> dict:
+    cached = usage["cache_creation_input_tokens"] + usage["cache_read_input_tokens"]
+    return {**usage, "uncached_input_tokens": max(usage["input_tokens"] - cached, 0)}
+
+
 class ChatSession:
     """The chat state of one Studio session; what an adapter talks to."""
 
@@ -133,8 +147,9 @@ class ChatSession:
         self.model: str | None = None
         self.task: asyncio.Task | None = None
         self.cancelled = False
-        self.totals = {"input_tokens": 0, "output_tokens": 0}
-        self.turn_usage = {"input_tokens": 0, "output_tokens": 0}
+        self.totals = dict.fromkeys(USAGE_KEYS, 0)
+        self.turn_usage = dict.fromkeys(USAGE_KEYS, 0)
+        self.context_tokens = 0  # input of the turn's last API call = context size
         self._turns = itertools.count(1)
         self._asks = itertools.count(1)
         self._permissions: dict[str, asyncio.Future] = {}
@@ -151,9 +166,29 @@ class ChatSession:
         """dtk tools taking a ``session`` argument (adapters pin it to this session)."""
         return self.hub.session_tools
 
-    def set_turn_usage(self, input_tokens: int, output_tokens: int) -> bool:
-        """Tokens of the running turn so far; True once the session cap is reached."""
-        self.turn_usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    def set_turn_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        cache_write: int = 0,
+        cache_read: int = 0,
+        context: int | None = None,
+    ) -> bool:
+        """Tokens of the running turn so far; True once the session cap is reached.
+
+        ``input_tokens`` counts cache writes and reads too (``cache_write`` /
+        ``cache_read`` say how much of it); ``context`` = the input of the
+        turn's latest API call.
+        """
+        self.turn_usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_creation_input_tokens": cache_write,
+            "cache_read_input_tokens": cache_read,
+        }
+        if context is not None:
+            self.context_tokens = context
         return self.over_cap()
 
     def over_cap(self) -> bool:
@@ -161,7 +196,9 @@ class ChatSession:
         return cap is not None and self.used() >= cap
 
     def used(self) -> int:
-        return sum(self.totals.values()) + sum(self.turn_usage.values())
+        return sum(
+            self.totals[k] + self.turn_usage[k] for k in ("input_tokens", "output_tokens")
+        )
 
     async def ask(
         self, tool: str, input: dict, summary: str, lines: list[str] | None = None
@@ -198,11 +235,11 @@ class ChatSession:
         for key, value in self.turn_usage.items():
             self.totals[key] += value
         event = {
-            **self.turn_usage,
-            "total_input_tokens": self.totals["input_tokens"],
-            "total_output_tokens": self.totals["output_tokens"],
+            **_with_uncached(self.turn_usage),
+            "context_tokens": self.context_tokens,
+            **{f"total_{k}": v for k, v in _with_uncached(self.totals).items()},
         }
-        self.turn_usage = {"input_tokens": 0, "output_tokens": 0}
+        self.turn_usage = dict.fromkeys(USAGE_KEYS, 0)
         return event
 
     def deny_pending(self) -> None:
@@ -274,7 +311,7 @@ class AgentHub:
             "available": reason is None,
             "pack": pack.id if pack else None,
             "running": bool(chat and chat.busy()),
-            "usage": dict(chat.totals) if chat else {"input_tokens": 0, "output_tokens": 0},
+            "usage": dict(chat.totals) if chat else dict.fromkeys(USAGE_KEYS, 0),
             "max_tokens": self.max_tokens,
         }
         if pack is not None:
@@ -417,7 +454,8 @@ class AgentHub:
                 stop = "max_tokens"
             else:
                 adapter = await self._start(chat)
-                stop = await adapter.send(_attachments.turn_note(picked) + text) or "end_turn"
+                note = await self._workspace_note(chat)
+                stop = await adapter.send(note + _attachments.turn_note(picked) + text) or "end_turn"
         except asyncio.CancelledError:
             stop = "cancelled"
         except Exception as exc:  # noqa: BLE001 - a pack failure ends the turn, not the server
@@ -432,6 +470,21 @@ class AgentHub:
         chat.emit("usage", **chat.close_turn())
         chat.emit("done", stop_reason=stop)
         chat.turn = None
+
+    async def _workspace_note(self, chat: ChatSession) -> str:
+        """Studio's view + the step list, so the agent need not re-read the
+        workspace each turn (#151); also what it has now seen of the steps (#153)."""
+        ctx = self.bridge.get_context(chat.session) or {}
+        name = ctx.get("workspace")
+        if not name:
+            return ""
+        try:
+            steps = await asyncio.to_thread(contract.workspace_steps, name)
+        except (KeyError, KeyParamsError, OSError, ValueError):
+            return ""
+        key = (ctx.get("session") or chat.session, name)
+        first = TRACKER.seen(key) is None
+        return turn_note(ctx, steps, TRACKER.changes(key, steps), first)
 
     async def cancel(self, session: str) -> bool:
         """Stop the running turn (the adapter first, then the task); False when idle."""

@@ -103,7 +103,8 @@ def openai_text(text: str) -> httpx.Response:
         {"choices": [{"index": 0, "delta": {"role": "assistant", "content": text[:2]}}]},
         {"choices": [{"index": 0, "delta": {"content": text[2:]}}]},
         {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
-        {"choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
+        {"choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 3,
+                                  "prompt_tokens_details": {"cached_tokens": 8}}},
         "[DONE]",
     )
 
@@ -164,6 +165,11 @@ async def test_streaming_text(monkeypatch, serve, pack_id):
     usage = next(e for e in events if e["type"] == "usage")
     assert (usage["input_tokens"], usage["output_tokens"]) == (
         (14, 5) if pack_id == "api-anthropic" else (12, 3)
+    )
+    # #151: the split behind input_tokens, and the per-call context size
+    split = ("uncached_input_tokens", "cache_read_input_tokens", "context_tokens")
+    assert tuple(usage[k] for k in split) == (
+        (10, 4, 14) if pack_id == "api-anthropic" else (4, 8, 12)
     )
     assert events[-1] == {**events[-1], "type": "done", "stop_reason": "end_turn"}
     req = server.requests[0]

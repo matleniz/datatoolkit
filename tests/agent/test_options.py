@@ -94,7 +94,7 @@ async def test_configure_model_keeps_conversation_and_totals():
     assert hub._chats["s1"].adapter is adapter
     hub.send("s1", "again")
     assert (await studio.until_done())[1]["text"] == "stub[stub-large]: again"
-    assert hub.status("s1")["usage"] == {"input_tokens": 20, "output_tokens": 10}
+    assert hub.status("s1")["usage"] == {"input_tokens": 20, "output_tokens": 10, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
 
 
 async def test_configure_other_pack_resets_and_keeps_usage():

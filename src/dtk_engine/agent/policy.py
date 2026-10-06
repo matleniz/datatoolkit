@@ -278,6 +278,38 @@ def compact_preview(data: dict, detail: bool = False) -> dict:
     return out
 
 
+_PROFILE_LISTS = {"top_values": 3, "sentinel_candidates": 3}
+_DETAIL_HINT = "compact form; pass detail: true (or columns) for the full result"
+
+
+def compact_profiles(data: dict) -> dict:
+    """``column_profiles`` without histograms / bounds / suggestions: per column
+    the non-null scalar fields, the 3 top values and the 3 sentinel candidates."""
+    columns = []
+    for col in data.get("columns") or []:
+        slim = {
+            k: v for k, v in col.items() if v is not None and not isinstance(v, dict | list)
+        }
+        for key, cap in _PROFILE_LISTS.items():
+            if col.get(key):
+                slim[key] = col[key][:cap]
+        columns.append(slim)
+    return {**data, "columns": columns, "note": _DETAIL_HINT}
+
+
+def compact_align(data: dict) -> dict:
+    """``align_report`` with the matching columns reduced to their names."""
+    columns = data.get("columns") or []
+    matched = [c["train"]["name"] for c in columns if c.get("status") == "match"]
+    others = [c for c in columns if c.get("status") != "match"]
+    return {**data, "columns": others, "matched": matched, "note": _DETAIL_HINT}
+
+
+def compact_catalog(items: list[dict], keys: tuple[str, ...]) -> list[dict]:
+    """``list_keys`` / ``list_transforms`` reduced to ``keys`` (true flags only)."""
+    return [{k: item[k] for k in keys if item.get(k) not in (None, False)} for item in items]
+
+
 def check_command(cmd_type: str) -> None:
     if cmd_type not in UI_COMMANDS:
         raise PolicyError(f"command not allowed for the agent: {cmd_type}")
@@ -374,7 +406,10 @@ __all__ = [
     "cap_lists",
     "check_args",
     "check_command",
+    "compact_align",
+    "compact_catalog",
     "compact_preview",
+    "compact_profiles",
     "compact_result",
     "control_dir",
     "frame",

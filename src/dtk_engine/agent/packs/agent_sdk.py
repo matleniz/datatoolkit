@@ -155,12 +155,19 @@ def _workdir() -> Path:
     return path
 
 
-def _tokens(usage: dict | None) -> tuple[int, int]:
-    """``(input incl. cache reads / writes, output)`` of an API usage dict."""
+def _tokens(usage: dict | None) -> tuple[int, int, int, int]:
+    """``(input incl. cache reads / writes, output, cache writes, cache reads)``."""
     if not usage:
-        return 0, 0
-    keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-    return sum(int(usage.get(k) or 0) for k in keys), int(usage.get("output_tokens") or 0)
+        return 0, 0, 0, 0
+    write = int(usage.get("cache_creation_input_tokens") or 0)
+    read = int(usage.get("cache_read_input_tokens") or 0)
+    total_in = int(usage.get("input_tokens") or 0) + write + read
+    return total_in, int(usage.get("output_tokens") or 0), write, read
+
+
+def _set_usage(chat: ChatSession, tokens: tuple[int, int, int, int], context: int | None) -> bool:
+    total_in, out, write, read = tokens
+    return chat.set_turn_usage(total_in, out, cache_write=write, cache_read=read, context=context)
 
 
 def _block_text(content: Any) -> str:
@@ -178,7 +185,7 @@ class SdkAdapter:
         self.model_name = model_name or model()
         self.chat: ChatSession | None = None
         self.client: Any = None
-        self._usage: dict[str, tuple[int, int]] = {}
+        self._usage: dict[str, tuple[int, int, int, int]] = {}
         self._streamed: set[str] = set()
         self._message_id: str | None = None
         self._capped = False
@@ -268,9 +275,10 @@ class SdkAdapter:
         if message.error:
             self.chat.emit("error", message=f"Claude: {message.error}", code=str(message.error))
         if message.usage and message.message_id:
-            self._usage[message.message_id] = _tokens(message.usage)
-            totals = [sum(t[i] for t in self._usage.values()) for i in (0, 1)]
-            if self.chat.set_turn_usage(*totals) and not self._capped:
+            call = _tokens(message.usage)
+            self._usage[message.message_id] = call
+            totals = tuple(sum(t[i] for t in self._usage.values()) for i in range(4))
+            if _set_usage(self.chat, totals, context=call[0]) and not self._capped:
                 self._capped = True
                 await self.client.interrupt()
 
@@ -289,7 +297,7 @@ class SdkAdapter:
     def _on_result(self, message: Any) -> str:
         assert self.chat is not None
         if message.usage:
-            self.chat.set_turn_usage(*_tokens(message.usage))
+            _set_usage(self.chat, _tokens(message.usage), context=None)
         if message.is_error and not self._capped and not self.chat.cancelled:
             detail = "; ".join(message.errors or []) or message.result or message.subtype
             self.chat.emit("error", message=str(detail), code="pack_error")
