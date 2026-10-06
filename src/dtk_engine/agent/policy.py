@@ -22,7 +22,14 @@ from dtk_engine.ui_bridge import dtk_home
 
 DEFAULT_ROWS = 50
 MAX_ROWS = 500
-MAX_RESPONSE_CHARS = 100_000  # default; env DTK_AGENT_MAX_CHARS overrides
+# Default; env DTK_AGENT_MAX_CHARS overrides. Dense JSON runs ~3 characters per
+# token: 50k stays well under the 25k-token MCP tool output limit of the CLIs.
+MAX_RESPONSE_CHARS = 50_000
+PREVIEW_ITEMS = 20  # changed cells / removed rids / state list items, compact preview
+PREVIEW_DETAIL_ITEMS = 200  # same, ``detail: true``
+PREVIEW_COLUMNS = 200  # column name lists in a preview
+_SHRINK_LIMITS = (50, 20, 10, 5, 2, 1)
+_SHRINK_STRINGS = (500, 100)
 UI_COMMANDS = frozenset(_commands.UI_COMMANDS)
 
 _WINDOWS_DRIVE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
@@ -193,18 +200,82 @@ def _trim_rows(data: Any, cap: int) -> tuple[Any, str] | None:
     )
 
 
+def cap_lists(node: Any, limit: int, elided: dict[str, int], path: str = "") -> Any:
+    """Copy of ``node`` with every list / dict cut to its first ``limit`` items;
+    ``elided[path]`` records the original length of each cut one."""
+    if isinstance(node, list):
+        if len(node) > limit:
+            elided[path] = max(elided.get(path, 0), len(node))
+        return [cap_lists(v, limit, elided, f"{path}[]") for v in node[:limit]]
+    if isinstance(node, dict):
+        items = list(node.items())
+        if len(items) > limit:
+            elided[path] = max(elided.get(path, 0), len(items))
+        return {
+            k: cap_lists(v, limit, elided, f"{path}.{k}" if path else str(k))
+            for k, v in items[:limit]
+        }
+    return node
+
+
+def _cut_strings(node: Any, limit: int) -> Any:
+    if isinstance(node, str):
+        return node[:limit]
+    if isinstance(node, list):
+        return [_cut_strings(v, limit) for v in node]
+    if isinstance(node, dict):
+        return {k: _cut_strings(v, limit) for k, v in node.items()}
+    return node
+
+
+def _shrink(data: Any, cap: int) -> tuple[Any, str]:
+    """Cut lists / dicts (then long strings) until ``data`` fits ``cap``; the
+    result stays a JSON value, never a JSON string inside JSON."""
+    out: Any = data
+    elided: dict[str, int] = {}
+    for limit in _SHRINK_LIMITS:
+        elided = {}
+        out = cap_lists(data, limit, elided)
+        if _size(out) <= cap:
+            break
+    for limit in _SHRINK_STRINGS:
+        if _size(out) <= cap:
+            break
+        out = _cut_strings(out, limit)
+    if _size(out) > cap:
+        return None, f"response over {cap} characters even when shrunk; narrow the request"
+    cut = ", ".join(f"{p or '<top>'} ({n})" for p, n in sorted(elided.items()))
+    return out, f"response shrunk to fit {cap} characters; lists cut (original length): {cut}"
+
+
 def frame(data: Any, *, identity: str | None = None) -> dict:
-    """``{identity, data}``; over the size cap, ``data`` is truncated and flagged."""
+    """``{identity, data}``; over the size cap, ``data`` is shrunk and flagged."""
     cap = max_response_chars()
     if _size(data) <= cap:
         return {"identity": identity, "data": data}
     trimmed = _trim_rows(data, cap)
-    if trimmed is not None:
-        out, note = trimmed
-    else:
-        out = {"preview": json.dumps(data, default=str)[:cap]}
-        note = f"response truncated to the first {cap} characters of its JSON"
+    if trimmed is None:
+        trimmed = _shrink(data, cap)
+    out, note = trimmed
     return {"identity": identity, "data": out, "truncated": True, "note": note}
+
+
+def compact_preview(data: dict, detail: bool = False) -> dict:
+    """A ``preview_step`` result sized for an agent: ``changed``, ``removed_rids``
+    and the fitted ``state`` cut to a sample (``changed_total`` keeps the
+    count), column lists capped; ``elided`` maps each cut path to its length."""
+    limit = PREVIEW_DETAIL_ITEMS if detail else PREVIEW_ITEMS
+    elided: dict[str, int] = {}
+    out = dict(data)
+    for key in ("changed", "removed_rids", "state"):
+        if key in out:
+            out[key] = cap_lists(out[key], limit, elided, key)
+    for key in ("columns", "added_columns", "removed_columns"):
+        if key in out:
+            out[key] = cap_lists(out[key], PREVIEW_COLUMNS, elided, key)
+    if elided:
+        out["elided"] = elided
+    return out
 
 
 def check_command(cmd_type: str) -> None:
@@ -300,8 +371,10 @@ __all__ = [
     "AuditLog",
     "PolicyError",
     "allowed_roots",
+    "cap_lists",
     "check_args",
     "check_command",
+    "compact_preview",
     "compact_result",
     "control_dir",
     "frame",

@@ -179,11 +179,13 @@ class _Tools:
         return policy.frame(data, identity=view.identity)
 
     async def preview_step(self, args: dict) -> dict:
-        step = _need(args, "step")
+        # Same default as Studio applies to a proposed step.
+        step = {"target": "both", **_need(args, "step")}
         view = await self._view(args, use_version=False)
         ws = await self._workspace_dict(view)
         data = await _compute(contract.preview_step, ws, step, view.role)
-        return policy.frame(data, identity=view.identity)
+        compact = policy.compact_preview(data, bool(args.get("detail")))
+        return policy.frame(compact, identity=view.identity)
 
     async def align_report(self, args: dict) -> dict:
         view = await self._view(args, use_version=False)
@@ -292,12 +294,16 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
         ("get_profiles", "Per-column profiles (histograms, sentinels, skew, ...).",
          _schema({**_VIEW, "columns": _COLUMNS}), t.get_profiles, True),
         ("preview_step",
-         "Dry-run a step on top of the workspace steps; nothing is saved.",
+         (f"Dry-run a step on top of the workspace steps; nothing is saved. Changed "
+          f"cells, removed rids and the fitted state are cut to {policy.PREVIEW_ITEMS} "
+          f"items ({policy.PREVIEW_DETAIL_ITEMS} with detail); changed_total and "
+          "elided give the full counts."),
          _schema({
              "step": {
                  "type": "object",
                  "description": "{op, target?, params?}; params: see transform_schema {op}.",
              },
+             "detail": {"type": "boolean", "description": "Larger samples (default false)."},
              "workspace": _VIEW["workspace"], "role": _VIEW["role"], "session": _SESSION,
          }, ("step",)), t.preview_step, True),
         ("align_report", "Train / test column alignment after the workspace's steps.",

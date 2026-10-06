@@ -127,7 +127,39 @@ def test_frame_small_and_truncated(home, monkeypatch):
     assert len(json.dumps(out["data"])) <= 500
     assert len(big["rows"]) == 200
     other = policy.frame({"blob": "y" * 2000})
-    assert other["truncated"] and len(other["data"]["preview"]) == 500
+    assert other["truncated"] and other["data"] == {"blob": "y" * 100}
+
+
+def test_frame_shrinks_nested_lists_to_an_object(home, monkeypatch):
+    monkeypatch.setenv("DTK_AGENT_MAX_CHARS", "2000")
+    big = {"shape": [9, 2], "state": {"groups": [{"key": i, "mean": i / 3} for i in range(5000)]}}
+    out = policy.frame(big)
+    assert out["truncated"] is True
+    assert isinstance(out["data"], dict) and out["data"]["shape"] == [9, 2]
+    assert 0 < len(out["data"]["state"]["groups"]) < 5000
+    assert len(json.dumps(out["data"])) <= 2000
+    assert "state.groups (5000)" in out["note"]
+    assert len(big["state"]["groups"]) == 5000
+
+
+def test_compact_preview_caps_changed_rids_and_state():
+    data = {
+        "shape": [3000, 3], "columns": ["a", "b", "c"], "added_columns": [],
+        "removed_columns": [], "removed_rids": list(range(3000)),
+        "changed": [{"_rid": i, "column": "a", "before": None, "after": 1} for i in range(2000)],
+        "changed_total": 3000, "state": {"groups": [{"key": i} for i in range(7000)]},
+        "fitted_on": "train",
+    }
+    out = policy.compact_preview(data)
+    assert len(out["changed"]) == policy.PREVIEW_ITEMS and out["changed_total"] == 3000
+    assert len(out["removed_rids"]) == policy.PREVIEW_ITEMS
+    assert len(out["state"]["groups"]) == policy.PREVIEW_ITEMS
+    assert out["elided"] == {"changed": 2000, "removed_rids": 3000, "state.groups": 7000}
+    assert out["columns"] == ["a", "b", "c"] and len(data["changed"]) == 2000
+    detail = policy.compact_preview(data, detail=True)
+    assert len(detail["changed"]) == policy.PREVIEW_DETAIL_ITEMS
+    small = {**data, "changed": [], "removed_rids": [], "state": {}}
+    assert "elided" not in policy.compact_preview(small)
 
 
 def test_check_command():
