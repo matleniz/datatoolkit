@@ -105,6 +105,71 @@ def rename(df: pd.DataFrame, params: RenameParams, state: dict) -> pd.DataFrame:
     )
 
 
+class RenameColumnsBulkParams(TransformParams):
+    rule: Literal["lower", "upper", "snake_case", "strip"] | None = Field(
+        default=None,
+        description=(
+            "Name rewrite: lower / upper case, strip surrounding whitespace, or "
+            "snake_case (camelCase and non-alphanumerics become '_')"
+        ),
+    )
+    prefix: str = Field(default="", description="Text added before each name")
+    suffix: str = Field(default="", description="Text added after each name")
+    columns: list[str] = columns_field(
+        "Columns to rename (empty = every column)", source="step"
+    )
+    missing_ok: bool = Field(
+        default=False, description="Ignore listed columns absent from the frame"
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> RenameColumnsBulkParams:
+        if self.rule is None and not self.prefix and not self.suffix:
+            raise ValueError("give a rule, a prefix or a suffix")
+        if len(set(self.columns)) != len(self.columns):
+            raise ValueError("columns must not repeat")
+        return self
+
+
+def _snake_case(name: str) -> str:
+    name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name.strip())
+    return re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower()
+
+
+_NAME_RULES = {
+    "lower": str.lower,
+    "upper": str.upper,
+    "strip": str.strip,
+    "snake_case": _snake_case,
+}
+
+
+@transform(
+    "rename_columns_bulk",
+    params_model=RenameColumnsBulkParams,
+    title="Rename columns in bulk",
+)
+def rename_columns_bulk(
+    df: pd.DataFrame, params: RenameColumnsBulkParams, state: dict
+) -> pd.DataFrame:
+    """Rewrite column names by rule (lower / upper / snake_case / strip) and prefix / suffix."""
+    missing = [c for c in params.columns if c not in df.columns]
+    if missing and not params.missing_ok:
+        raise KeyError(f"columns not in frame: {missing}")
+    chosen = set(params.columns) if params.columns else set(df.columns)
+    rewrite = _NAME_RULES.get(params.rule or "", str)
+    names = [
+        f"{params.prefix}{rewrite(c)}{params.suffix}" if c in chosen else c
+        for c in df.columns
+    ]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise ValueError(f"renaming would create duplicate column names: {dupes}")
+    out = df.copy()
+    out.columns = names
+    return out
+
+
 class CastParams(TransformParams):
     dtypes: dict[str, str] = Field(
         min_length=1, description="Column -> target dtype (e.g. 'int64', 'category')"
