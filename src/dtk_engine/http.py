@@ -16,7 +16,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path, PurePath
-from typing import Literal
+from typing import Any, Literal
 
 # FastAPI is an optional dependency; keep the import inside this module so
 # ``import dtk_engine`` still works without the ``api`` extra.
@@ -352,6 +352,10 @@ class UiAck(BaseModel):
     pending: Literal["review"] | None = None
     error: str | None = None
     identity: str | None = None
+    # propose_steps by step id (datatoolkit-issues#153): ids of the added steps,
+    # and on ``stale`` the targeted steps that moved: ``{id, reason, step?}``.
+    added_ids: list[str] | None = None
+    stale: list[dict[str, Any]] | None = None
 
     @model_validator(mode="after")
     def _one_kind(self) -> UiAck:

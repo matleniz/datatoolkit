@@ -149,6 +149,39 @@ async def test_drop_column_is_a_destructive_proposal_held_for_review():
     assert bridge.command_status(cmd["id"]) == {"id": cmd["id"], "ok": None, "pending": "review"}
 
 
+async def test_stub_reads_then_removes_a_step_the_user_removed_first():
+    """#153 scenario for the web e2e: read, user removes s1, agent removes s1."""
+    from dtk_engine import contract
+    from dtk_engine.demo_data import TRAIN_CSV
+
+    def save(steps):
+        contract.save_workspace({
+            "name": "ws", "steps": steps,
+            "datasets": {"train": {"x": {"kind": "csv", "path": str(TRAIN_CSV)}}},
+        })
+
+    scale = {"op": "scale", "target": "both", "params": {"columns": ["Age"]}}
+    save([scale, {"op": "log1p", "target": "both", "params": {"columns": ["Fare"]}}])
+    bridge = UiBridge("t")
+    bridge.put_context({"session": "s1", "workspace": "ws", "identity": "id-1"})
+    stale = {"ok": False, "error": "stale: step s1 (scale) removed",
+             "stale": [{"id": "s1", "reason": "removed"}]}
+    studio, hub = Studio(bridge, ack=stale), _hub(bridge)
+    hub.send("s1", "read the workspace")
+    events = await studio.until_done()
+    assert next(e for e in events if e["type"] == "assistant_delta")["text"] == (
+        "stub: steps s1 scale, s2 log1p"
+    )
+    save([{"op": "log1p", "target": "both", "params": {"columns": ["Fare"]}, "id": "s2"}])
+    hub.send("s1", "remove step s1")
+    events = await studio.until_done()
+    (cmd,) = studio.commands
+    assert cmd["ops"] == [{"remove": {"id": "s1"}}]
+    assert cmd["base_steps"] == {"s1": scale}
+    reply = next(e for e in events if e["type"] == "assistant_delta")
+    assert reply["text"] == "stub: stale: step s1 (scale) removed"
+
+
 async def test_permission_denied_and_allowed():
     bridge = UiBridge("t")
     studio, hub = Studio(bridge), _hub(bridge)

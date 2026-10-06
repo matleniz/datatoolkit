@@ -191,12 +191,16 @@ def test_stale_ack_passed_through_and_session_targeting():
             cid = json.loads(
                 _read_until(l2, lambda line: line.startswith("data:")).removeprefix("data: ")
             )["id"]
+            stale = [{"id": "s1", "reason": "removed"}]  # #153: kept through the bridge
             httpx.post(
                 f"{srv.url}/api/ui/ack",
-                json={"id": cid, "ok": False, "error": "stale"}, headers=AUTH, timeout=5,
+                json={"id": cid, "ok": False, "error": "stale: step s1 removed", "stale": stale},
+                headers=AUTH, timeout=5,
             )
             t.join(timeout=10)
-            assert results[0].json() == {"id": cid, "ok": False, "error": "stale"}
+            assert results[0].json() == {
+                "id": cid, "ok": False, "error": "stale: step s1 removed", "stale": stale,
+            }
 
 
 def test_no_studio_when_no_listener():
