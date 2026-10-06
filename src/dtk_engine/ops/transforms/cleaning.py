@@ -88,6 +88,50 @@ def reorder_columns(
     return df[order]
 
 
+class CopyColumnParams(TransformParams):
+    column: str = column_field(..., "Column to copy", source="step")
+    name: str = Field(min_length=1, description="Name of the new column")
+    position: Literal["first", "last", "before", "after"] | None = Field(
+        default=None,
+        description="Where to put the copy: at the start, at the end, or next to "
+        "`anchor` (default: at the end)",
+    )
+    anchor: str | None = column_field(
+        None, "Column to sit before / after (required for 'before' / 'after')",
+        source="step",
+        extra=when(position=["before", "after"]),
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> CopyColumnParams:
+        needs_anchor = self.position in ("before", "after")
+        if needs_anchor and self.anchor is None:
+            raise ValueError(f"anchor is required when position is {self.position!r}")
+        if not needs_anchor and self.anchor is not None:
+            raise ValueError("anchor only applies to position 'before' / 'after'")
+        if self.anchor == self.name:
+            raise ValueError("anchor must not be the new column")
+        return self
+
+
+@transform("copy_column", params_model=CopyColumnParams, title="Copy a column")
+def copy_column(
+    df: pd.DataFrame, params: CopyColumnParams, state: dict
+) -> pd.DataFrame:
+    """Duplicate a column under a new name, optionally placed like reorder_columns."""
+    if params.column not in df.columns:
+        raise KeyError(f"column not in frame: {params.column!r}")
+    if params.name in df.columns:
+        raise ValueError(f"column already exists: {params.name!r}")
+    out = df.assign(**{params.name: df[params.column]})
+    if params.position is None:
+        return out
+    move = ReorderColumnsParams(
+        columns=[params.name], position=params.position, anchor=params.anchor
+    )
+    return reorder_columns(out, move, {})
+
+
 class RenameParams(TransformParams):
     mapping: dict[str, str] = Field(
         min_length=1, description="Old column name -> new column name"
