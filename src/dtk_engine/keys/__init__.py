@@ -8,6 +8,7 @@ from . import (  # noqa: F401
     duplicates,
     feature_selection,
     file_inspect,
+    impute_benchmark,
     inconsistencies,
     label_join_preview,
     missing_values,
