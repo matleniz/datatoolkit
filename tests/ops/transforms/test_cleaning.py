@@ -39,6 +39,100 @@ def test_drop_columns_replay_both():
     assert replay(steps, "test", test, train).to_dict("list") == {"b": [4]}
 
 
+def _reorder(cols, **params):
+    t = get_transform("reorder_columns")
+    df = pd.DataFrame({c: [1] for c in "abcde"})
+    return t.fit_apply(df, t.parse({"columns": cols, **params})).columns.tolist()
+
+
+def test_reorder_columns_first_last():
+    assert _reorder(["d"], position="first") == list("dabce")
+    assert _reorder(["b"], position="last") == list("acdeb")
+
+
+def test_reorder_columns_before_after():
+    assert _reorder(["e"], position="before", anchor="b") == list("aebcd")
+    assert _reorder(["a"], position="after", anchor="c") == list("bcade")
+
+
+def test_reorder_columns_several_keep_given_order():
+    assert _reorder(["e", "a"], position="first") == list("eabcd")
+    assert _reorder(["d", "b"], position="after", anchor="e") == list("acedb")
+    assert _reorder(["d", "b"], position="before", anchor="a") == list("dbace")
+
+
+def test_reorder_columns_does_not_mutate_or_touch_values():
+    t = get_transform("reorder_columns")
+    df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+    out = t.fit_apply(df, t.parse({"columns": ["a"], "position": "last"}))
+    assert df.columns.tolist() == ["a", "b"]
+    assert out["a"].tolist() == [1, 2]
+
+
+def test_reorder_columns_missing():
+    with pytest.raises(KeyError):
+        _reorder(["z"], position="first")
+    assert _reorder(["z", "c"], position="first", missing_ok=True) == list("cabde")
+    assert _reorder(["z"], position="first", missing_ok=True) == list("abcde")
+    with pytest.raises(KeyError):  # a missing anchor is never ignored
+        _reorder(["a"], position="after", anchor="z", missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"columns": ["a"], "position": "after", "anchor": "a"},  # anchor in moved set
+        {"columns": ["a"], "position": "before"},  # anchor required
+        {"columns": ["a"], "position": "first", "anchor": "b"},  # anchor unused
+        {"columns": ["a", "a"], "position": "first"},
+        {"columns": [], "position": "first"},
+        {"columns": ["a"], "position": "middle"},
+    ],
+)
+def test_reorder_columns_rejects_bad_params(params):
+    with pytest.raises(KeyParamsError):
+        get_transform("reorder_columns").parse(params)
+
+
+def test_reorder_columns_replay_both_and_added_columns():
+    # Stateless: train and test get the same order, also after an upstream step
+    # changes the columns (the reason for no full explicit order).
+    steps = [
+        Step(op="rename", target="both", params={"mapping": {"b": "new"}}),
+        Step(
+            op="reorder_columns",
+            target="both",
+            params={"columns": ["y"], "position": "last"},
+        ),
+    ]
+    train = pd.DataFrame({"y": [0], "a": [1], "b": [2]})
+    test = pd.DataFrame({"y": [1], "a": [3], "b": [4]})
+    assert replay(steps, "train", train, train).columns.tolist() == ["a", "new", "y"]
+    assert replay(steps, "test", test, train).columns.tolist() == ["a", "new", "y"]
+
+
+def test_reorder_columns_on_one_side_only():
+    steps = [
+        Step(
+            op="reorder_columns",
+            target="test",
+            params={"columns": ["b"], "position": "first"},
+        )
+    ]
+    train = pd.DataFrame({"a": [1], "b": [2]})
+    test = pd.DataFrame({"a": [3], "b": [4]})
+    assert replay(steps, "train", train, train).columns.tolist() == ["a", "b"]
+    assert replay(steps, "test", test, train).columns.tolist() == ["b", "a"]
+
+
+def test_reorder_columns_is_exposed_by_the_contract():
+    from dtk_engine.contract import list_transforms, transform_schema
+
+    assert "reorder_columns" in {t["op"] for t in list_transforms()}
+    props = transform_schema("reorder_columns")["properties"]
+    assert {"columns", "position", "anchor", "missing_ok"} <= props.keys()
+
+
 # --- B2 ops: each via DtkTransformer and via replay on "both" -----------------
 
 import numpy as np
