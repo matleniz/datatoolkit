@@ -17,6 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 api = ["fastapi", "uvicorn"]
+# Text of PDF workspace documents (datatoolkit-issues#178); without it a PDF is listed, not read.
+pdf = ["pypdf>=6"]
 # Direct API chat packs (api-anthropic, api-openai) call the provider with httpx.
 # websockets: uvicorn's WebSocket support, for the terminal packs (WS /api/ui/terminal).
 agent = ["mcp>=2.2,<3", "httpx", "fastapi", "uvicorn", "websockets"]
@@ -34,7 +36,7 @@ dtk-mcp = "dtk_engine.agent.cli:main"
 # the optional extra `api` is what consumers install for `dtk-api`.
 dev = [
     "ruff", "pytest", "httpx", "fastapi", "uvicorn", "mcp>=2.2,<3", "websockets",
-    "claude-agent-sdk>=0.2.163,<0.3",
+    "claude-agent-sdk>=0.2.163,<0.3", "pypdf>=6",
 ]
 
 [build-system]

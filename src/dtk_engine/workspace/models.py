@@ -14,6 +14,8 @@ VARIABLE_NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
 # A step id names a pipeline slot (kept when the step is replaced), opaque.
 STEP_ID_PATTERN = r"^s[0-9a-z-]{1,32}$"
 NOTE_MAX = 4000  # characters per note
+DOCUMENT_ID_PATTERN = r"^d[0-9a-z-]{1,32}$"
+DOCUMENTS_MAX = 50
 VariableStat = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
 
 
@@ -116,6 +118,21 @@ class WorkspaceNotes(_Strict):
         return {k: v for k, v in notes.items() if v}
 
 
+class WorkspaceDocument(_Strict):
+    """A reference file kept with the workspace (datatoolkit-issues#178): an
+    upload ref (``path``, content-addressed, never copied) and how to read it.
+    ``id`` is filled like step ids (``fill_document_ids``)."""
+
+    id: str | None = Field(default=None, pattern=DOCUMENT_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=255)
+    path: str = Field(min_length=1, description="Upload ref (PUT /api/uploads answer)")
+    mime: str = "application/octet-stream"
+    size: int = Field(default=0, ge=0)
+    kind: Literal["text", "pdf", "table", "other"] = "other"
+    added_at: str | None = None
+    note: str | None = Field(default=None, max_length=NOTE_MAX)
+
+
 class Workspace(_Strict):
     name: str = Field(pattern=NAME_PATTERN)
     datasets: Datasets
@@ -125,11 +142,19 @@ class Workspace(_Strict):
     charts: list[ChartSpec] = Field(default_factory=list)
     steps: list[Step] = Field(default_factory=list)
     notes: WorkspaceNotes = Field(default_factory=WorkspaceNotes)
+    documents: list[WorkspaceDocument] = Field(default_factory=list)
 
     @field_validator("steps")
     @classmethod
     def _step_ids(cls, steps: list[Step]) -> list[Step]:
         return fill_step_ids(steps)
+
+    @field_validator("documents")
+    @classmethod
+    def _document_ids(cls, docs: list[WorkspaceDocument]) -> list[WorkspaceDocument]:
+        if len(docs) > DOCUMENTS_MAX:
+            raise ValueError(f"at most {DOCUMENTS_MAX} documents per workspace")
+        return fill_document_ids(docs)
 
     @field_validator("variables")
     @classmethod
@@ -177,7 +202,6 @@ class Workspace(_Strict):
         return merges
 
 
-
 def fill_step_ids(steps: list[Step]) -> list[Step]:
     """Give each step without an id ``s<position>`` (1-based; ``-2``, ``-3``...
     on a clash): deterministic, so a workspace stored before step ids reads
@@ -199,3 +223,22 @@ def fill_step_ids(steps: list[Step]) -> list[Step]:
         step.id = candidate
         taken.add(candidate)
     return steps
+
+
+def fill_document_ids(docs: list[WorkspaceDocument]) -> list[WorkspaceDocument]:
+    """Give each document without an id the next free ``d<n>`` (above every
+    numbered id, so a removed document's id is not reused while a higher one
+    exists). Duplicate ids -> ValueError."""
+    taken: set[str] = set()
+    for doc in docs:
+        if doc.id is None:
+            continue
+        if doc.id in taken:
+            raise ValueError(f"duplicate document id {doc.id!r}")
+        taken.add(doc.id)
+    n = max((int(i[1:]) for i in taken if i[1:].isdigit()), default=0)
+    for doc in docs:
+        if doc.id is None:
+            n += 1
+            doc.id = f"d{n}"
+    return docs

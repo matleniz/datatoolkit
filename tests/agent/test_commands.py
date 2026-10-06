@@ -49,6 +49,7 @@ EXAMPLES: dict[str, dict] = {
     "set_tool_params": {"tool": "outliers", "params": {"method": "iqr"}, "column": "fare"},
     "add_variable": {"name": "mean_age", "stat": "mean", "column": "age"},
     "set_note": {"kind": "column", "column": "age", "text": "imputed once per patient"},
+    "keep_attachment": {"attachment_id": "a1", "note": "data dictionary"},
     "draft_chart": {"params": {"chart": "scatter", "x": "age", "y": "fare", "log_y": True}},
     "add_chart": {"name": "Age vs fare", "params": {"chart": "scatter", "x": "age", "y": "fare"}},
     "edit_step": {"index": 0},
@@ -71,6 +72,8 @@ INVALID: list[tuple[str, dict]] = [
     ("set_tool_params", {"tool": "outliers", "params": {}}),
     ("open_window", {"tool": "nope"}),
     ("fill_editor", {"target": "all"}),
+    ("keep_attachment", {"note": "no id"}),
+    ("keep_attachment", {"attachment_id": ""}),
 ]
 # Added by datatoolkit-issues#100 (Studio commands beyond phase 1).
 NEW_TOOLS = {

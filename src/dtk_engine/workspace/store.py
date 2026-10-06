@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
@@ -60,6 +60,8 @@ class WorkspaceStore(Protocol):
     def rename(self, name: str, new_name: str) -> Workspace: ...
 
     def duplicate(self, name: str, new_name: str) -> Workspace: ...
+
+    def update(self, name: str, change: Callable[[Workspace], Workspace]) -> Workspace: ...
 
 
 def default_root() -> Path:
@@ -127,6 +129,14 @@ class JsonWorkspaceStore:
     def save(self, workspace: Workspace) -> None:
         with self._exclusive():
             self._save_unlocked(workspace)
+
+    def update(self, name: str, change: Callable[[Workspace], Workspace]) -> Workspace:
+        """Read, ``change`` and save ``name`` under the store lock (a concurrent
+        save cannot slip in between); returns the saved workspace."""
+        with self._exclusive():
+            updated = change(self.get(name))
+            self._save_unlocked(updated)
+            return updated
 
     def delete(self, name: str) -> None:
         with self._exclusive():

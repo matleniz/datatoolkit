@@ -129,6 +129,9 @@ CORS allows the Vite dev origins (`http://localhost:5173`,
 `http://127.0.0.1:5173`); add more via `DTK_CORS_ORIGINS` (comma-separated).
 Uploads land under `$DTK_UPLOAD_DIR` (default `$DTK_HOME/uploads`), workspaces
 under `$DTK_HOME/workspaces`; `DTK_HOME` defaults to `~/.datatoolkit`.
+Workspace documents (reference files kept with a workspace, readable by the
+agent; `docs/agent-chat-protocol.md`) read PDF text with the optional extra
+`pdf` (`uv sync --extra pdf`, pypdf); without it a PDF is listed, not read.
 
 ## Agent (MCP)
 

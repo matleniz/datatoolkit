@@ -13,12 +13,13 @@ WORKDIR /app
 # Dependency layer: cached until pyproject.toml / uv.lock change.
 # Extra agent: the chat packs that need no CLI (api-anthropic, api-openai, stub),
 # off unless DTK_AGENT=1 (docker/entrypoint.sh). Not agent-sdk: no claude CLI here.
+# Extra pdf: text of PDF workspace documents.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --extra api --extra agent --no-install-project
+RUN uv sync --frozen --no-dev --extra api --extra agent --extra pdf --no-install-project
 
 # Project layer: only re-run when the source changes.
 COPY src ./src
-RUN uv sync --frozen --no-dev --extra api --extra agent
+RUN uv sync --frozen --no-dev --extra api --extra agent --extra pdf
 
 ENV PATH="/app/.venv/bin:$PATH" \
     DTK_HOME=/data

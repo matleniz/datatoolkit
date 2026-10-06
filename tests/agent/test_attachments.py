@@ -320,7 +320,9 @@ async def test_read_refuses_a_text_attachment_grown_past_the_limit(mcp, monkeypa
 @pytest.mark.anyio
 async def test_no_tool_writes_or_adds_a_source(mcp):
     names = {t.name for t in (await mcp.list_tools()).tools}
-    assert not {n for n in names if "attach" in n} - {"list_attachments", "read_attachment"}
+    # keep_attachment is a Studio command (an undoable workspace document, not a source).
+    allowed = {"list_attachments", "read_attachment", "keep_attachment"}
+    assert not {n for n in names if "attach" in n} - allowed
     tools = {t.name: t for t in (await mcp.list_tools()).tools}
     assert tools["list_attachments"].annotations.read_only_hint is True
     assert tools["read_attachment"].annotations.read_only_hint is True

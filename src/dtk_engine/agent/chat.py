@@ -484,7 +484,11 @@ class AgentHub:
             return ""
         key = (ctx.get("session") or chat.session, name)
         first = TRACKER.seen(key) is None
-        return turn_note(ctx, steps, TRACKER.changes(key, steps), first)
+        docs: list[dict] = []
+        if first:
+            with contextlib.suppress(KeyError, KeyParamsError, OSError, ValueError):
+                docs = await asyncio.to_thread(contract.list_documents, name)
+        return turn_note(ctx, steps, TRACKER.changes(key, steps), first, docs)
 
     async def cancel(self, session: str) -> bool:
         """Stop the running turn (the adapter first, then the task); False when idle."""

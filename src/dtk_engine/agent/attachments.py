@@ -12,74 +12,32 @@ text. Protocol: ``docs/agent-chat-protocol.md`` ("Attachments").
 from __future__ import annotations
 
 import itertools
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from dtk_engine import contract
 from dtk_engine.agent import policy
+from dtk_engine.contract import (  # noqa: F401  (re-exported: http, tests)
+    NotAnUploadError,
+    resolve_upload,
+    source_spec,
+    upload_dir,
+)
 from dtk_engine.errors import KeyParamsError
-from dtk_engine.ui_bridge import dtk_home
 
 EVENT = "agent"
 TEXT_LIMIT = 1_000_000  # bytes: larger files are kind "other"
-_TABLE_EXTS = {".csv", ".tsv", ".parquet", ".xlsx", ".json", ".jsonl"}
-
-
-class NotAnUploadError(KeyParamsError):
-    """The path is not a file under the upload dir."""
 
 
 class UnknownAttachmentError(KeyParamsError):
     """No attachment with this id in the session."""
 
 
-def upload_dir() -> Path:
-    """``$DTK_UPLOAD_DIR``, else ``$DTK_HOME/uploads`` (``~/.datatoolkit/uploads``)."""
-    if os.environ.get("DTK_UPLOAD_DIR"):
-        return Path(os.environ["DTK_UPLOAD_DIR"]).expanduser()
-    return dtk_home() / "uploads"
-
-
-def resolve_upload(path: str) -> Path:
-    """Realpath of ``path`` when it is a file under the upload dir (symlinks followed)."""
-    real = Path(os.path.realpath(Path(path).expanduser()))
-    root = Path(os.path.realpath(upload_dir()))
-    if not real.is_relative_to(root) or not real.is_file():
-        raise NotAnUploadError(f"not an uploaded file: {path!r} (attach files from the upload dir)")
-    return real
-
-
-def _is_text(path: Path) -> bool:
-    try:
-        with path.open("rb") as handle:
-            data = handle.read(TEXT_LIMIT + 1)
-        if len(data) > TEXT_LIMIT:
-            return False
-        data.decode("utf-8")
-    except (OSError, UnicodeDecodeError):
-        return False
-    return True
-
-
 def detect_kind(path: Path) -> str:
-    """``table`` (by extension), ``text`` (UTF-8 sniff, up to 1 MB), else ``other``."""
-    if path.suffix.lower() in _TABLE_EXTS:
-        return "table"
-    return "text" if _is_text(path) else "other"
-
-
-def source_spec(path: Path) -> dict:
-    """The ``source`` spec the usual tools read a table attachment with."""
-    ext = path.suffix.lower()
-    if ext == ".parquet":
-        return {"kind": "parquet", "path": str(path)}
-    if ext == ".xlsx":
-        return {"kind": "excel", "path": str(path)}
-    if ext in (".json", ".jsonl"):
-        return {"kind": "json", "path": str(path), "lines": ext == ".jsonl"}
-    return {"kind": "csv", "path": str(path), "sep": "\t" if ext == ".tsv" else "auto"}
+    """``table`` (by extension), ``text`` (UTF-8 sniff, up to 1 MB), else ``other``
+    (the workspace documents' reader, without its ``pdf`` kind)."""
+    return contract.detect_kind(path, TEXT_LIMIT, pdf=False)
 
 
 def _columns(path: Path) -> list[str] | None:
@@ -186,14 +144,19 @@ def read_text(att: dict, offset: int = 0, max_chars: int | None = None) -> dict:
     """A framed slice of a ``text`` attachment, at most ``DTK_AGENT_MAX_CHARS`` characters."""
     if att["kind"] != "text":
         raise KeyParamsError(f"attachment {att['id']!r} is {att['kind']}, not text")
-    text = _read_bounded(att)
+    return framed_slice(_read_bounded(att), {"id": att["id"], "name": att["name"]}, offset, max_chars)
+
+
+def framed_slice(text: str, meta: dict, offset: int = 0, max_chars: int | None = None) -> dict:
+    """``meta`` + ``{offset, text, total_chars, next_offset}`` framed, the slice cut to
+    ``DTK_AGENT_MAX_CHARS`` (and ``max_chars``); attachments and workspace documents."""
     cap = policy.max_response_chars()
     limit = min(max_chars, cap) if max_chars else cap
     start = max(int(offset or 0), 0)
     while True:
         chunk = text[start : start + limit]
         data = {
-            "id": att["id"], "name": att["name"], "offset": start, "text": chunk,
+            **meta, "offset": start, "text": chunk,
             "total_chars": len(text),
             "next_offset": start + len(chunk) if start + len(chunk) < len(text) else None,
         }

@@ -131,10 +131,24 @@ def _changes_text(changes: dict, steps: list[dict]) -> str:
     return "; ".join(out)
 
 
-def turn_note(ctx: dict, steps: list[dict], changes: dict | None, first: bool) -> str:
+_NOTE_DOCUMENTS = 20  # documents named in a first-turn note
+
+
+def documents_line(docs: list[dict]) -> str:
+    """``Documents (read_document): d1 dictionary.md, d2 protocol.pdf`` or ""."""
+    if not docs:
+        return ""
+    names = ", ".join(f"{d.get('id')} {d.get('name')}" for d in docs[:_NOTE_DOCUMENTS])
+    more = f", … {len(docs) - _NOTE_DOCUMENTS} more (list_documents)" if len(docs) > _NOTE_DOCUMENTS else ""
+    return f"Documents (read_document): {names}{more}"
+
+
+def turn_note(
+    ctx: dict, steps: list[dict], changes: dict | None, first: bool, docs: list[dict] | None = None
+) -> str:
     """The short Studio state prepended to a user turn: what the user sees, the
-    whole step list on the first turn, then only what changed since the agent
-    last looked (one line per added / changed step)."""
+    whole step list (and the workspace documents) on the first turn, then only
+    what changed since the agent last looked (one line per added / changed step)."""
     view = (
         f'[Studio: workspace "{ctx.get("workspace")}", role {ctx.get("role") or "train"}, '
         f"viewing version {ctx.get('version')} of {len(steps)}, identity {ctx.get('identity')}."
@@ -146,6 +160,8 @@ def turn_note(ctx: dict, steps: list[dict], changes: dict | None, first: bool) -
         listed = "; ".join(step_line(s) for s in shown)
         tail = f"; … {more} more (get_workspace)" if more else ""
         lines.append(f"Steps (id op params): {listed}{tail}" if steps else "No steps yet.")
+        if docs:
+            lines.append(documents_line(docs))
     elif changes:
         lines.append(
             f"Steps changed since you last looked ({len(steps)} now): "
