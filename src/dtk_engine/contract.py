@@ -42,7 +42,7 @@ from .workspace.documents import (  # noqa: F401  (the upload-dir guard, for htt
     upload_dir,
 )
 from .workspace.export import export_workspace as _export
-from .workspace.models import Step, fill_step_ids
+from .workspace.models import Step, WorkspaceDocument, fill_document_ids, fill_step_ids
 from .workspace.store import WorkspaceNotFoundError
 
 _SHAPES = LRU(max_entries=256)
@@ -204,21 +204,27 @@ def get_workspace(name: str) -> dict:
 
 
 _STEPS = TypeAdapter(list[Step])
+_DOCUMENTS = TypeAdapter(list[WorkspaceDocument])
 
 
-def workspace_steps(name: str) -> list[dict]:
-    """The stored workspace's steps (ids filled), without validating or loading
-    its sources: the cheap read behind the agent's change digest."""
+def _stored_field(name: str, field: str, adapter: TypeAdapter, fill) -> list[dict]:
+    """One list field of the stored workspace (ids filled), without validating
+    the rest or loading its sources: the cheap reads behind the agent."""
     path = JsonWorkspaceStore().path_of(name)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise WorkspaceNotFoundError(name) from None
     try:
-        steps = fill_step_ids(_STEPS.validate_python(raw.get("steps") or []))
+        items = fill(adapter.validate_python(raw.get(field) or []))
     except (ValidationError, ValueError) as exc:
-        raise KeyParamsError(f"invalid steps in workspace {name!r}: {exc}") from exc
-    return [step.model_dump(mode="json") for step in steps]
+        raise KeyParamsError(f"invalid {field} in workspace {name!r}: {exc}") from exc
+    return [item.model_dump(mode="json") for item in items]
+
+
+def workspace_steps(name: str) -> list[dict]:
+    """The stored workspace's steps (ids filled), cheap: the agent's change digest."""
+    return _stored_field(name, "steps", _STEPS, fill_step_ids)
 
 
 def save_workspace(workspace: dict) -> dict:
@@ -305,7 +311,8 @@ def describe_document(path: str, name: str | None = None) -> dict:
 
 
 def list_documents(workspace: str) -> list[dict]:
-    return [d.model_dump(mode="json") for d in JsonWorkspaceStore().get(workspace).documents]
+    """The stored workspace's documents (cheap read: the rest is not validated)."""
+    return _stored_field(workspace, "documents", _DOCUMENTS, fill_document_ids)
 
 
 def document_summaries(workspace: str) -> list[dict]:
