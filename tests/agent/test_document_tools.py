@@ -9,7 +9,7 @@ import pytest
 from mcp import Client
 
 from dtk_engine import contract
-from dtk_engine.agent.digest import documents_line, turn_note
+from dtk_engine.agent.digest import intro_note
 from dtk_engine.agent.policy import AuditLog
 from dtk_engine.agent.ports import LocalUiPort
 from dtk_engine.agent.server import build_server
@@ -103,11 +103,25 @@ async def test_keep_attachment_is_relayed_with_the_workspace(client, bridge):
     assert cmd == {"id": cmd["id"], "type": "keep_attachment", "attachment_id": "a2", "workspace": "demo"}
 
 
-def test_first_turn_note_names_the_documents():
-    ctx = {"workspace": "demo", "role": "train", "version": 0, "identity": "i"}
+def test_intro_names_the_documents():
     docs = [{"id": f"d{i}", "name": f"f{i}.md"} for i in range(1, 23)]
-    first = turn_note(ctx, [], None, first=True, docs=docs[:2])
-    assert "Documents (read_document): d1 f1.md, d2 f2.md" in first
-    assert "Documents" not in turn_note(ctx, [], None, first=False, docs=docs[:2])
-    assert "Documents" not in turn_note(ctx, [], None, first=True)
-    assert documents_line(docs).endswith("… 2 more (list_documents)")
+    assert intro_note(docs[:2]) == "[Workspace documents (read_document): d1 f1.md, d2 f2.md]\n\n"
+    assert intro_note([]) == ""
+    assert intro_note(docs).endswith(", … 2 more (list_documents)]\n\n")
+
+
+async def test_documents_once_per_conversation(home, monkeypatch):
+    from dtk_engine.agent.chat import AgentHub
+    from dtk_engine.agent.packs.stub import chat_pack
+
+    contract.add_document("demo", _upload(home, "dictionary.md", "x"))
+    bridge = UiBridge("t")
+    bridge.put_context({"session": "s1", "workspace": "demo", "role": "train", "version": 0,
+                        "latest": 0, "identity": "i"})
+    hub = AgentHub(bridge, chat_pack())
+    chat = hub._chat("s1")
+    first = await hub._workspace_note(chat)
+    assert "[Workspace documents (read_document): d1 dictionary.md]" in first
+    assert "Workspace documents" not in await hub._workspace_note(chat)
+    chat.introduced = set()  # what a new adapter (a new conversation) does
+    assert "Workspace documents" in await hub._workspace_note(chat)

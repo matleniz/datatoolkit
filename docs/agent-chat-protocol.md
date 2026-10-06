@@ -348,7 +348,8 @@ already stored must be under the upload dir (`422 NotAnUploadError`).
   size, note}`, plus `source` for a table) and `read_document(id, offset?,
   max_chars?)` (same framing and `DTK_AGENT_MAX_CHARS` cap as
   `read_attachment`; a table answers with its `source` spec).
-- The first-turn `[Studio: …]` note names them: `Documents (read_document):
-  d1 dictionary.md, d2 protocol.pdf`.
+- A conversation's first turn on a workspace (a new adapter = a new
+  conversation) names them after the `[Studio: …]` note: `[Workspace
+  documents (read_document): d1 dictionary.md, d2 protocol.pdf]`.
 - Export: the manifest lists them (`documents: [{id, name, path, mime, size,
   note, sha256 | missing}]`), files not copied.

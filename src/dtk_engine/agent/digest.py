@@ -131,24 +131,10 @@ def _changes_text(changes: dict, steps: list[dict]) -> str:
     return "; ".join(out)
 
 
-_NOTE_DOCUMENTS = 20  # documents named in a first-turn note
-
-
-def documents_line(docs: list[dict]) -> str:
-    """``Documents (read_document): d1 dictionary.md, d2 protocol.pdf`` or ""."""
-    if not docs:
-        return ""
-    names = ", ".join(f"{d.get('id')} {d.get('name')}" for d in docs[:_NOTE_DOCUMENTS])
-    more = f", … {len(docs) - _NOTE_DOCUMENTS} more (list_documents)" if len(docs) > _NOTE_DOCUMENTS else ""
-    return f"Documents (read_document): {names}{more}"
-
-
-def turn_note(
-    ctx: dict, steps: list[dict], changes: dict | None, first: bool, docs: list[dict] | None = None
-) -> str:
+def turn_note(ctx: dict, steps: list[dict], changes: dict | None, first: bool) -> str:
     """The short Studio state prepended to a user turn: what the user sees, the
-    whole step list (and the workspace documents) on the first turn, then only
-    what changed since the agent last looked (one line per added / changed step)."""
+    whole step list on the first turn, then only what changed since the agent
+    last looked (one line per added / changed step)."""
     view = (
         f'[Studio: workspace "{ctx.get("workspace")}", role {ctx.get("role") or "train"}, '
         f"viewing version {ctx.get('version')} of {len(steps)}, identity {ctx.get('identity')}."
@@ -160,8 +146,6 @@ def turn_note(
         listed = "; ".join(step_line(s) for s in shown)
         tail = f"; … {more} more (get_workspace)" if more else ""
         lines.append(f"Steps (id op params): {listed}{tail}" if steps else "No steps yet.")
-        if docs:
-            lines.append(documents_line(docs))
     elif changes:
         lines.append(
             f"Steps changed since you last looked ({len(steps)} now): "
@@ -170,6 +154,22 @@ def turn_note(
     else:
         lines.append(f"Steps unchanged since you last looked ({len(steps)}).")
     return "\n".join(lines) + "]\n\n"
+
+
+# -- once per conversation and workspace (datatoolkit-issues#178) ------------
+
+_NOTE_DOCUMENTS = 20  # documents named in an intro
+
+
+def intro_note(docs: list[dict]) -> str:
+    """What a conversation's first turn on a workspace adds after the Studio
+    note: ``[Workspace documents (read_document): d1 dictionary.md, …]``, or ""."""
+    if not docs:
+        return ""
+    names = ", ".join(f"{d.get('id')} {d.get('name')}" for d in docs[:_NOTE_DOCUMENTS])
+    more = len(docs) - _NOTE_DOCUMENTS
+    tail = f", … {more} more (list_documents)" if more > 0 else ""
+    return f"[Workspace documents (read_document): {names}{tail}]\n\n"
 
 
 # -- engine-side data identity (mirrors Studio's dataIdentity.ts) -------------
