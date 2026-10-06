@@ -18,7 +18,7 @@ from sklearn.preprocessing import (
 
 from dtk_engine.ops._util import json_scalar as _py
 from dtk_engine.ops.selection import feature_matrix
-from dtk_engine.params import column_field, columns_field, when
+from dtk_engine.params import column_field, columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 MAX_INTERACTION_COLUMNS = 10
@@ -232,8 +232,8 @@ class GroupAggParams(TransformParams):
         None,
         "first / last: order of the group's rows (e.g. age, a date); rows with a "
         "missing order are ignored, ties keep the frame order",
+        # No x-dtk-when: Studio matches it against a scalar sibling, aggs is a list.
         source="step",
-        extra=when(aggs=list(_ORDERED_AGGS)),
     )
     target: str | None = column_field(
         None,
