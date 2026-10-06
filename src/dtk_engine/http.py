@@ -193,7 +193,10 @@ async def post_duplicate(name: str, request: Request) -> dict:
 async def post_export(name: str, request: Request) -> dict:
     body = await _body(request, "out_dir")
     return contract.export_workspace(
-        name, body["out_dir"], overwrite=bool(body.get("overwrite", False))
+        name,
+        body["out_dir"],
+        overwrite=bool(body.get("overwrite", False)),
+        formats=body.get("formats"),
     )
 
 

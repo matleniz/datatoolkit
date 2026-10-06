@@ -252,16 +252,21 @@ def duplicate_workspace(name: str, new_name: str) -> dict:
     return JsonWorkspaceStore().duplicate(name, new_name).model_dump(mode="json")
 
 
-def export_workspace(name: str, out_dir: str, overwrite: bool = False) -> dict:
+def export_workspace(
+    name: str, out_dir: str, overwrite: bool = False, formats: list[str] | None = None
+) -> dict:
     """Write ``out_dir/processed/{train,test}.parquet`` + ``out_dir/manifest.json``
     (sources hashed, steps with fitted states, versions); returns the manifest.
+    ``formats`` (default ``["parquet"]``) adds / picks ``csv``
+    (``processed/*.csv``), ``ipynb`` and ``py`` (``code/pipeline.*``, a replay
+    of the steps through the notebook door, notes as markdown / comments).
 
     Unknown workspace -> WorkspaceNotFoundError; an existing export without
     ``overwrite`` or an output path that is a raw input -> KeyParamsError; a
     source or a step failing on the data -> SourceError; an unknown step op ->
     UnknownTransformError, invalid step params -> KeyParamsError.
     """
-    return _export(name, out_dir, overwrite=overwrite)
+    return _export(name, out_dir, overwrite=overwrite, formats=formats)
 
 
 # Studio grid (unsaved workspace dicts; nothing written to the store).

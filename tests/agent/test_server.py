@@ -24,7 +24,7 @@ STATIC_TOOLS = {
     "list_workspaces", "get_workspace", "get_rows", "get_profiles", "preview_step",
     "align_report", "source_columns", "get_ui_context", "get_command_status",
     "list_attachments", "read_attachment", "preview_steps", "evaluate",
-    "get_notes",
+    "get_notes", "export_workspace",
 }
 
 
@@ -357,3 +357,18 @@ async def test_study_in_memory_leaves_no_trace(client, bridge, home):
     assert scores["group_mean"]["mean"] > 0
     assert queue.empty()
     assert contract.get_workspace("long") == stored
+
+
+async def test_export_tool_writes_only_under_exports(client, bridge, home):
+    """#156: the agent exports into $DTK_HOME/exports/<workspace>, nowhere else."""
+    _save_demo()
+    bridge.put_context(_context())
+    out = _payload(await client.call_tool("export_workspace", {}))["data"]
+    assert out["out_dir"] == str(home / "exports" / "demo")
+    assert out["formats"] == ["ipynb"] and out["outputs"] == {"notebook": "code/pipeline.ipynb"}
+    assert (home / "exports" / "demo" / "code" / "pipeline.ipynb").is_file()
+    again = await client.call_tool("export_workspace", {"formats": ["py"]})
+    assert again.is_error and "overwrite" in again.content[0].text
+    done = _payload(await client.call_tool("export_workspace", {"formats": ["py"], "overwrite": True}))
+    assert done["data"]["outputs"] == {"script": "code/pipeline.py"}
+    assert not (home / "exports" / "demo" / "code" / "pipeline.ipynb").exists()

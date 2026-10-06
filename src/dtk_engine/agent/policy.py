@@ -50,6 +50,13 @@ def allowed_roots() -> list[Path]:
     return roots
 
 
+def exports_dir(workspace: str) -> Path:
+    """``$DTK_HOME/exports/<workspace>``: the only place the agent exports to."""
+    if not workspace or "/" in workspace or "\\" in workspace or workspace.startswith("."):
+        raise PolicyError(f"invalid workspace name for an export: {workspace!r}")
+    return dtk_home() / "exports" / workspace
+
+
 def control_dir() -> Path:
     """Realpath of ``$DTK_HOME/agent``: the engine's own files (UI token, audit
     log, terminal configs), never readable by the agent."""
@@ -412,6 +419,7 @@ __all__ = [
     "compact_profiles",
     "compact_result",
     "control_dir",
+    "exports_dir",
     "frame",
     "row_limit",
     "workspace_paths",

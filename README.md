@@ -61,7 +61,10 @@ JSON contract (what fronts call, `src/dtk_engine/contract.py`): `run_key`,
 delete, `export_workspace`) and the studio reads (`source_columns`,
 `preview_workspace`, `preview_step`, `preview_steps`, `evaluate`, `column_notes`,
 `workspace_rows`, `column_profiles`,
-`align_report`):
+`align_report`). `export_workspace(name, out_dir, formats=[...])` writes
+parquet (default), `csv`, and a runnable `ipynb` / `py` that replays the steps
+through `dtk_engine.api.workspace_frames` + `DtkTransformer`, notes as
+markdown / comments:
 
 ```python
 from dtk_engine import run_key, Result

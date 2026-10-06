@@ -298,6 +298,27 @@ class _Tools:
         }
         return policy.frame(data, identity=_identity(view, ws))
 
+    async def export_workspace(self, args: dict) -> dict:
+        """Only into ``$DTK_HOME/exports/<workspace>``: no path from the agent."""
+        name = args.get("workspace")
+        if name is None:
+            ctx = await self.port.get_context(args.get("session")) or {}
+            name = ctx.get("workspace")
+        if not name:
+            raise KeyParamsError(_NO_CONTEXT)
+        out_dir = policy.exports_dir(str(name))
+        manifest = await _compute(
+            contract.export_workspace, str(name), str(out_dir),
+            bool(args.get("overwrite")), args.get("formats") or ["ipynb"],
+        )
+        data = {
+            "out_dir": str(out_dir),
+            "formats": manifest["formats"],
+            "outputs": {k: v["path"] for k, v in manifest["outputs"].items()},
+            "steps": len(manifest["steps"]),
+        }
+        return policy.frame(data)
+
     async def align_report(self, args: dict) -> dict:
         view = await self._view(args, use_version=False)
         ws = await self._workspace_dict(view)
@@ -508,6 +529,19 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
          ("The user's and your notes: on the workspace, on steps (by id) and on "
           "columns (names at the version, renames followed). Write with set_note."),
          _schema(dict(_VIEW)), t.get_notes, True),
+        ("export_workspace",
+         ("Export the workspace into $DTK_HOME/exports/<workspace> (the only place): "
+          "formats ipynb (default: a notebook replaying the steps, with the notes as "
+          "markdown), py (same as a script), csv / parquet (the processed train / "
+          "test). overwrite replaces a previous export there. Only when the user asks."),
+         _schema({
+             "formats": {
+                 "type": "array", "minItems": 1,
+                 "items": {"type": "string", "enum": ["parquet", "csv", "ipynb", "py"]},
+             },
+             "overwrite": {"type": "boolean"},
+             "workspace": _VIEW["workspace"], "session": _SESSION,
+         }), t.export_workspace, False),
         ("align_report",
          ("Train / test column alignment after the workspace's steps; matching columns "
           "are listed by name only unless detail."),
