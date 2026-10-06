@@ -34,6 +34,35 @@ def drop_columns(
     )
 
 
+class SelectColumnsParams(TransformParams):
+    columns: list[str] = columns_field(
+        "Columns to keep, in this order", source="step", required=True, min_length=1
+    )
+    missing_ok: bool = Field(
+        default=False, description="Ignore listed columns absent from the frame"
+    )
+
+    @field_validator("columns")
+    @classmethod
+    def _no_repeat(cls, v: list[str]) -> list[str]:
+        if len(set(v)) != len(v):
+            raise ValueError("columns must not repeat")
+        return v
+
+
+@transform(
+    "select_columns", params_model=SelectColumnsParams, title="Select columns"
+)
+def select_columns(
+    df: pd.DataFrame, params: SelectColumnsParams, state: dict
+) -> pd.DataFrame:
+    """Keep only the listed columns, in the given order."""
+    missing = [c for c in params.columns if c not in df.columns]
+    if missing and not params.missing_ok:
+        raise KeyError(f"columns not in frame: {missing}")
+    return df[[c for c in params.columns if c in df.columns]]
+
+
 class ReorderColumnsParams(TransformParams):
     columns: list[str] = columns_field(
         "Columns to move, kept in this order", source="step", required=True, min_length=1
