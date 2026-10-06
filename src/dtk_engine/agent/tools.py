@@ -65,6 +65,7 @@ _VIEW = {
     "session": _SESSION,
 }
 _COLUMNS = {"type": "array", "items": _STR, "description": "Restrict to these columns."}
+_DETAIL = {"type": "boolean", "description": "Full result (default: compact)."}
 
 
 def _need(args: dict, name: str) -> Any:
@@ -163,7 +164,10 @@ class _Tools:
 
     # -- keys / transforms -----------------------------------------------
     async def list_keys(self, args: dict) -> dict:
-        return policy.frame(await _compute(contract.list_keys))
+        keys = await _compute(contract.list_keys)
+        if not args.get("detail"):
+            keys = policy.compact_catalog(keys, ("id", "title", "category", "needs_target"))
+        return policy.frame(keys)
 
     async def key_schema(self, args: dict) -> dict:
         return policy.frame(await _compute(contract.key_schema, _need(args, "key")))
@@ -201,7 +205,10 @@ class _Tools:
         return _with_note(framed, note) if note else framed
 
     async def list_transforms(self, args: dict) -> dict:
-        return policy.frame(await _compute(contract.list_transforms))
+        ops = await _compute(contract.list_transforms)
+        if not args.get("detail"):
+            ops = policy.compact_catalog(ops, ("op", "title", "needs_target"))
+        return policy.frame(ops)
 
     async def transform_schema(self, args: dict) -> dict:
         return policy.frame(await _compute(contract.transform_schema, _need(args, "op")))
@@ -233,6 +240,8 @@ class _Tools:
             contract.column_profiles, ws, view.role, version=view.version,
             columns=args.get("columns"),
         )
+        if not args.get("columns") and not args.get("detail"):
+            data = policy.compact_profiles(data)
         return policy.frame(data, identity=_identity(view, ws))
 
     async def preview_step(self, args: dict) -> dict:
@@ -247,7 +256,10 @@ class _Tools:
     async def align_report(self, args: dict) -> dict:
         view = await self._view(args, use_version=False)
         ws = await self._workspace_dict(view)
-        return policy.frame(await _compute(contract.align_report, ws), identity=_identity(view, ws))
+        data = await _compute(contract.align_report, ws)
+        if not args.get("detail"):
+            data = policy.compact_align(data)
+        return policy.frame(data, identity=_identity(view, ws))
 
     async def source_columns(self, args: dict) -> dict:
         return policy.frame(await _compute(contract.source_columns, _need(args, "spec")))
@@ -368,8 +380,9 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
     t = _Tools(port)
     session_only = _schema({"session": _SESSION})
     static: list[tuple[str, str, dict, Handler, bool]] = [
-        ("list_keys", "List the analysis keys (id, title, category, needs_target).",
-         _schema(), t.list_keys, True),
+        ("list_keys",
+         "List the analysis keys (id, title, category, needs_target; descriptions with detail).",
+         _schema({"detail": _DETAIL}), t.list_keys, True),
         ("key_schema", "JSON Schema of a key's params.",
          _schema({"key": _STR}, ("key",)), t.key_schema, True),
         ("run_key",
@@ -382,8 +395,9 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
              "include_figures": {"type": "boolean"},
              "session": _SESSION,
          }, ("key",)), t.run_key, True),
-        ("list_transforms", "List the transform ops usable in workspace steps.",
-         _schema(), t.list_transforms, True),
+        ("list_transforms",
+         "List the transform ops usable in workspace steps (op, title; descriptions with detail).",
+         _schema({"detail": _DETAIL}), t.list_transforms, True),
         ("transform_schema", "JSON Schema of a transform op's params.",
          _schema({"op": _STR}, ("op",)), t.transform_schema, True),
         ("list_workspaces", "Summaries of the saved workspaces.",
@@ -399,8 +413,10 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
              "limit": {"type": "integer", "minimum": 1, "maximum": policy.MAX_ROWS},
              "columns": _COLUMNS,
          }), t.get_rows, True),
-        ("get_profiles", "Per-column profiles (histograms, sentinels, skew, ...).",
-         _schema({**_VIEW, "columns": _COLUMNS}), t.get_profiles, True),
+        ("get_profiles",
+         ("Per-column profiles (kind, missing, distinct, top values, sentinels, skew, ...). "
+          "Without columns: compact (no histograms); detail: true for everything."),
+         _schema({**_VIEW, "columns": _COLUMNS, "detail": _DETAIL}), t.get_profiles, True),
         ("preview_step",
          (f"Dry-run a step on top of the workspace steps; nothing is saved. Changed "
           f"cells, removed rids and the fitted state are cut to {policy.PREVIEW_ITEMS} "
@@ -414,8 +430,10 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
              "detail": {"type": "boolean", "description": "Larger samples (default false)."},
              "workspace": _VIEW["workspace"], "role": _VIEW["role"], "session": _SESSION,
          }, ("step",)), t.preview_step, True),
-        ("align_report", "Train / test column alignment after the workspace's steps.",
-         _schema({"workspace": _VIEW["workspace"], "session": _SESSION}),
+        ("align_report",
+         ("Train / test column alignment after the workspace's steps; matching columns "
+          "are listed by name only unless detail."),
+         _schema({"workspace": _VIEW["workspace"], "session": _SESSION, "detail": _DETAIL}),
          t.align_report, True),
         ("source_columns", "Column names and kinds of a source spec.",
          _schema({"spec": {"type": "object"}}, ("spec",)), t.source_columns, True),

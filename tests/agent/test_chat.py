@@ -90,13 +90,17 @@ async def test_echo_turn_events_and_usage_totals():
     assert events[1]["text"] == "stub: hello"
     assert events[2] == {
         "type": "usage", "turn": "t1", "input_tokens": 10, "output_tokens": 5,
+        "uncached_input_tokens": 10, "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0, "context_tokens": 0,
         "total_input_tokens": 10, "total_output_tokens": 5,
+        "total_uncached_input_tokens": 10, "total_cache_creation_input_tokens": 0,
+        "total_cache_read_input_tokens": 0,
     }
     assert events[3]["stop_reason"] == "end_turn"
     assert hub.send("s1", "again") == "t2"
     usage = next(e for e in await studio.until_done() if e["type"] == "usage")
     assert (usage["total_input_tokens"], usage["total_output_tokens"]) == (20, 10)
-    assert hub.status("s1")["usage"] == {"input_tokens": 20, "output_tokens": 10}
+    assert hub.status("s1")["usage"] == {"input_tokens": 20, "output_tokens": 10, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
 
 
 async def test_add_a_step_goes_through_the_real_bridge_with_context_fill():
@@ -177,9 +181,35 @@ async def test_stub_reads_then_removes_a_step_the_user_removed_first():
     events = await studio.until_done()
     (cmd,) = studio.commands
     assert cmd["ops"] == [{"remove": {"id": "s1"}}]
-    assert cmd["base_steps"] == {"s1": scale}
+    # The turn note already told the agent s1 is gone (#151), so no base for it:
+    # Studio acks an unknown id as stale / removed.
+    assert "base_steps" not in cmd
     reply = next(e for e in events if e["type"] == "assistant_delta")
     assert reply["text"] == "stub: stale: step s1 (scale) removed"
+
+
+async def test_turn_starts_with_the_workspace_note():
+    """#151: the adapter gets Studio's view + steps; the user_message event does not."""
+    from dtk_engine import contract
+    from dtk_engine.demo_data import TRAIN_CSV
+
+    contract.save_workspace({
+        "name": "ws", "datasets": {"train": {"x": {"kind": "csv", "path": str(TRAIN_CSV)}}},
+        "steps": [{"op": "scale", "target": "both", "params": {"columns": ["Age"]}}],
+    })
+    bridge = UiBridge("t")
+    bridge.put_context({"session": "s1", "workspace": "ws", "role": "train", "version": 1,
+                        "identity": "ws|train|v1|ab"})
+    studio, hub = Studio(bridge), _hub(bridge)
+    hub.send("s1", "hello")
+    events = await studio.until_done()
+    assert next(e for e in events if e["type"] == "user_message")["text"] == "hello"
+    reply = next(e for e in events if e["type"] == "assistant_delta")["text"]
+    assert reply.startswith('stub: [Studio: workspace "ws", role train, viewing version 1 of 1')
+    assert "s1 scale columns=Age" in reply and reply.endswith("]\n\nhello")
+    hub.send("s1", "again")
+    reply = next(e for e in await studio.until_done() if e["type"] == "assistant_delta")["text"]
+    assert "Steps unchanged since you last looked (1)" in reply
 
 
 async def test_permission_denied_and_allowed():
@@ -312,7 +342,7 @@ async def test_sessions_are_separate_and_close():
     assert (await a.until_done())[1]["text"] == "stub: x"
     assert (await b.until_done())[1]["text"] == "stub: y"
     await hub.close()
-    assert hub.status("a")["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert hub.status("a")["usage"] == {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
 
 
 
@@ -348,7 +378,7 @@ async def test_idle_session_is_reaped_after_the_grace(tmp_path):
     assert ClosingAdapter.closed == 0  # still within the grace
     await asyncio.sleep(0.15)
     assert ClosingAdapter.closed == 1
-    assert hub.status("s1")["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert hub.status("s1")["usage"] == {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
     assert registry.list("s1") == []
     await hub.close()
     assert ClosingAdapter.closed == 1  # not closed twice
@@ -481,7 +511,7 @@ def test_status_route_and_guard(stub_client):
     assert stub_client.get("/api/ui/agent").status_code == 401
     body = stub_client.get("/api/ui/agent", headers=AUTH).json()
     assert body["available"] is True and body["pack"] == "stub"
-    assert body["running"] is False and body["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert body["running"] is False and body["usage"] == {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
 
 
 def test_send_permission_and_cancel_routes(stub_client):

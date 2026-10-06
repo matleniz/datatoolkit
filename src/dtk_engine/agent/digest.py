@@ -87,6 +87,73 @@ def _same(a: Any, b: Any) -> bool:
 TRACKER = StepTracker()
 
 
+# -- per-turn workspace note (datatoolkit-issues#151) -------------------------
+
+_NOTE_STEPS = 80  # steps listed in a turn note
+_STEP_LINE = 90  # characters per step summary
+_LIST_ITEMS = 3
+
+
+def _param_text(value: Any) -> str | None:
+    if isinstance(value, list) and all(isinstance(v, str | int | float) for v in value):
+        more = f"+{len(value) - _LIST_ITEMS}" if len(value) > _LIST_ITEMS else ""
+        return ",".join(str(v) for v in value[:_LIST_ITEMS]) + more
+    if isinstance(value, str | int | float | bool):
+        return str(value)
+    return None  # nested params: see get_workspace
+
+
+def step_line(step: dict) -> str:
+    """``s3 impute columns=age strategy=median`` (cut to a line)."""
+    parts = [f"{step.get('id')} {step.get('op')}"]
+    if step.get("target") not in (None, "both"):
+        parts.append(f"[{step['target']}]")
+    for key, value in (step.get("params") or {}).items():
+        text = _param_text(value)
+        if text is not None:
+            parts.append(f"{key}={text}")
+    line = " ".join(parts)
+    return line if len(line) <= _STEP_LINE else line[: _STEP_LINE - 1] + "…"
+
+
+def _changes_text(changes: dict, steps: list[dict]) -> str:
+    """Added / changed steps as full lines, removed ones by id."""
+    by_id = {s.get("id"): s for s in steps}
+    out = [
+        f"{kind} {step_line(by_id[c['id']])}"
+        for kind in ("added", "changed")
+        for c in changes.get(kind) or []
+        if c["id"] in by_id
+    ]
+    out.extend(f"removed {c['id']} ({c['op']})" for c in changes.get("removed") or [])
+    return "; ".join(out)
+
+
+def turn_note(ctx: dict, steps: list[dict], changes: dict | None, first: bool) -> str:
+    """The short Studio state prepended to a user turn: what the user sees, the
+    whole step list on the first turn, then only what changed since the agent
+    last looked (one line per added / changed step)."""
+    view = (
+        f'[Studio: workspace "{ctx.get("workspace")}", role {ctx.get("role") or "train"}, '
+        f"viewing version {ctx.get('version')} of {len(steps)}, identity {ctx.get('identity')}."
+    )
+    lines = [view]
+    if first:
+        shown = steps[:_NOTE_STEPS]
+        more = len(steps) - len(shown)
+        listed = "; ".join(step_line(s) for s in shown)
+        tail = f"; … {more} more (get_workspace)" if more else ""
+        lines.append(f"Steps (id op params): {listed}{tail}" if steps else "No steps yet.")
+    elif changes:
+        lines.append(
+            f"Steps changed since you last looked ({len(steps)} now): "
+            f"{_changes_text(changes, steps)}."
+        )
+    else:
+        lines.append(f"Steps unchanged since you last looked ({len(steps)}).")
+    return "\n".join(lines) + "]\n\n"
+
+
 # -- engine-side data identity (mirrors Studio's dataIdentity.ts) -------------
 
 

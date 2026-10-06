@@ -41,13 +41,14 @@ Status:
   "provider": "Claude (claude.ai login, pro, via the claude CLI)",
   "model": null,
   "running": false,
-  "usage": {"input_tokens": 0, "output_tokens": 0},
+  "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
   "max_tokens": null,
   "reason": "only when available is false: why (extra missing, CLI not logged in, pack off)"
 }
 ```
 
-`usage` holds the session's cumulative totals. `max_tokens` is
+`usage` holds the session's cumulative totals (`input_tokens` includes the cache
+writes and reads, which are also given apart). `max_tokens` is
 `DTK_AGENT_MAX_TOKENS`, or null. `model` null = the CLI's default model.
 
 ## Events (`event: agent`)
@@ -61,7 +62,7 @@ Every event has `type` and `turn` (`"t1"`, `"t2"`, … per Studio session).
 | `tool_call` | `id, name, input` | `name` = bare dtk tool name (`propose_steps`, `run_key`, …; no `mcp__dtk__` prefix) |
 | `tool_result` | `id, ok, summary?, error?, identity?, pending?, command?` | `id` = its `tool_call`. UI commands carry `command` (bridge command id). A destructive `propose_steps` answers `ok: true, pending: "review"`: Studio's own review banner is the permission ("waiting for your review in Studio"). `identity` = the data frame the tool answered for |
 | `permission_request` | `id, tool, input, summary, lines?` | ask the user; answer with `POST /api/ui/agent/permission`. No answer within `DTK_UI_REVIEW_TIMEOUT` (default 900 s) or a cancel = denied. Always comes after the `tool_call` it gates; a deny then gives `tool_result {ok: false, error: "denied"}` |
-| `usage` | `input_tokens, output_tokens, total_input_tokens, total_output_tokens` | per turn and cumulative per session; sent once, just before `done` |
+| `usage` | `input_tokens, output_tokens, uncached_input_tokens, cache_creation_input_tokens, cache_read_input_tokens, context_tokens`, and `total_` + each of the first five | per turn and cumulative per session; sent once, just before `done`. `input_tokens` = uncached + cache writes + cache reads (cache reads bill ~0.1x); `context_tokens` = input of the turn's last API call, i.e. the context size (0 when the pack does not report it) |
 | `error` | `message, code?` | `code`: `max_tokens` (cap reached), `pack_error` (agent / CLI failure), or the provider's error kind |
 | `done` | `stop_reason` | last event of every turn: `end_turn`, `cancelled`, `max_tokens`, `max_turns`, `error` |
 
@@ -103,6 +104,12 @@ once.
   <id>`, `stub: <ack error>` (e.g. `stub: stale: step s1 (scale) removed`) or the
   review wait.
 
+Each turn's text reaches the adapter prefixed by a short Studio note (the
+`user_message` event keeps the user's text): workspace, role, viewed version,
+identity, then the whole step list (`s3 impute columns=age strategy=median`)
+on the first turn and afterwards only the steps added / changed / removed since
+the agent last looked, so it need not re-read `get_workspace` each turn.
+
 ## Adapter interface (engine side)
 
 ```python
@@ -114,8 +121,9 @@ class Adapter(Protocol):
 ```
 
 `ChatSession` gives the adapter `emit(type, **fields)`, `ask(tool, input,
-summary, lines)` (returns allow / deny), `set_turn_usage(input, output)`
-(returns True once the cap is reached), `mcp_server()` and `session_tools`. A
+summary, lines)` (returns allow / deny), `set_turn_usage(input, output, *,
+cache_write, cache_read, context)` (returns True once the cap is reached; the
+cap counts `input + output`), `mcp_server()` and `session_tools`. A
 new pack is a `Pack(id, provider, model, detect, create)` registered in
 `dtk_engine/agent/packs/chat_packs.py`.
 

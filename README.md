@@ -147,7 +147,9 @@ undoable change and highlights what it touched. Steps carry a stable `id`
 (filled by position, `s1`, `s2`..., for workspaces saved before ids):
 `propose_steps` targets ids, applies even if the user edited other steps
 meanwhile, and is acked `stale` with `stale: [{id, reason}]` only when a
-targeted step was removed or changed; its ack lists `added_ids`. Every tool
+targeted step was removed or changed; its ack lists `added_ids`. `get_profiles` (without `columns`), `align_report`,
+`list_keys` and `list_transforms` answer a compact form unless `detail: true`.
+Every tool
 result carries `identity` and, when the user changed the steps since the
 agent last saw them, `workspace_changes` (`added` / `removed` / `changed` step
 ids, reviewed proposals' outcome in `commands`). The tools are generated from

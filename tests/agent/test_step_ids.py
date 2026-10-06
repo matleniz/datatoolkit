@@ -217,3 +217,24 @@ async def test_reviewed_proposal_outcome_is_reported(client, bridge):
     assert note["commands"] == [{"id": cid, "status": "applied"}]
     assert note["removed"] == [{"id": "s1", "op": "scale"}]
     assert "workspace_changes" not in _payload(await client.call_tool("list_keys", {}))
+
+
+# -- per-turn note (#151) ----------------------------------------------------
+
+
+def test_turn_note_lists_steps_then_only_changes():
+    from dtk_engine.agent.digest import step_line, turn_note
+
+    ctx = _context(version=2, latest=2)
+    steps = [{**SCALE, "id": "s1"}, {**LOG, "id": "s2", "target": "train"}]
+    first = turn_note(ctx, steps, None, first=True)
+    assert 'workspace "demo"' in first and "viewing version 2 of 2" in first
+    assert "s1 scale columns=Age; s2 log1p [train] columns=Fare" in first
+    same = turn_note(ctx, steps, None, first=False)
+    assert "unchanged" in same and "s1 scale" not in same
+    moved = turn_note(ctx, steps[1:], {
+        "removed": [{"id": "s1", "op": "scale"}], "changed": [{"id": "s2", "op": "log1p"}],
+    }, first=False)
+    assert "(1 now): changed s2 log1p [train] columns=Fare; removed s1 (scale)." in moved
+    long = step_line({"id": "s9", "op": "onehot", "params": {"columns": [f"c{i}" for i in range(50)]}})
+    assert long == "s9 onehot columns=c0,c1,c2+47"

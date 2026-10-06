@@ -294,3 +294,22 @@ async def test_preview_step_stays_small_on_high_cardinality(client, home, step):
     more = json.loads(detail.content[0].text)["data"]
     sample = more["state"]["groups"] if step["op"] == "group_agg" else more["changed"]
     assert len(sample) == policy.PREVIEW_DETAIL_ITEMS
+
+
+async def test_heavy_reads_are_compact_by_default(client, bridge):
+    """#151: no histograms / matched columns / descriptions unless asked."""
+    _save_demo()
+    bridge.put_context(_context())
+    prof = _payload(await client.call_tool("get_profiles", {}))["data"]
+    assert all("histogram" not in c and len(c.get("top_values") or []) <= 3 for c in prof["columns"])
+    assert "detail" in prof["note"]
+    full = _payload(await client.call_tool("get_profiles", {"detail": True}))["data"]
+    assert any("histogram" in c for c in full["columns"])
+    one = _payload(await client.call_tool("get_profiles", {"columns": ["Age"]}))["data"]
+    assert "histogram" in one["columns"][0]
+    align = _payload(await client.call_tool("align_report", {}))["data"]
+    assert all(c["status"] != "match" for c in align["columns"]) and align["matched"]
+    keys = _payload(await client.call_tool("list_keys", {}))["data"]
+    assert all("description" not in k for k in keys)
+    ops = _payload(await client.call_tool("list_transforms", {"detail": True}))["data"]
+    assert all("description" in o for o in ops)

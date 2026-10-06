@@ -238,7 +238,8 @@ async def test_turn_translation(fake):
     assert events[2] == {**events[2], "id": "tu1", "ok": True, "pending": "review",
                          "command": "c3", "identity": "i9"}
     assert events[3]["text"] == "Review it in Studio."  # not streamed: from the block
-    assert chat.turn_usage == {"input_tokens": 300, "output_tokens": 20}
+    assert chat.turn_usage == {"input_tokens": 300, "output_tokens": 20, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+    assert chat.context_tokens == 150  # last call: 100 uncached + 50 cache reads
 
 
 async def test_tool_error_and_result_error(fake):

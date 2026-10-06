@@ -85,8 +85,10 @@ class Round:
 
     text: str = ""
     calls: list[dict] = field(default_factory=list)  # {id, name, args (raw JSON text)}
-    input_tokens: int = 0
+    input_tokens: int = 0  # cache writes and reads included
     output_tokens: int = 0
+    cache_write: int = 0
+    cache_read: int = 0
     stop: str | None = None
 
 
@@ -253,6 +255,8 @@ class AnthropicProvider(Provider):
         keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
         if any(k in usage for k in keys):
             round_.input_tokens = sum(int(usage.get(k) or 0) for k in keys)
+            round_.cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+            round_.cache_read = int(usage.get("cache_read_input_tokens") or 0)
         if "output_tokens" in usage:
             round_.output_tokens = int(usage.get("output_tokens") or 0)
 
@@ -322,6 +326,8 @@ class OpenAIProvider(Provider):
         if usage:  # a server ignoring include_usage never sends it: zeros
             round_.input_tokens = int(usage.get("prompt_tokens") or 0)
             round_.output_tokens = int(usage.get("completion_tokens") or 0)
+            details = usage.get("prompt_tokens_details") or {}
+            round_.cache_read = int(details.get("cached_tokens") or 0)
         text = ""
         for choice in event.get("choices") or []:
             delta = choice.get("delta") or {}
@@ -499,12 +505,17 @@ class ApiAdapter:
     async def _loop(self, chat: ChatSession, mcp: Client, text: str) -> str:
         model = await self._resolve_model()
         self.history.append(self.provider.user(text))
-        used_in = used_out = rounds = 0
+        used_in = used_out = write = read = rounds = 0
         while True:
             round_ = await self._respond_bounded(chat, model)
             used_in += round_.input_tokens
             used_out += round_.output_tokens
-            capped = chat.set_turn_usage(used_in, used_out)
+            write += round_.cache_write
+            read += round_.cache_read
+            capped = chat.set_turn_usage(
+                used_in, used_out, cache_write=write, cache_read=read,
+                context=round_.input_tokens,
+            )
             if not round_.calls:
                 self.history.append(self.provider.assistant(round_))
                 return _stop_reason(round_.stop)
