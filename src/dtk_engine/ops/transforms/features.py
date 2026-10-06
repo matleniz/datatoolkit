@@ -266,7 +266,8 @@ def _group_agg_stats(df: pd.DataFrame, params: GroupAggParams) -> pd.DataFrame:
     if plain:
         parts.append(df.groupby(params.group)[params.value].agg(plain))
     if ordered:  # first / last skip NaN values; a row without order is unusable
-        rows = df[[params.group, params.value, params.order]]
+        # `order` may equal `value` (or `group`): select each column once
+        rows = df[list(dict.fromkeys([params.group, params.value, params.order]))]
         rows = rows.dropna(subset=[params.order]).sort_values(
             params.order, kind="stable"
         )
