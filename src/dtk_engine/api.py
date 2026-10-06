@@ -49,7 +49,9 @@ from dtk_engine.sources import load as load_spec
 from dtk_engine.transform_registry import get_transform
 from dtk_engine.transform_registry import transform_catalog as list_transforms
 from dtk_engine.workspace.dataset import preview as preview_workspace
+from dtk_engine.workspace.dataset import raw_workspace_frame
 from dtk_engine.workspace.export import export_workspace as _export_workspace
+from dtk_engine.workspace.models import Workspace
 
 __all__ = [
     "advise",
@@ -279,8 +281,28 @@ def chart(df: pd.DataFrame, chart: str = "histogram", **params) -> Result:
 
 
 def export_workspace(
-    name: str, out_dir: str | Path, overwrite: bool = False, store=None
+    name: str,
+    out_dir: str | Path,
+    overwrite: bool = False,
+    store=None,
+    formats: list[str] | None = None,
 ) -> dict:
-    """Write the workspace's processed parquet + ``manifest.json`` under ``out_dir``;
-    returns the manifest (see ``dtk_engine.workspace.export``)."""
-    return _export_workspace(name, out_dir, overwrite=overwrite, store=store)
+    """Write the workspace's processed data (``formats``: parquet by default,
+    csv, ipynb, py) + ``manifest.json`` under ``out_dir``; returns the manifest
+    (see ``dtk_engine.workspace.export``)."""
+    return _export_workspace(
+        name, out_dir, overwrite=overwrite, store=store, formats=formats
+    )
+
+
+def workspace_frames(sources: dict) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """``(train, test)`` before any step from a workspace's ``{datasets, label,
+    merges}`` (labels joined, merges applied); test is None without a test set.
+    What an exported notebook / script starts from."""
+    try:
+        ws = Workspace.model_validate({"name": "notebook", **sources})
+    except ValidationError as exc:
+        raise KeyParamsError(f"invalid workspace sources: {exc}") from exc
+    train = raw_workspace_frame(ws, "train", labeled=True)
+    test = raw_workspace_frame(ws, "test", labeled=True) if ws.datasets.test else None
+    return train, test

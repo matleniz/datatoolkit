@@ -7,6 +7,11 @@
     states/step_<i>_<op>.json   fitted states too big to inline (e.g. impute_knn)
     manifest.json               written last: its presence marks a complete export
 
+``formats`` picks the data / code outputs (default parquet only):
+``parquet`` (above), ``csv`` (``processed/{train,test}.csv``), ``ipynb``
+(``code/pipeline.ipynb``) and ``py`` (``code/pipeline.py``), the last two
+replaying the pipeline through the notebook door (``workspace.notebook``).
+
 The manifest records the sources (path, size, sha256, mtime), the export time,
 every step with its fitted state (inline, or a side file with its sha256) and
 the engine / pandas / sklearn / pyarrow / python versions. Raw inputs are only
@@ -29,6 +34,7 @@ from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
 from dtk_engine.workspace.dataset import raw_workspace_frame
 from dtk_engine.workspace.models import Workspace
+from dtk_engine.workspace.notebook import notebook_json, script_text
 from dtk_engine.workspace.replay import replay_fitted
 from dtk_engine.workspace.store import JsonWorkspaceStore
 
@@ -37,6 +43,8 @@ GENERATOR = "dtk_engine"
 MANIFEST = "manifest.json"
 PROCESSED_DIR = "processed"
 STATES_DIR = "states"
+CODE_DIR = "code"
+FORMATS = ("parquet", "csv", "ipynb", "py")
 # A fitted state whose JSON exceeds this goes to a side file (impute_knn and
 # impute_iterative keep the whole train matrix in their state).
 INLINE_STATE_BYTES = 64 * 1024
@@ -150,6 +158,50 @@ def _write_parquet(df: pd.DataFrame, path: Path) -> dict:
     }
 
 
+def _write_csv(df: pd.DataFrame, path: Path) -> dict:
+    df = df.rename(columns=str)
+    df.to_csv(path, index=False)
+    return {
+        "path": str(path.relative_to(path.parent.parent)),
+        "rows": len(df),
+        "columns": [str(c) for c in df.columns],
+        "sha256": _sha256_file(path),
+    }
+
+
+def _write_text(text: str, path: Path) -> dict:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return {"path": str(path.relative_to(path.parent.parent)), "sha256": _sha256_file(path)}
+
+
+def _check_formats(formats: list[str] | None) -> list[str]:
+    formats = list(formats) if formats is not None else ["parquet"]
+    unknown = [f for f in formats if f not in FORMATS]
+    if unknown or not formats:
+        raise KeyParamsError(f"formats must be a non-empty subset of {list(FORMATS)}, got {formats}")
+    return formats
+
+
+def _write_outputs(
+    ws: Workspace, out: Path, frames: dict, formats: list[str], exported_at: str
+) -> dict:
+    outputs: dict[str, dict] = {}
+    if "parquet" in formats or "csv" in formats:
+        (out / PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
+    for role, df in frames.items():
+        if "parquet" in formats:
+            outputs[role] = _write_parquet(df, out / PROCESSED_DIR / f"{role}.parquet")
+        if "csv" in formats:
+            outputs[f"{role}_csv"] = _write_csv(df, out / PROCESSED_DIR / f"{role}.csv")
+    if "ipynb" in formats:
+        text = notebook_json(ws, exported_at)
+        outputs["notebook"] = _write_text(text, out / CODE_DIR / "pipeline.ipynb")
+    if "py" in formats:
+        outputs["script"] = _write_text(script_text(ws, exported_at), out / CODE_DIR / "pipeline.py")
+    return outputs
+
+
 def _step_entry(i: int, step, fitted: dict, out_dir: Path, inline_limit: int) -> dict:
     entry = {
         "index": i,
@@ -194,10 +246,11 @@ def _owned_paths(out_dir: Path) -> list[Path]:
             raise KeyParamsError(f"{manifest} lists a non-relative path: {rel!r}")
         path = (out_dir / rel).resolve()
         if not any(
-            path.is_relative_to(out_dir / d) for d in (PROCESSED_DIR, STATES_DIR)
+            path.is_relative_to(out_dir / d) for d in (PROCESSED_DIR, STATES_DIR, CODE_DIR)
         ):
             raise KeyParamsError(
-                f"{manifest} lists {rel!r}, outside {PROCESSED_DIR}/ and {STATES_DIR}/"
+                f"{manifest} lists {rel!r}, outside {PROCESSED_DIR}/, {STATES_DIR}/ "
+                f"and {CODE_DIR}/"
             )
         owned.append(path)
     return owned
@@ -218,12 +271,14 @@ def export_workspace(
     overwrite: bool = False,
     store=None,
     inline_state_bytes: int = INLINE_STATE_BYTES,
+    formats: list[str] | None = None,
 ) -> dict:
     """Export the workspace's processed train / test and its manifest; returns it.
 
     An existing export in ``out_dir`` (a ``manifest.json``) is refused unless
     ``overwrite``, which first removes the files that export listed.
     """
+    formats = _check_formats(formats)
     store = store if store is not None else JsonWorkspaceStore()
     ws = store.get(name)
     out = Path(out_dir).resolve()
@@ -233,7 +288,7 @@ def export_workspace(
     source_paths = {Path(s["path"]) for s in sources} | {
         Path(m["path"]) for m in merges
     }
-    targets = [out / MANIFEST, out / PROCESSED_DIR, out / STATES_DIR]
+    targets = [out / MANIFEST, out / PROCESSED_DIR, out / STATES_DIR, out / CODE_DIR]
     for src in source_paths:
         if any(src == t or t in src.parents for t in targets):
             raise KeyParamsError(
@@ -253,16 +308,16 @@ def export_workspace(
         test = raw_workspace_frame(ws, "test", labeled=True)
     train, test, fitted = replay_fitted(ws.steps, train, test)
 
-    (out / PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
-    outputs = {"train": _write_parquet(train, out / PROCESSED_DIR / "train.parquet")}
-    if test is not None:
-        outputs["test"] = _write_parquet(test, out / PROCESSED_DIR / "test.parquet")
+    exported_at = datetime.now(UTC).isoformat()
+    frames = {"train": train} if test is None else {"train": train, "test": test}
+    outputs = _write_outputs(ws, out, frames, formats, exported_at)
 
     manifest = {
         "generator": GENERATOR,
         "manifest_version": MANIFEST_VERSION,
         "workspace": ws.name,
-        "exported_at": datetime.now(UTC).isoformat(),
+        "exported_at": exported_at,
+        "formats": formats,
         "versions": versions(),
         "sources": sources,
         "label": ws.label.model_dump(mode="json"),
