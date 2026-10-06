@@ -155,7 +155,9 @@ _PROPOSE_STEPS = CommandSpec(
         "Destructive ops (remove, drop_columns, filter_rows, drop_low_variance, "
         "drop_correlated) wait for the user's review and return `pending: \"review\"`: "
         "poll get_command_status with the returned id. workspace and base_identity "
-        "default to the Studio context. The ack's identity is the new frame's."
+        "default to the Studio context. The ack's identity is the new frame's. An ok ack "
+        "means Studio has saved the steps (it awaits the PUT before acking): "
+        "export_workspace / get_workspace then see them."
     ),
     input_schema=_args(
         {
@@ -311,7 +313,8 @@ _WORKSPACE_COMMANDS = (
             "version; the note follows later renames) or the whole workspace, to "
             "keep a finding next to what it justifies (e.g. a study's result on the "
             "column it decided). text \"\" deletes the note. One undoable change. "
-            "workspace defaults to the Studio context. Read notes with get_notes."
+            "workspace defaults to the Studio context. Read notes with get_notes. An ok ack "
+            "means Studio has saved the note (it awaits the PUT before acking)."
         ),
         input_schema=_args(
             {
@@ -332,7 +335,8 @@ _WORKSPACE_COMMANDS = (
             "Keep a chat attachment in the workspace as a reference document (it then "
             "outlives the chat: list_documents / read_document in any session). Only "
             "when the user asks. One undoable change; the ack's document_id is the new "
-            "document's id. workspace defaults to the Studio context."
+            "document's id. workspace defaults to the Studio context. An ok ack means "
+            "Studio has saved it (it awaits the PUT before acking): list_documents sees it."
         ),
         input_schema=_args(
             {
@@ -354,7 +358,8 @@ _WORKSPACE_COMMANDS = (
             "an entry (update rather than duplicate). One undoable change; the ack's "
             "memory_id is the entry's id. Acked `bad_command: memory full` over the "
             "caps (forget first). workspace defaults to the Studio context. Read the "
-            "whole memory with get_memory."
+            "whole memory with get_memory. An ok ack means Studio has saved the entry "
+            "(it awaits the PUT before acking). Ids are never reused in a workspace."
         ),
         input_schema=_args(
             {
@@ -372,7 +377,8 @@ _WORKSPACE_COMMANDS = (
         tool_name="forget",
         description=(
             "Remove one entry from the workspace memory (it became wrong or done). "
-            "One undoable change. workspace defaults to the Studio context."
+            "One undoable change. workspace defaults to the Studio context. An ok ack "
+            "means Studio has saved the removal (it awaits the PUT before acking)."
         ),
         input_schema=_args({"memory_id": _MEMORY_ID, "workspace": _STR}, ("memory_id",)),
         context_fill=("workspace",),

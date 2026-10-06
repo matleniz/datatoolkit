@@ -158,6 +158,9 @@ class Workspace(_Strict):
     notes: WorkspaceNotes = Field(default_factory=WorkspaceNotes)
     documents: list[WorkspaceDocument] = Field(default_factory=list)
     memory: list[MemoryEntry] = Field(default_factory=list)
+    # Highest memory (``m``) / document (``d``) number ever handed out, so a
+    # forgotten or removed id is never reused (datatoolkit-issues#180).
+    id_counters: dict[Literal["m", "d"], int] = Field(default_factory=dict)
 
     @field_validator("steps")
     @classmethod
@@ -169,7 +172,7 @@ class Workspace(_Strict):
     def _document_ids(cls, docs: list[WorkspaceDocument]) -> list[WorkspaceDocument]:
         if len(docs) > DOCUMENTS_MAX:
             raise ValueError(f"at most {DOCUMENTS_MAX} documents per workspace")
-        return fill_document_ids(docs)
+        return docs
 
     @field_validator("memory")
     @classmethod
@@ -179,7 +182,15 @@ class Workspace(_Strict):
         chars = sum(len(e.text) for e in entries)
         if chars > MEMORY_CHARS_MAX:
             raise ValueError(f"memory is {chars} characters, over {MEMORY_CHARS_MAX}")
-        return fill_memory_ids(entries)
+        return entries
+
+    @model_validator(mode="after")
+    def _fill_entry_ids(self) -> Workspace:
+        self.id_counters = {
+            "d": _fill_ids(self.documents, "d", "document", self.id_counters.get("d", 0)),
+            "m": _fill_ids(self.memory, "m", "memory", self.id_counters.get("m", 0)),
+        }
+        return self
 
     @field_validator("variables")
     @classmethod
@@ -250,10 +261,10 @@ def fill_step_ids(steps: list[Step]) -> list[Step]:
     return steps
 
 
-def _fill_ids(items: list, prefix: str, what: str) -> list:
-    """Give each item without an id the next free ``<prefix><n>`` (above every
-    numbered id, so a removed item's id is not reused while a higher one
-    exists). Duplicate ids -> ValueError."""
+def _fill_ids(items: list, prefix: str, what: str, floor: int = 0) -> int:
+    """Give each item without an id the next ``<prefix><n>``, above every id in
+    ``items`` and above ``floor`` (the highest number ever handed out), so an id
+    is never reused. Duplicate ids -> ValueError. Returns the new highest number."""
     taken: set[str] = set()
     for item in items:
         if item.id is None:
@@ -262,16 +273,19 @@ def _fill_ids(items: list, prefix: str, what: str) -> list:
             raise ValueError(f"duplicate {what} id {item.id!r}")
         taken.add(item.id)
     n = max((int(i[1:]) for i in taken if i[1:].isdigit()), default=0)
+    n = max(n, floor)
     for item in items:
         if item.id is None:
             n += 1
             item.id = f"{prefix}{n}"
-    return items
+    return n
 
 
 def fill_document_ids(docs: list[WorkspaceDocument]) -> list[WorkspaceDocument]:
-    return _fill_ids(docs, "d", "document")
+    _fill_ids(docs, "d", "document")
+    return docs
 
 
 def fill_memory_ids(entries: list[MemoryEntry]) -> list[MemoryEntry]:
-    return _fill_ids(entries, "m", "memory")
+    _fill_ids(entries, "m", "memory")
+    return entries

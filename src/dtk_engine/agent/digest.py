@@ -161,11 +161,27 @@ def turn_note(ctx: dict, steps: list[dict], changes: dict | None, first: bool) -
 _NOTE_DOCUMENTS = 20  # documents named in an intro
 
 
-def intro_note(docs: list[dict], memory: list[dict] | None = None) -> str:
+def keys_note(keys: list[dict]) -> str:
+    """``[Analysis keys (run_key): missing_values, impute_benchmark, …]``: the
+    registry's ids, each followed by its title only when that says more than
+    the id (#180); "" with no keys."""
+    if not keys:
+        return ""
+    names = ", ".join(
+        k["id"] if k["title"].lower() == k["id"].replace("_", " ") else f"{k['id']} ({k['title']})"
+        for k in keys
+    )
+    return f"[Analysis keys (run_key; key_schema for params): {names}]\n\n"
+
+
+def intro_note(
+    docs: list[dict], memory: list[dict] | None = None, keys: list[dict] | None = None
+) -> str:
     """What a conversation's first turn on a workspace adds after the Studio
-    note: ``[Workspace documents (read_document): d1 dictionary.md, …]`` and the
-    agent memory, one entry per line (#179); "" when there is neither."""
-    out = ""
+    note: the analysis keys (#180), ``[Workspace documents (read_document): d1
+    dictionary.md, …]`` and the agent memory, one entry per line (#179); "" when
+    there is none of them."""
+    out = keys_note(keys or [])
     if docs:
         names = ", ".join(f"{d.get('id')} {d.get('name')}" for d in docs[:_NOTE_DOCUMENTS])
         more = len(docs) - _NOTE_DOCUMENTS
