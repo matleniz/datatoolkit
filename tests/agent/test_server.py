@@ -25,6 +25,7 @@ STATIC_TOOLS = {
     "align_report", "source_columns", "get_ui_context", "get_command_status",
     "list_attachments", "read_attachment", "preview_steps", "evaluate",
     "get_notes", "export_workspace", "list_documents", "read_document",
+    "get_memory",
 }
 
 

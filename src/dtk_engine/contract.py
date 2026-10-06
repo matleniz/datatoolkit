@@ -42,7 +42,15 @@ from .workspace.documents import (  # noqa: F401  (the upload-dir guard, for htt
     upload_dir,
 )
 from .workspace.export import export_workspace as _export
-from .workspace.models import Step, WorkspaceDocument, fill_document_ids, fill_step_ids
+from .workspace.models import (
+    MEMORY_CHARS_MAX,
+    MemoryEntry,
+    Step,
+    WorkspaceDocument,
+    fill_document_ids,
+    fill_memory_ids,
+    fill_step_ids,
+)
 from .workspace.store import WorkspaceNotFoundError
 
 _SHAPES = LRU(max_entries=256)
@@ -205,6 +213,7 @@ def get_workspace(name: str) -> dict:
 
 _STEPS = TypeAdapter(list[Step])
 _DOCUMENTS = TypeAdapter(list[WorkspaceDocument])
+_MEMORY = TypeAdapter(list[MemoryEntry])
 
 
 def _stored_field(name: str, field: str, adapter: TypeAdapter, fill) -> list[dict]:
@@ -225,6 +234,18 @@ def _stored_field(name: str, field: str, adapter: TypeAdapter, fill) -> list[dic
 def workspace_steps(name: str) -> list[dict]:
     """The stored workspace's steps (ids filled), cheap: the agent's change digest."""
     return _stored_field(name, "steps", _STEPS, fill_step_ids)
+
+
+def workspace_memory(name: str) -> list[dict]:
+    """The stored workspace's agent memory ``[{id, text, kind, updated_at}]``
+    (cheap read, datatoolkit-issues#179)."""
+    return _stored_field(name, "memory", _MEMORY, fill_memory_ids)
+
+
+def memory_summary(name: str) -> dict:
+    """``{entries, chars, max_chars}``: what the agent's get_memory answers."""
+    entries = workspace_memory(name)
+    return {"entries": entries, "chars": sum(len(e["text"]) for e in entries), "max_chars": MEMORY_CHARS_MAX}
 
 
 def save_workspace(workspace: dict) -> dict:

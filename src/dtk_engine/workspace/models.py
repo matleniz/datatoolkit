@@ -16,6 +16,10 @@ STEP_ID_PATTERN = r"^s[0-9a-z-]{1,32}$"
 NOTE_MAX = 4000  # characters per note
 DOCUMENT_ID_PATTERN = r"^d[0-9a-z-]{1,32}$"
 DOCUMENTS_MAX = 50
+MEMORY_ID_PATTERN = r"^m[0-9a-z-]{1,32}$"
+MEMORY_ENTRY_MAX = 500  # characters per memory entry
+MEMORY_ENTRIES_MAX = 100
+MEMORY_CHARS_MAX = 8000  # all entries' text (~2k tokens: injected in a first turn)
 VariableStat = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
 
 
@@ -133,6 +137,16 @@ class WorkspaceDocument(_Strict):
     note: str | None = Field(default=None, max_length=NOTE_MAX)
 
 
+class MemoryEntry(_Strict):
+    """One short fact the in-Studio agent keeps across chat sessions
+    (datatoolkit-issues#179); ``id`` is filled like document ids."""
+
+    id: str | None = Field(default=None, pattern=MEMORY_ID_PATTERN)
+    text: str = Field(min_length=1, max_length=MEMORY_ENTRY_MAX)
+    kind: Literal["fact", "decision", "preference", "todo"] = "fact"
+    updated_at: str | None = None
+
+
 class Workspace(_Strict):
     name: str = Field(pattern=NAME_PATTERN)
     datasets: Datasets
@@ -143,6 +157,7 @@ class Workspace(_Strict):
     steps: list[Step] = Field(default_factory=list)
     notes: WorkspaceNotes = Field(default_factory=WorkspaceNotes)
     documents: list[WorkspaceDocument] = Field(default_factory=list)
+    memory: list[MemoryEntry] = Field(default_factory=list)
 
     @field_validator("steps")
     @classmethod
@@ -155,6 +170,16 @@ class Workspace(_Strict):
         if len(docs) > DOCUMENTS_MAX:
             raise ValueError(f"at most {DOCUMENTS_MAX} documents per workspace")
         return fill_document_ids(docs)
+
+    @field_validator("memory")
+    @classmethod
+    def _memory_caps(cls, entries: list[MemoryEntry]) -> list[MemoryEntry]:
+        if len(entries) > MEMORY_ENTRIES_MAX:
+            raise ValueError(f"at most {MEMORY_ENTRIES_MAX} memory entries")
+        chars = sum(len(e.text) for e in entries)
+        if chars > MEMORY_CHARS_MAX:
+            raise ValueError(f"memory is {chars} characters, over {MEMORY_CHARS_MAX}")
+        return fill_memory_ids(entries)
 
     @field_validator("variables")
     @classmethod
@@ -225,20 +250,28 @@ def fill_step_ids(steps: list[Step]) -> list[Step]:
     return steps
 
 
-def fill_document_ids(docs: list[WorkspaceDocument]) -> list[WorkspaceDocument]:
-    """Give each document without an id the next free ``d<n>`` (above every
-    numbered id, so a removed document's id is not reused while a higher one
+def _fill_ids(items: list, prefix: str, what: str) -> list:
+    """Give each item without an id the next free ``<prefix><n>`` (above every
+    numbered id, so a removed item's id is not reused while a higher one
     exists). Duplicate ids -> ValueError."""
     taken: set[str] = set()
-    for doc in docs:
-        if doc.id is None:
+    for item in items:
+        if item.id is None:
             continue
-        if doc.id in taken:
-            raise ValueError(f"duplicate document id {doc.id!r}")
-        taken.add(doc.id)
+        if item.id in taken:
+            raise ValueError(f"duplicate {what} id {item.id!r}")
+        taken.add(item.id)
     n = max((int(i[1:]) for i in taken if i[1:].isdigit()), default=0)
-    for doc in docs:
-        if doc.id is None:
+    for item in items:
+        if item.id is None:
             n += 1
-            doc.id = f"d{n}"
-    return docs
+            item.id = f"{prefix}{n}"
+    return items
+
+
+def fill_document_ids(docs: list[WorkspaceDocument]) -> list[WorkspaceDocument]:
+    return _fill_ids(docs, "d", "document")
+
+
+def fill_memory_ids(entries: list[MemoryEntry]) -> list[MemoryEntry]:
+    return _fill_ids(entries, "m", "memory")
