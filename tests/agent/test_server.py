@@ -24,7 +24,7 @@ STATIC_TOOLS = {
     "list_workspaces", "get_workspace", "get_rows", "get_profiles", "preview_step",
     "align_report", "source_columns", "get_ui_context", "get_command_status",
     "list_attachments", "read_attachment", "preview_steps", "evaluate",
-    "get_notes", "export_workspace",
+    "get_notes", "export_workspace", "list_documents", "read_document",
 }
 
 

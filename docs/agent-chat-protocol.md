@@ -317,3 +317,39 @@ sources, label join or merges, as #86). Upload with the existing
   policy's data framing). No tool attaches, writes, or turns an attachment
   into a workspace source; tabular attachments are read through the existing
   tools, whose path guard already allows the upload dir.
+- `keep_attachment {attachment_id, note?, workspace?}` (a Studio UI command, not
+  an attachment tool) keeps an attachment as a **workspace document** (below):
+  Studio adds it as one undoable change and acks `{id, ok, document_id}`.
+
+### Workspace documents (datatoolkit-issues#178)
+
+Reference files (data dictionary, protocol, paper) kept **with a workspace**,
+across chat sessions: `Workspace.documents: [{id, name, path, mime, size, kind,
+added_at, note}]` (`id` `d<n>` filled by the engine; at most 50). `path` is an
+upload ref (`PUT /api/uploads/{filename}`), never copied: duplicate / rename
+keep the list, deleting a workspace leaves the uploads. `kind`: `text` (UTF-8
+up to 1 MB), `pdf` (text extracted with the optional `pdf` extra, pypdf),
+`table` (read with the usual tools on its source spec), `other` (listed only).
+Every read re-resolves `path` under the upload dir.
+
+| Route | Body / query | Answer |
+|---|---|---|
+| `POST /api/workspaces/{name}/documents` | `{path, name?, note?}` | `{document, workspace}` (saved) |
+| `DELETE /api/workspaces/{name}/documents/{id}` | none | `{workspace}`; the upload stays |
+| `GET /api/workspaces/{name}/documents` | none | `[document, …]` |
+| `GET /api/workspaces/{name}/documents/{id}/text` | `offset?`, `max_chars?` | `{id, name, kind, offset, text, total_chars, next_offset}` (PDF pages marked `--- page N ---`); `422 DocumentNotReadable` for table / other, a PDF without the extra or an unreadable PDF |
+| `GET /api/workspaces/{name}/documents/{id}/file` | none | the raw file (`Content-Type` = `mime`, inline) |
+| `POST /api/documents/describe` | `{path, name?}` | an entry without `id`, for a front that edits `documents` itself and `PUT`s the workspace |
+
+A `PUT` of the workspace may also add / edit / remove entries: a path not
+already stored must be under the upload dir (`422 NotAnUploadError`).
+
+- MCP tools: `list_documents(workspace?, session?)` (`{id, name, kind, mime,
+  size, note}`, plus `source` for a table) and `read_document(id, offset?,
+  max_chars?)` (same framing and `DTK_AGENT_MAX_CHARS` cap as
+  `read_attachment`; a table answers with its `source` spec).
+- A conversation's first turn on a workspace (a new adapter = a new
+  conversation) names them after the `[Studio: …]` note: `[Workspace
+  documents (read_document): d1 dictionary.md, d2 protocol.pdf]`.
+- Export: the manifest lists them (`documents: [{id, name, path, mime, size,
+  note, sha256 | missing}]`), files not copied.

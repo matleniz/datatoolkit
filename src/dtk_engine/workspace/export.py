@@ -121,6 +121,18 @@ def _merges(ws: Workspace) -> list[dict]:
     return out
 
 
+def _documents(ws: Workspace) -> list[dict]:
+    """Workspace documents, listed (not copied); a missing file is flagged, not fatal."""
+    out = []
+    for doc in ws.documents:
+        entry = doc.model_dump(mode="json", exclude={"kind", "added_at"})
+        try:
+            entry["sha256"] = file_provenance(doc.path)["sha256"]
+        except (SourceError, OSError):
+            entry["missing"] = True
+        out.append(entry)
+    return out
+
 
 def versions() -> dict:
     """Versions of everything that shapes the output."""
@@ -323,6 +335,7 @@ def export_workspace(
         "label": ws.label.model_dump(mode="json"),
         "merges": merges,
         "variables": [v.model_dump(mode="json") for v in ws.variables],
+        "documents": _documents(ws),
         "steps": [
             _step_entry(i, step, f, out, inline_state_bytes)
             for i, (step, f) in enumerate(zip(ws.steps, fitted, strict=True))

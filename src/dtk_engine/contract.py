@@ -9,6 +9,8 @@ Contract surface (fronts call these; inputs/outputs are plain JSON)::
     list_transforms / transform_schema
     preview_workspace
     export_workspace
+    describe_document / list_documents / add_document / remove_document /
+        document_text / document_path  (workspace documents)
     workspace_rows / column_profiles / preview_step / align_report  (Studio grid)
 """
 
@@ -29,10 +31,18 @@ from .registry import all_keys, get_key
 from .sources import SourceSpec, load
 from .transform_registry import get_transform, transform_catalog
 from .workspace import JsonWorkspaceStore, Workspace
+from .workspace import documents as _documents
 from .workspace import inspect as _inspect
 from .workspace.dataset import parse_workspace, preview, workspace_frame, workspace_key
+from .workspace.documents import (  # noqa: F401  (the upload-dir guard, for http and agent)
+    NotAnUploadError,
+    detect_kind,
+    resolve_upload,
+    source_spec,
+    upload_dir,
+)
 from .workspace.export import export_workspace as _export
-from .workspace.models import Step, fill_step_ids
+from .workspace.models import Step, WorkspaceDocument, fill_document_ids, fill_step_ids
 from .workspace.store import WorkspaceNotFoundError
 
 _SHAPES = LRU(max_entries=256)
@@ -194,29 +204,50 @@ def get_workspace(name: str) -> dict:
 
 
 _STEPS = TypeAdapter(list[Step])
+_DOCUMENTS = TypeAdapter(list[WorkspaceDocument])
 
 
-def workspace_steps(name: str) -> list[dict]:
-    """The stored workspace's steps (ids filled), without validating or loading
-    its sources: the cheap read behind the agent's change digest."""
+def _stored_field(name: str, field: str, adapter: TypeAdapter, fill) -> list[dict]:
+    """One list field of the stored workspace (ids filled), without validating
+    the rest or loading its sources: the cheap reads behind the agent."""
     path = JsonWorkspaceStore().path_of(name)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise WorkspaceNotFoundError(name) from None
     try:
-        steps = fill_step_ids(_STEPS.validate_python(raw.get("steps") or []))
+        items = fill(adapter.validate_python(raw.get(field) or []))
     except (ValidationError, ValueError) as exc:
-        raise KeyParamsError(f"invalid steps in workspace {name!r}: {exc}") from exc
-    return [step.model_dump(mode="json") for step in steps]
+        raise KeyParamsError(f"invalid {field} in workspace {name!r}: {exc}") from exc
+    return [item.model_dump(mode="json") for item in items]
+
+
+def workspace_steps(name: str) -> list[dict]:
+    """The stored workspace's steps (ids filled), cheap: the agent's change digest."""
+    return _stored_field(name, "steps", _STEPS, fill_step_ids)
 
 
 def save_workspace(workspace: dict) -> dict:
     """Validate (shape, step ops and params) and store (create or overwrite);
-    returns the normalized dict."""
+    returns the normalized dict. A document path not already in the stored
+    workspace must be a file under the upload dir (KeyParamsError otherwise)."""
     parsed = parse_workspace(workspace)
-    JsonWorkspaceStore().save(parsed)
+    store = JsonWorkspaceStore()
+    _check_new_documents(store, parsed)
+    store.save(parsed)
     return parsed.model_dump(mode="json")
+
+
+def _check_new_documents(store: JsonWorkspaceStore, ws: Workspace) -> None:
+    if not ws.documents:
+        return
+    try:
+        known = {d.path for d in store.get(ws.name).documents}
+    except WorkspaceNotFoundError:
+        known = set()
+    for doc in ws.documents:
+        if doc.path not in known:
+            _documents.resolve_upload(doc.path)
 
 
 def preview_workspace(ws: dict, role: str, head_rows: int = 5) -> dict:
@@ -267,6 +298,78 @@ def export_workspace(
     UnknownTransformError, invalid step params -> KeyParamsError.
     """
     return _export(name, out_dir, overwrite=overwrite, formats=formats)
+
+
+# Workspace documents (datatoolkit-issues#178): upload refs kept with a
+# workspace, read through ``workspace.documents`` (path re-checked each read).
+
+
+def describe_document(path: str, name: str | None = None) -> dict:
+    """A document entry (no ``id``) for an uploaded file; NotAnUploadError
+    (a KeyParamsError) when ``path`` is not a file under the upload dir."""
+    return _documents.describe(path, name)
+
+
+def list_documents(workspace: str) -> list[dict]:
+    """The stored workspace's documents (cheap read: the rest is not validated)."""
+    return _stored_field(workspace, "documents", _DOCUMENTS, fill_document_ids)
+
+
+def document_summaries(workspace: str) -> list[dict]:
+    """What an agent lists: ``{id, name, kind, mime, size, note}``, plus the
+    ``source`` spec of a table document (no path otherwise)."""
+    return [_documents.summary(d) for d in list_documents(workspace)]
+
+
+def add_document(
+    workspace: str, path: str, name: str | None = None, note: str | None = None
+) -> dict:
+    """Add an uploaded file to the stored workspace; ``{document, workspace}``."""
+    entry = {**describe_document(path, name), "note": note or None}
+
+    def change(ws: Workspace) -> Workspace:
+        data = ws.model_dump(mode="json")
+        data["documents"] = [*data["documents"], entry]
+        return _validated(data)
+
+    saved = JsonWorkspaceStore().update(workspace, change)
+    return {"document": saved.documents[-1].model_dump(mode="json"), "workspace": saved.model_dump(mode="json")}
+
+
+def remove_document(workspace: str, doc_id: str) -> dict:
+    """Drop a document from the stored workspace (the upload stays); ``{workspace}``."""
+
+    def change(ws: Workspace) -> Workspace:
+        _documents.find([d.model_dump() for d in ws.documents], doc_id)
+        return ws.model_copy(update={"documents": [d for d in ws.documents if d.id != doc_id]})
+
+    return {"workspace": JsonWorkspaceStore().update(workspace, change).model_dump(mode="json")}
+
+
+def _validated(data: dict) -> Workspace:
+    try:
+        return Workspace.model_validate(data)
+    except ValidationError as exc:
+        raise KeyParamsError(str(exc)) from exc
+
+
+def _document(workspace: str, doc_id: str) -> dict:
+    return _documents.find(list_documents(workspace), doc_id)
+
+
+def document_text(
+    workspace: str, doc_id: str, offset: int = 0, max_chars: int | None = None
+) -> dict:
+    """``{id, name, kind, offset, text, total_chars, next_offset}`` of a text or
+    PDF document (pages marked ``--- page N ---``); DocumentNotReadable (a
+    KeyParamsError) for table / other, or a PDF without the ``pdf`` extra."""
+    return _documents.text_slice(_document(workspace, doc_id), offset, max_chars)
+
+
+def document_path(workspace: str, doc_id: str) -> tuple[Path, dict]:
+    """The document's file (re-resolved under the upload dir) and its entry."""
+    doc = _document(workspace, doc_id)
+    return _documents.resolve_upload(doc["path"]), doc
 
 
 # Studio grid (unsaved workspace dicts; nothing written to the store).

@@ -35,7 +35,7 @@ from mcp.server.lowlevel import Server
 
 from dtk_engine import contract
 from dtk_engine.agent import attachments as _attachments
-from dtk_engine.agent.digest import TRACKER, turn_note
+from dtk_engine.agent.digest import TRACKER, intro_note, turn_note
 from dtk_engine.agent.models import FREE_TEXT, ModelList
 from dtk_engine.agent.policy import AuditLog
 from dtk_engine.agent.ports import LocalUiPort
@@ -153,6 +153,8 @@ class ChatSession:
         self._turns = itertools.count(1)
         self._asks = itertools.count(1)
         self._permissions: dict[str, asyncio.Future] = {}
+        # Workspaces this conversation was introduced to (reset with the adapter).
+        self.introduced: set[str] = set()
 
     # -- what adapters call ----------------------------------------------
     def emit(self, type_: str, **fields: Any) -> None:
@@ -443,6 +445,7 @@ class AgentHub:
             adapter = pack.create(chat.model)
             await adapter.start(chat)
             chat.adapter = adapter
+            chat.introduced = set()  # a new conversation: its first turn gets the intro
         return chat.adapter
 
     async def _run(self, chat: ChatSession, text: str, picked: list[dict]) -> None:
@@ -484,7 +487,19 @@ class AgentHub:
             return ""
         key = (ctx.get("session") or chat.session, name)
         first = TRACKER.seen(key) is None
-        return turn_note(ctx, steps, TRACKER.changes(key, steps), first)
+        note = turn_note(ctx, steps, TRACKER.changes(key, steps), first)
+        return note + await self._intro_note(chat, name)
+
+    async def _intro_note(self, chat: ChatSession, name: str) -> str:
+        """What a conversation gets once per workspace: its documents (#178)."""
+        if name in chat.introduced:
+            return ""
+        try:
+            docs = await asyncio.to_thread(contract.list_documents, name)
+        except (KeyError, KeyParamsError, OSError, ValueError):
+            return ""
+        chat.introduced.add(name)
+        return intro_note(docs)
 
     async def cancel(self, session: str) -> bool:
         """Stop the running turn (the adapter first, then the task); False when idle."""

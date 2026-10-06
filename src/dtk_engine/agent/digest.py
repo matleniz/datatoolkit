@@ -156,6 +156,22 @@ def turn_note(ctx: dict, steps: list[dict], changes: dict | None, first: bool) -
     return "\n".join(lines) + "]\n\n"
 
 
+# -- once per conversation and workspace (datatoolkit-issues#178) ------------
+
+_NOTE_DOCUMENTS = 20  # documents named in an intro
+
+
+def intro_note(docs: list[dict]) -> str:
+    """What a conversation's first turn on a workspace adds after the Studio
+    note: ``[Workspace documents (read_document): d1 dictionary.md, …]``, or ""."""
+    if not docs:
+        return ""
+    names = ", ".join(f"{d.get('id')} {d.get('name')}" for d in docs[:_NOTE_DOCUMENTS])
+    more = len(docs) - _NOTE_DOCUMENTS
+    tail = f", … {more} more (list_documents)" if more > 0 else ""
+    return f"[Workspace documents (read_document): {names}{tail}]\n\n"
+
+
 # -- engine-side data identity (mirrors Studio's dataIdentity.ts) -------------
 
 

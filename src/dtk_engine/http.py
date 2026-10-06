@@ -23,7 +23,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from starlette.requests import HTTPConnection
 from starlette.routing import Route
@@ -200,6 +200,48 @@ async def post_export(name: str, request: Request) -> dict:
     )
 
 
+# -- workspace documents (datatoolkit-issues#178) --
+
+
+@workspaces_router.get("/workspaces/{name}/documents")
+def get_documents(name: str) -> list[dict]:
+    return contract.list_documents(name)
+
+
+@workspaces_router.post("/workspaces/{name}/documents")
+async def post_document(name: str, request: Request) -> dict:
+    body = await _body(request, "path", message="body must be {path, name?, note?}")
+    return await run_in_threadpool(
+        contract.add_document, name, body["path"], body.get("name"), body.get("note")
+    )
+
+
+@workspaces_router.delete("/workspaces/{name}/documents/{doc_id}")
+def delete_document(name: str, doc_id: str) -> dict:
+    return contract.remove_document(name, doc_id)
+
+
+@workspaces_router.get("/workspaces/{name}/documents/{doc_id}/text")
+async def get_document_text(
+    name: str, doc_id: str, offset: int = 0, max_chars: int | None = None
+) -> dict:
+    return await run_in_threadpool(contract.document_text, name, doc_id, offset, max_chars)
+
+
+@workspaces_router.get("/workspaces/{name}/documents/{doc_id}/file")
+def get_document_file(name: str, doc_id: str) -> FileResponse:
+    path, doc = contract.document_path(name, doc_id)
+    return FileResponse(
+        path, media_type=doc["mime"], filename=doc["name"], content_disposition_type="inline"
+    )
+
+
+@uploads_router.post("/documents/describe")
+async def post_describe_document(request: Request) -> dict:
+    body = await _body(request, "path", message="body must be {path, name?}")
+    return await run_in_threadpool(contract.describe_document, body["path"], body.get("name"))
+
+
 @studio_router.post("/source/columns")
 async def post_source_columns(request: Request) -> list[dict]:
     body = await _body(request, "spec", message="body must be {spec: ...}")
@@ -367,6 +409,8 @@ class UiAck(BaseModel):
     # and on ``stale`` the targeted steps that moved: ``{id, reason, step?}``.
     added_ids: list[str] | None = None
     stale: list[dict[str, Any]] | None = None
+    # keep_attachment (datatoolkit-issues#178): id of the kept document.
+    document_id: str | None = None
 
     @model_validator(mode="after")
     def _one_kind(self) -> UiAck:

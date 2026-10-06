@@ -323,6 +323,25 @@ _WORKSPACE_COMMANDS = (
         context_fill=("workspace",),
     ),
     CommandSpec(
+        type="keep_attachment",
+        tool_name="keep_attachment",
+        description=(
+            "Keep a chat attachment in the workspace as a reference document (it then "
+            "outlives the chat: list_documents / read_document in any session). Only "
+            "when the user asks. One undoable change; the ack's document_id is the new "
+            "document's id. workspace defaults to the Studio context."
+        ),
+        input_schema=_args(
+            {
+                "attachment_id": {**_NAME, "description": "Attachment id (list_attachments)."},
+                "note": {"type": "string", "maxLength": NOTE_MAX},
+                "workspace": _STR,
+            },
+            ("attachment_id",),
+        ),
+        context_fill=("workspace",),
+    ),
+    CommandSpec(
         type="add_variable",
         tool_name="add_variable",
         description=(
