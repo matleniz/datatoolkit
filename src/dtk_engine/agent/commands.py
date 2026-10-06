@@ -59,6 +59,7 @@ CHART_AGGS = ["count", "mean", "sum", "median"]
 # Web ``FILTER_OPS`` (the ``filter_rows`` op's condition ops).
 FILTER_OPS = ["eq", "ne", "gt", "ge", "lt", "le", "isin", "notin", "isna", "notna"]
 CHART_NAME_MAX = 64
+NOTE_MAX = 4000  # engine ``workspace.models.NOTE_MAX``
 
 _COLUMN_OR_NULL = {"type": ["string", "null"], "minLength": 1}
 _CHART_PARAMS = {
@@ -299,6 +300,28 @@ _SETTING_COMMANDS = (
 )
 
 _WORKSPACE_COMMANDS = (
+    CommandSpec(
+        type="set_note",
+        tool_name="set_note",
+        description=(
+            "Write a note on a step (by id), a column (its name at the latest "
+            "version; the note follows later renames) or the whole workspace, to "
+            "keep a finding next to what it justifies (e.g. a study's result on the "
+            "column it decided). text \"\" deletes the note. One undoable change. "
+            "workspace defaults to the Studio context. Read notes with get_notes."
+        ),
+        input_schema=_args(
+            {
+                "kind": {"type": "string", "enum": ["step", "column", "workspace"]},
+                "step_id": {**_STEP_ID, "description": "kind step: the step id."},
+                "column": {**_NAME, "description": "kind column: the column name."},
+                "text": {"type": "string", "maxLength": NOTE_MAX},
+                "workspace": _STR,
+            },
+            ("kind", "text"),
+        ),
+        context_fill=("workspace",),
+    ),
     CommandSpec(
         type="add_variable",
         tool_name="add_variable",

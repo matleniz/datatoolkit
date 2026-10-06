@@ -48,6 +48,7 @@ EXAMPLES: dict[str, dict] = {
     "set_dist_by": {"by": None},
     "set_tool_params": {"tool": "outliers", "params": {"method": "iqr"}, "column": "fare"},
     "add_variable": {"name": "mean_age", "stat": "mean", "column": "age"},
+    "set_note": {"kind": "column", "column": "age", "text": "imputed once per patient"},
     "draft_chart": {"params": {"chart": "scatter", "x": "age", "y": "fare", "log_y": True}},
     "add_chart": {"name": "Age vs fare", "params": {"chart": "scatter", "x": "age", "y": "fare"}},
     "edit_step": {"index": 0},

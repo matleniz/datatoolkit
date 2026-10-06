@@ -286,6 +286,16 @@ class _Tools:
         )
         identity = None if steps else _identity(view, ws)
         return policy.frame(data, identity=identity)
+    async def get_notes(self, args: dict) -> dict:
+        view = await self._view(args)
+        ws = await self._workspace_dict(view)
+        resolved = await _compute(contract.column_notes, ws, view.role, view.version)
+        data = {
+            "workspace": (ws.get("notes") or {}).get("workspace"),
+            "steps": {s["id"]: s["note"] for s in ws.get("steps") or [] if s.get("note")},
+            "columns": resolved["notes"],
+        }
+        return policy.frame(data, identity=_identity(view, ws))
 
     async def align_report(self, args: dict) -> dict:
         view = await self._view(args, use_version=False)
@@ -493,6 +503,10 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
              },
              **_VIEW,
          }, ("exprs",)), t.evaluate, True),
+        ("get_notes",
+         ("The user's and your notes: on the workspace, on steps (by id) and on "
+          "columns (names at the version, renames followed). Write with set_note."),
+         _schema(dict(_VIEW)), t.get_notes, True),
         ("align_report",
          ("Train / test column alignment after the workspace's steps; matching columns "
           "are listed by name only unless detail."),

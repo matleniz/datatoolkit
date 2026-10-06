@@ -727,6 +727,37 @@ def _formula(frame: pd.DataFrame, expr: str) -> Any:
         return _evaluate_expr(frame, expr)
     except (ValueError, KeyError, TypeError) as exc:
         raise KeyParamsError(f"expression {expr!r}: {exc}") from exc
+# Ops that rename columns in place (same count, same order): notes follow them.
+RENAME_OPS = frozenset({"rename", "rename_columns_bulk"})
+
+
+def column_notes(ws: Workspace, role: str, version: int | None = None) -> dict:
+    """Column notes at ``version``: ``{notes: {name: text}, keys: {name: key}}``.
+
+    A note is stored under the column's origin key; ``keys`` maps each column
+    whose name at ``version`` differs from its key (renamed by a rename-like
+    step), so a front writes a note on column ``X`` under ``keys.get(X, X)``.
+    """
+    _check_role(role)
+    steps = ws.steps[: resolve_version(len(ws.steps), version)]
+    key_of: dict[str, str] = {}
+    for i, step in enumerate(steps):
+        if step.op not in RENAME_OPS or step.target not in ("both", role):
+            continue
+        before = [str(c) for c in _replay_role(ws, role, ws.steps[:i]).columns]
+        after = [str(c) for c in _replay_role(ws, role, ws.steps[: i + 1]).columns]
+        if len(before) != len(after):
+            continue
+        key_of = {
+            a: key_of.get(b, b) for b, a in zip(before, after, strict=True)
+            if key_of.get(b, b) != a
+        }
+    names = [str(c) for c in _replay_role(ws, role, steps).columns]
+    texts = ws.notes.columns
+    return {
+        "notes": {n: texts[key_of.get(n, n)] for n in names if key_of.get(n, n) in texts},
+        "keys": {n: key_of[n] for n in names if n in key_of},
+    }
 
 
 def _label_name(ws: Workspace) -> str | None:

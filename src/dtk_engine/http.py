@@ -240,6 +240,14 @@ async def post_preview_step(request: Request) -> dict:
     )
 
 
+@studio_router.post("/workspace/column-notes")
+async def post_column_notes(request: Request) -> dict:
+    body = await _body(request, "workspace")
+    return await run_in_threadpool(
+        contract.column_notes, body["workspace"], body.get("role", "train"), body.get("version")
+    )
+
+
 @studio_router.post("/workspace/align")
 async def post_align(request: Request) -> dict:
     body = await _body(request, "workspace")

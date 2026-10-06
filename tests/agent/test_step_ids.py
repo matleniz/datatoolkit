@@ -238,3 +238,26 @@ def test_turn_note_lists_steps_then_only_changes():
     assert "(1 now): changed s2 log1p [train] columns=Fare; removed s1 (scale)." in moved
     long = step_line({"id": "s9", "op": "onehot", "params": {"columns": [f"c{i}" for i in range(50)]}})
     assert long == "s9 onehot columns=c0,c1,c2+47"
+
+
+# -- notes (#152) ------------------------------------------------------------
+
+
+async def test_get_notes_resolves_columns_and_steps(client, bridge):
+    rename = {"op": "rename", "target": "both", "params": {"mapping": {"Age": "age"}}}
+    ws = _ws([{**SCALE, "note": "scaled for knn"}, rename])
+    ws["notes"] = {"workspace": "study", "columns": {"Age": "imputed once per patient"}}
+    contract.save_workspace(ws)
+    bridge.put_context(_context(version=2, latest=2))
+    out = _payload(await client.call_tool("get_notes", {}))["data"]
+    assert out == {
+        "workspace": "study",
+        "steps": {"s1": "scaled for knn"},
+        "columns": {"age": "imputed once per patient"},
+    }
+
+
+def test_step_line_marks_a_note():
+    from dtk_engine.agent.digest import step_line
+
+    assert step_line({**SCALE, "id": "s1", "note": "x"}) == "s1 scale (note) columns=Age"
