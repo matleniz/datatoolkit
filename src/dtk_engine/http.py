@@ -411,6 +411,8 @@ class UiAck(BaseModel):
     stale: list[dict[str, Any]] | None = None
     # keep_attachment (datatoolkit-issues#178): id of the kept document.
     document_id: str | None = None
+    # remember (datatoolkit-issues#179): id of the stored memory entry.
+    memory_id: str | None = None
 
     @model_validator(mode="after")
     def _one_kind(self) -> UiAck:
