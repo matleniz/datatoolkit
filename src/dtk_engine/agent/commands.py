@@ -12,8 +12,11 @@ adding an entry here and nothing else.
 Every command is acked ``{id, ok, error?, identity?}``; Studio applies it as one
 undoable change (Undo in its toast) and highlights what it touched. Failures
 Studio reports: ``bad_command: <why>``, ``busy``, ``frame_unavailable: <why>``,
-``save_failed: <why>``, ``stale``, ``rejected``; the bridge adds ``no_studio``
-and ``timeout``.
+``save_failed: <why>``, ``stale`` (``stale: <why>`` plus ``stale: [{id, reason}]``
+for an id-based ``propose_steps``), ``rejected``; the bridge adds ``no_studio``
+and ``timeout``. ``propose_steps`` by step id also carries ``base_steps``
+(``{id: {op, target, params}}`` the agent last saw, filled by the tool layer):
+Studio applies it while every targeted id exists unchanged (datatoolkit-issues#153).
 """
 
 from __future__ import annotations
@@ -37,6 +40,8 @@ _STEP = {
     },
     "required": ["op"],
 }
+_STEP_ID = {"type": "string", "description": "Step id (stable across edits)."}
+_INDEX = {"type": "integer", "minimum": 0, "description": "Legacy: step position."}
 # Studio's dock windows (web ``TOOL_IDS``).
 WINDOWS = [
     "compare", "corr", "dist", "missing", "outliers", "target", "drift",
@@ -138,7 +143,11 @@ _PROPOSE_STEPS = CommandSpec(
     type="propose_steps",
     tool_name="propose_steps",
     description=(
-        "Propose workspace steps to the user in Studio. `ops` apply in order. "
+        "Propose workspace steps to the user in Studio. `ops` apply in order; target "
+        "steps by `id` (from get_workspace / workspace_changes): an id-based proposal "
+        "applies even if the user edited other steps meanwhile, and is acked `stale` "
+        "(with `stale: [{id, reason}]`) only if a step it targets was removed or "
+        "changed. `add` appends; the ack's `added_ids` are the new steps' ids. "
         "Destructive ops (remove, drop_columns, filter_rows, drop_low_variance, "
         "drop_correlated) wait for the user's review and return `pending: \"review\"`: "
         "poll get_command_status with the returned id. workspace and base_identity "
@@ -151,14 +160,16 @@ _PROPOSE_STEPS = CommandSpec(
                 "minItems": 1,
                 "items": {
                     "type": "object",
-                    "description": "Exactly one of add / replace / remove.",
+                    "description": (
+                        "Exactly one of add / replace / remove; replace / remove take "
+                        "the step `id` (index: legacy, position-based)."
+                    ),
                     "properties": {
                         "add": _args({"step": _STEP}, ("step",)),
                         "replace": _args(
-                            {"index": {"type": "integer", "minimum": 0}, "step": _STEP},
-                            ("index", "step"),
+                            {"id": _STEP_ID, "index": _INDEX, "step": _STEP}, ("step",)
                         ),
-                        "remove": _args({"index": {"type": "integer", "minimum": 0}}, ("index",)),
+                        "remove": _args({"id": _STEP_ID, "index": _INDEX}),
                     },
                 },
             },

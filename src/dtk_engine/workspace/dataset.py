@@ -53,7 +53,7 @@ def workspace_key(
         "label": ws.label.model_dump(mode="json"),
         "merges": [m.model_dump(mode="json") for m in ws.merges],
         "datasets": d.model_dump(mode="json"),
-        "steps": [s.model_dump(mode="json") for s in steps],
+        "steps": [s.model_dump(mode="json", exclude={"id"}) for s in steps],
     }
     return digest(payload, file_stamps)
 

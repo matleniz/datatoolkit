@@ -16,6 +16,12 @@
     destructive proposal Studio holds for review (``pending: "review"``);
   - text with ``attachments`` -> ``list_attachments`` through the real server
     (``session`` pinned), then a reply naming the attached files;
+  - text with ``read the workspace`` -> ``get_workspace`` of the open
+    workspace, reply ``stub: steps <id> <op>, ...``;
+  - text ``remove step <id>`` -> ``propose_steps`` removing that step id
+    (``base_steps`` filled by the tool layer from the last read), reply
+    ``stub: removed <id>`` / ``stub: <stale ack error>`` / the review wait
+    (datatoolkit-issues#153 scenario: the user removes the step in between);
   - anything else -> echoed back.
 
   Usage is fake but deterministic: 10 input + 5 output tokens per turn.
@@ -39,6 +45,7 @@ STEP = {"op": "scale", "target": "both", "params": {"columns": ["age"]}}
 TURN_USAGE = (10, 5)
 MODELS = ("stub-small", "stub-large")
 _DROP = re.compile(r"\bdrop (\w+)", re.IGNORECASE)
+_REMOVE = re.compile(r"\bremove step (s[0-9a-z-]+)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -90,7 +97,12 @@ class StubAdapter:
         label = f"stub[{self.model}]" if self.model else "stub"
         reply = f"{label}: {text}"
         drop = _DROP.search(text)
-        if "permission" in lowered or "add a step" in lowered:
+        remove = _REMOVE.search(text)
+        if remove:
+            reply = await self._remove_step(chat, remove[1])
+        elif "read the workspace" in lowered:
+            reply = await self._read_workspace(chat)
+        elif "permission" in lowered or "add a step" in lowered:
             reply = await self._add_step(chat, ask="permission" in lowered)
         elif "attachments" in lowered:
             reply = await self._list_attachments(chat)
@@ -101,6 +113,36 @@ class StubAdapter:
         chat.emit("assistant_delta", text=reply)
         chat.set_turn_usage(*TURN_USAGE)
         return "end_turn"
+
+    async def _call(self, chat: _chat.ChatSession, name: str, args: dict) -> dict:
+        """One tool call through the real server, with its chip events."""
+        self._calls += 1
+        tool_id = f"stub-{self._calls}"
+        chat.emit("tool_call", id=tool_id, name=name, input=args)
+        async with Client(chat.mcp_server()) as client:
+            result = await client.call_tool(name, args)
+        text = "".join(getattr(c, "text", "") for c in result.content)
+        fields = tool_result_fields(parse_tool_text(text), is_error=bool(result.is_error))
+        chat.emit("tool_result", id=tool_id, **fields)
+        return {"fields": fields, "parsed": parse_tool_text(text)}
+
+    async def _read_workspace(self, chat: _chat.ChatSession) -> str:
+        ctx = chat.hub.bridge.get_context(chat.session) or {}
+        if not ctx.get("workspace"):
+            return "stub: no workspace open"
+        out = await self._call(chat, "get_workspace", {"name": ctx["workspace"], "session": chat.session})
+        data = out["parsed"].get("data") if isinstance(out["parsed"], dict) else None
+        steps = (data or {}).get("steps") or []
+        return "stub: steps " + (", ".join(f"{s['id']} {s['op']}" for s in steps) or "none")
+
+    async def _remove_step(self, chat: _chat.ChatSession, step_id: str) -> str:
+        args = {"ops": [{"remove": {"id": step_id}}], "session": chat.session}
+        fields = (await self._call(chat, "propose_steps", args))["fields"]
+        if fields.get("pending"):
+            return "stub: waiting for your review in Studio"
+        if not fields["ok"]:
+            return f"stub: {fields.get('error') or 'step not removed'}"
+        return f"stub: removed {step_id}"
 
     async def _list_attachments(self, chat: _chat.ChatSession) -> str:
         self._calls += 1

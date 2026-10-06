@@ -143,7 +143,14 @@ every call is audited (`dtk_engine.agent.policy`).
 | `add_variable`, `draft_chart`, `add_chart` | workspace variables, the chart builder, saved charts |
 
 Each one is acked `{id, ok, error?, identity?}`. Studio applies it as one
-undoable change and highlights what it touched. The tools are generated from
+undoable change and highlights what it touched. Steps carry a stable `id`
+(filled by position, `s1`, `s2`..., for workspaces saved before ids):
+`propose_steps` targets ids, applies even if the user edited other steps
+meanwhile, and is acked `stale` with `stale: [{id, reason}]` only when a
+targeted step was removed or changed; its ack lists `added_ids`. Every tool
+result carries `identity` and, when the user changed the steps since the
+agent last saw them, `workspace_changes` (`added` / `removed` / `changed` step
+ids, reviewed proposals' outcome in `commands`). The tools are generated from
 the command table `src/dtk_engine/agent/commands.py`, which matches Studio's
 parser (`datatoolkit-web/src/state/agentCommands.ts`). The same table backs the
 policy allow-list. `GET /api/ui/commands/schema` (same guard as `/api/ui`)

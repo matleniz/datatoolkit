@@ -96,7 +96,12 @@ once.
   text → `assistant_delta "stub: <text>"`, `usage`, `done`. Text containing
   `attachments` → `tool_call list_attachments` through the real server
   (`session` pinned), `tool_result`, then `assistant_delta "stub: attachments:
-  <names>"` (or `none`).
+  <names>"` (or `none`). Text containing `read the workspace` → `tool_call
+  get_workspace` of the open workspace, then `assistant_delta "stub: steps <id>
+  <op>, ..."`. Text `remove step <id>` → `tool_call propose_steps` with
+  `{remove: {id}}` (`base_steps` filled from the last read), then `stub: removed
+  <id>`, `stub: <ack error>` (e.g. `stub: stale: step s1 (scale) removed`) or the
+  review wait.
 
 ## Adapter interface (engine side)
 

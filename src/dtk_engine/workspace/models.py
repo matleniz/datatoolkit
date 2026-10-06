@@ -11,6 +11,8 @@ from dtk_engine.sources.spec import FileSourceSpec
 # A workspace name is also its file name: no path separators, no leading dot.
 NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
 VARIABLE_NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
+# A step id names a pipeline slot (kept when the step is replaced), opaque.
+STEP_ID_PATTERN = r"^s[0-9a-z-]{1,32}$"
 VariableStat = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
 
 
@@ -57,8 +59,13 @@ class LabelJoin(_Strict):
 
 
 class Step(_Strict):
-    """One logged transform: ``op`` (a registered @transform) applied to ``target``."""
+    """One logged transform: ``op`` (a registered @transform) applied to ``target``.
 
+    ``id`` is stable across edits; a workspace fills the missing ones
+    (``fill_step_ids``). It never feeds a frame (not in cache keys).
+    """
+
+    id: str | None = Field(default=None, pattern=STEP_ID_PATTERN)
     op: str
     target: Literal["train", "test", "both"]
     params: dict[str, Any] = Field(default_factory=dict)
@@ -98,6 +105,11 @@ class Workspace(_Strict):
     variables: list[VariableSpec] = Field(default_factory=list)
     charts: list[ChartSpec] = Field(default_factory=list)
     steps: list[Step] = Field(default_factory=list)
+
+    @field_validator("steps")
+    @classmethod
+    def _step_ids(cls, steps: list[Step]) -> list[Step]:
+        return fill_step_ids(steps)
 
     @field_validator("variables")
     @classmethod
@@ -144,3 +156,26 @@ class Workspace(_Strict):
                     )
         return merges
 
+
+
+def fill_step_ids(steps: list[Step]) -> list[Step]:
+    """Give each step without an id ``s<position>`` (1-based; ``-2``, ``-3``...
+    on a clash): deterministic, so a workspace stored before step ids reads
+    the same ids until it is saved with them. Duplicate ids -> ValueError."""
+    taken: set[str] = set()
+    for step in steps:
+        if step.id is None:
+            continue
+        if step.id in taken:
+            raise ValueError(f"duplicate step id {step.id!r}")
+        taken.add(step.id)
+    for pos, step in enumerate(steps, start=1):
+        if step.id is not None:
+            continue
+        candidate, n = f"s{pos}", 1
+        while candidate in taken:
+            n += 1
+            candidate = f"s{pos}-{n}"
+        step.id = candidate
+        taken.add(candidate)
+    return steps

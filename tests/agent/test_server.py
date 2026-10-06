@@ -122,12 +122,12 @@ async def test_run_key_fills_dataset_source_from_context(client, bridge):
     assert "note" not in out
 
 
-async def test_run_key_explicit_source_has_no_identity(client, bridge):
+async def test_run_key_explicit_source_gets_a_computed_identity(client, bridge):
     _save_demo()
     bridge.put_context(_context())
     source = {"kind": "dataset", "workspace": "demo"}
     out = _payload(await client.call_tool("run_key", {"key": "dataset_overview", "params": {"source": source}}))
-    assert out["identity"] is None
+    assert out["identity"].startswith("demo|train|v0|")  # #153: never null for a frame
 
 
 async def test_csv_outside_home_is_refused(client, tmp_path):
@@ -212,7 +212,7 @@ async def test_get_rows_limits(client, bridge, monkeypatch):
     assert out["identity"] == "demo|train|0"
     other = _payload(await client.call_tool("get_rows", {"role": "test", "limit": 3}))
     assert len(other["data"]["rows"]) == 3
-    assert other["identity"] is None
+    assert other["identity"].startswith("demo|test|v0|")  # not on screen: computed
     refused = await client.call_tool("get_rows", {"limit": 501})
     assert refused.is_error
     assert "limit must be between 1 and 500" in _payload(refused)["message"]

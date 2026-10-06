@@ -7,7 +7,9 @@ arguments first and frames its output with ``policy.frame``.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +18,7 @@ import anyio.to_thread
 from dtk_engine import contract
 from dtk_engine.agent import attachments, policy
 from dtk_engine.agent.commands import UI_COMMANDS, CommandSpec
+from dtk_engine.agent.digest import TRACKER, frame_identity
 from dtk_engine.agent.ports import UiPort
 from dtk_engine.errors import KeyParamsError
 
@@ -26,6 +29,10 @@ _NO_CONTEXT_NOTE = "no Studio context: key defaults (demo data) used"
 _CONTEXT_KEYS = {"workspace": "workspace", "base_identity": "identity"}
 
 Handler = Callable[[dict], Awaitable[dict]]
+# Steps the agent had seen before the current tool call ({id: content}), set
+# by ``_Tools.tracked`` before it records the new state: propose_steps sends
+# them as ``base_steps``.
+_SEEN_BEFORE: ContextVar[dict[str, dict] | None] = ContextVar("seen_before", default=None)
 
 
 @dataclass(frozen=True)
@@ -88,6 +95,54 @@ class _Tools:
         self.port = port
 
     # -- context ---------------------------------------------------------
+    def tracked(self, handler: Handler) -> Handler:
+        """Every result: ``identity`` filled (else the frame shown in Studio) and
+        ``workspace_changes`` when the steps changed since the agent last saw them."""
+
+        async def run(args: dict) -> dict:
+            ctx = await self.port.get_context(args.get("session")) or {}
+            changes = await self._changes(args, ctx)
+            out = await handler(args)
+            if not isinstance(out, dict):
+                return out
+            if out.get("identity") is None and ctx.get("identity"):
+                out = {**out, "identity": ctx["identity"]}
+            if changes:
+                out = {**out, "workspace_changes": changes}
+            return out
+
+        return run
+
+    async def _changes(self, args: dict, ctx: dict) -> dict | None:
+        name = args.get("workspace") or args.get("name") or ctx.get("workspace")
+        if not isinstance(name, str) or not name:
+            return None
+        key = (ctx.get("session") or "", name)
+        try:
+            steps = await _compute(contract.workspace_steps, name)
+        except (KeyError, KeyParamsError, OSError, ValueError):
+            return None
+        _SEEN_BEFORE.set(TRACKER.seen(key))
+        diff = TRACKER.changes(key, steps) or {}
+        commands = await self._settled(key)
+        if commands:
+            diff["commands"] = commands
+        if not diff:
+            return None
+        identity = ctx.get("identity") if ctx.get("workspace") == name else None
+        return {"workspace": name, "identity": identity, **diff}
+
+    async def _settled(self, key: tuple[str, str]) -> list[dict]:
+        """The agent's proposals that left review since (applied / why not)."""
+        out = []
+        for cid in sorted(TRACKER.pending(key)):
+            status = await self.port.command_status(cid)
+            if status is None or status.get("ok") is None:
+                continue
+            TRACKER.settle(key, cid)
+            out.append({"id": cid, "status": "applied" if status["ok"] else status.get("error")})
+        return out
+
     async def _view(self, args: dict, *, use_version: bool = True) -> _View:
         """Workspace / role / version from the args, else the Studio context."""
         ctx = await self.port.get_context(args.get("session")) or {}
@@ -140,6 +195,8 @@ class _Tools:
         )
         include = bool(args.get("include_figures"))
         result = await _compute(contract.run_key, key, params)
+        if identity is None:
+            identity = await _source_identity(params.get("source"))
         framed = policy.frame(policy.compact_result(result, include), identity=identity)
         return _with_note(framed, note) if note else framed
 
@@ -167,7 +224,7 @@ class _Tools:
             contract.workspace_rows, ws, view.role, version=view.version,
             offset=int(args.get("offset") or 0), limit=limit, columns=args.get("columns"),
         )
-        return policy.frame(data, identity=view.identity)
+        return policy.frame(data, identity=_identity(view, ws))
 
     async def get_profiles(self, args: dict) -> dict:
         view = await self._view(args)
@@ -176,7 +233,7 @@ class _Tools:
             contract.column_profiles, ws, view.role, version=view.version,
             columns=args.get("columns"),
         )
-        return policy.frame(data, identity=view.identity)
+        return policy.frame(data, identity=_identity(view, ws))
 
     async def preview_step(self, args: dict) -> dict:
         # Same default as Studio applies to a proposed step.
@@ -185,12 +242,12 @@ class _Tools:
         ws = await self._workspace_dict(view)
         data = await _compute(contract.preview_step, ws, step, view.role)
         compact = policy.compact_preview(data, bool(args.get("detail")))
-        return policy.frame(compact, identity=view.identity)
+        return policy.frame(compact, identity=_identity(view, ws))
 
     async def align_report(self, args: dict) -> dict:
         view = await self._view(args, use_version=False)
         ws = await self._workspace_dict(view)
-        return policy.frame(await _compute(contract.align_report, ws))
+        return policy.frame(await _compute(contract.align_report, ws), identity=_identity(view, ws))
 
     async def source_columns(self, args: dict) -> dict:
         return policy.frame(await _compute(contract.source_columns, _need(args, "spec")))
@@ -243,10 +300,60 @@ class _Tools:
                     value = ctx.get(_CONTEXT_KEYS[field])
                     if value is not None:
                         cmd[field] = value
+            key = None
+            if spec.type == "propose_steps" and isinstance(cmd.get("workspace"), str):
+                ctx = await self.port.get_context(session) or {}
+                key = (ctx.get("session") or "", cmd["workspace"])
+                cmd = _with_base_steps(cmd)
             ack = await self.port.send_command({**cmd, "type": spec.type}, session, COMMAND_TIMEOUT)
+            if key is not None:
+                await _after_proposal(key, ack)
             return policy.frame(ack, identity=ack.get("identity"))
 
         return handler
+
+
+def _identity(view: _View, ws: dict) -> str:
+    """Studio's identity when the frame is on screen, else computed."""
+    return view.identity or frame_identity(ws, view.role, view.version)
+
+
+async def _source_identity(source: Any) -> str | None:
+    if not isinstance(source, dict) or source.get("kind") != "dataset":
+        return None
+    try:
+        ws = await _compute(contract.get_workspace, source.get("workspace"))
+    except (KeyError, KeyParamsError, OSError, ValueError):
+        return None
+    return frame_identity(ws, source.get("role") or "train", source.get("version"))
+
+
+def _targeted_ids(ops: Any) -> list[str]:
+    ids = []
+    for op in ops if isinstance(ops, list) else []:
+        for kind in ("replace", "remove"):
+            body = op.get(kind) if isinstance(op, dict) else None
+            if isinstance(body, dict) and isinstance(body.get("id"), str):
+                ids.append(body["id"])
+    return ids
+
+
+def _with_base_steps(cmd: dict) -> dict:
+    """``base_steps``: what the agent last saw of each step id it targets."""
+    seen = _SEEN_BEFORE.get() or {}
+    base = {i: seen[i] for i in _targeted_ids(cmd.get("ops")) if i in seen}
+    if not base or "base_steps" in cmd:
+        return cmd
+    return {**cmd, "base_steps": base}
+
+
+async def _after_proposal(key: tuple[str, str], ack: dict) -> None:
+    """The agent's own applied edit is not a user change: observe it now."""
+    if ack.get("pending") == "review" and ack.get("id"):
+        TRACKER.add_pending(key, str(ack["id"]))
+    elif ack.get("ok"):
+        with contextlib.suppress(KeyError, KeyParamsError, OSError, ValueError):
+            TRACKER.observe(key, await _compute(contract.workspace_steps, key[1]))
 
 
 def _checked(handler: Handler) -> Handler:
@@ -281,7 +388,8 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
          _schema({"op": _STR}, ("op",)), t.transform_schema, True),
         ("list_workspaces", "Summaries of the saved workspaces.",
          _schema(), t.list_workspaces, True),
-        ("get_workspace", "A saved workspace (datasets, steps, ...).",
+        ("get_workspace",
+         "A saved workspace (datasets, steps with their stable `id`, ...).",
          _schema({"name": _STR}, ("name",)), t.get_workspace, True),
         ("get_rows",
          (f"Rows of a workspace dataset at a version (default {policy.DEFAULT_ROWS}, "
@@ -330,11 +438,11 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
          "Final ack of a UI command (poll after propose_steps returned pending: review).",
          _schema({"id": _STR}, ("id",)), t.get_command_status, True),
     ]
-    tools = [ToolSpec(n, d, s, _checked(h), ro) for n, d, s, h, ro in static]
+    tools = [ToolSpec(n, d, s, t.tracked(_checked(h)), ro) for n, d, s, h, ro in static]
     tools.extend(
         ToolSpec(
             c.tool_name, c.description, _with_session(c.input_schema),
-            _checked(t.ui_command(c)), False,
+            t.tracked(_checked(t.ui_command(c))), False,
         )
         for c in UI_COMMANDS.values()
     )

@@ -14,6 +14,7 @@ Contract surface (fronts call these; inputs/outputs are plain JSON)::
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path, PurePath
 
@@ -31,6 +32,8 @@ from .workspace import JsonWorkspaceStore, Workspace
 from .workspace import inspect as _inspect
 from .workspace.dataset import parse_workspace, preview, workspace_frame, workspace_key
 from .workspace.export import export_workspace as _export
+from .workspace.models import Step, fill_step_ids
+from .workspace.store import WorkspaceNotFoundError
 
 _SHAPES = LRU(max_entries=256)
 
@@ -188,6 +191,24 @@ def list_workspace_summaries() -> list[dict]:
 def get_workspace(name: str) -> dict:
     """The workspace dict; unknown name -> raises WorkspaceNotFoundError."""
     return JsonWorkspaceStore().get(name).model_dump(mode="json")
+
+
+_STEPS = TypeAdapter(list[Step])
+
+
+def workspace_steps(name: str) -> list[dict]:
+    """The stored workspace's steps (ids filled), without validating or loading
+    its sources: the cheap read behind the agent's change digest."""
+    path = JsonWorkspaceStore().path_of(name)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise WorkspaceNotFoundError(name) from None
+    try:
+        steps = fill_step_ids(_STEPS.validate_python(raw.get("steps") or []))
+    except (ValidationError, ValueError) as exc:
+        raise KeyParamsError(f"invalid steps in workspace {name!r}: {exc}") from exc
+    return [step.model_dump(mode="json") for step in steps]
 
 
 def save_workspace(workspace: dict) -> dict:
