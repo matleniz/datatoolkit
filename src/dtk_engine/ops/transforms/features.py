@@ -18,7 +18,7 @@ from sklearn.preprocessing import (
 
 from dtk_engine.ops._util import json_scalar as _py
 from dtk_engine.ops.selection import feature_matrix
-from dtk_engine.params import column_field, columns_field
+from dtk_engine.params import column_field, columns_field, when
 from dtk_engine.transform_registry import TransformParams, transform
 
 MAX_INTERACTION_COLUMNS = 10
@@ -213,7 +213,7 @@ def bin_column(df: pd.DataFrame, params: BinParams, state: dict) -> pd.DataFrame
 
 # --- group_agg --------------------------------------------------------------
 
-_AGGS = ("mean", "std", "count", "median")
+_ORDERED_AGGS = ("first", "last")
 
 
 class GroupAggParams(TransformParams):
@@ -221,14 +221,31 @@ class GroupAggParams(TransformParams):
     value: str = column_field(
         ..., "Numeric column to aggregate", source="step", dtype="numeric"
     )
-    aggs: list[Literal["mean", "std", "count", "median"]] = Field(
-        min_length=1, description="Aggregations (column '<value>_<agg>_by_<group>')"
+    aggs: list[
+        Literal["mean", "std", "count", "median", "min", "max", "first", "last"]
+    ] = Field(
+        min_length=1,
+        description="Aggregations (column '<value>_<agg>_by_<group>'); first / last "
+        "are the first / last observed value in `order`",
+    )
+    order: str | None = column_field(
+        None,
+        "first / last: order of the group's rows (e.g. age, a date); rows with a "
+        "missing order are ignored, ties keep the frame order",
+        source="step",
+        extra=when(aggs=list(_ORDERED_AGGS)),
     )
     target: str | None = column_field(
         None,
         "Declared target column; aggregating it is refused (target leak)",
         source="step",
     )
+
+    @model_validator(mode="after")
+    def _check_order(self) -> GroupAggParams:
+        if self.order is None and any(a in _ORDERED_AGGS for a in self.aggs):
+            raise ValueError("group_agg: aggs first / last need an `order` column")
+        return self
 
     @model_validator(mode="after")
     def _no_target_leak(self) -> GroupAggParams:
@@ -241,8 +258,25 @@ class GroupAggParams(TransformParams):
         return self
 
 
+def _group_agg_stats(df: pd.DataFrame, params: GroupAggParams) -> pd.DataFrame:
+    """Per-group statistics, one column per agg (NaN where a group has no value)."""
+    plain = [a for a in params.aggs if a not in _ORDERED_AGGS]
+    ordered = [a for a in params.aggs if a in _ORDERED_AGGS]
+    parts = []
+    if plain:
+        parts.append(df.groupby(params.group)[params.value].agg(plain))
+    if ordered:  # first / last skip NaN values; a row without order is unusable
+        rows = df[[params.group, params.value, params.order]]
+        rows = rows.dropna(subset=[params.order]).sort_values(
+            params.order, kind="stable"
+        )
+        parts.append(rows.groupby(params.group)[params.value].agg(ordered))
+    stats = pd.concat(parts, axis=1)
+    return stats.reindex(df[params.group].dropna().unique())[params.aggs]
+
+
 def _group_agg_fit(df: pd.DataFrame, params: GroupAggParams) -> dict:
-    stats = df.groupby(params.group)[params.value].agg(params.aggs)
+    stats = _group_agg_stats(df, params)
     return {
         "groups": [
             {"key": _py(key), **{a: _py(row[a]) for a in params.aggs}}

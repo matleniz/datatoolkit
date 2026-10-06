@@ -285,3 +285,67 @@ def test_new_feature_ops_dtk_transformer():
     assert "lambdas" in tr.state_
     out = tr.transform(test)
     assert list(out.columns) == ["a", "b"]
+
+
+def _visits():
+    return pd.DataFrame(
+        {
+            "p": ["a", "a", "a", "b", "b", "c", "c"],
+            "age": [60.0, 50.0, 55.0, 40.0, 41.0, 30.0, 31.0],
+            "v": [3.0, 1.0, 2.0, np.nan, 9.0, np.nan, np.nan],
+        }
+    )
+
+
+def test_group_agg_min_max_first_last():
+    df = _visits()
+    out = run(
+        "group_agg", df, group="p", value="v", order="age",
+        aggs=["min", "max", "first", "last"],
+    )
+    assert out["v_min_by_p"].tolist()[:5] == [1.0, 1.0, 1.0, 9.0, 9.0]
+    assert out["v_max_by_p"].tolist()[:3] == [3.0, 3.0, 3.0]
+    # ordered by age, not by row position; the NaN of group b is skipped
+    assert out["v_first_by_p"].tolist()[:5] == [1.0, 1.0, 1.0, 9.0, 9.0]
+    assert out["v_last_by_p"].tolist()[:3] == [3.0, 3.0, 3.0]
+
+
+def test_group_agg_all_nan_group_gives_nan():
+    out = run(
+        "group_agg", _visits(), group="p", value="v", order="age",
+        aggs=["min", "max", "first", "last"],
+    )
+    for agg in ("min", "max", "first", "last"):
+        assert out[f"v_{agg}_by_p"].iloc[5:].isna().all()
+
+
+def test_group_agg_first_age_equals_min_age_per_patient():
+    df = _visits().rename(columns={"v": "x"}).assign(x=lambda d: d["age"])
+    out = run("group_agg", df, group="p", value="x", order="age", aggs=["min", "first"])
+    assert (out["x_min_by_p"] == out["x_first_by_p"]).all()
+    assert out.groupby("p")["x_first_by_p"].nunique().eq(1).all()
+
+
+def test_group_agg_first_last_order_rules():
+    df = pd.DataFrame(
+        {"g": ["a", "a", "a"], "o": [2.0, np.nan, 1.0], "v": [20.0, 99.0, 10.0]}
+    )
+    out = run("group_agg", df, group="g", value="v", order="o", aggs=["first", "last"])
+    assert out["v_first_by_g"].tolist() == [10.0] * 3  # NaN-order row ignored
+    assert out["v_last_by_g"].tolist() == [20.0] * 3
+    with pytest.raises(KeyParamsError, match="order"):
+        get_transform("group_agg").parse({"group": "g", "value": "v", "aggs": ["first"]})
+
+
+def test_group_agg_first_uses_train_only_and_refuses_target():
+    train = _visits()
+    test = pd.DataFrame({"p": ["a", "zzz"], "age": [1.0, 1.0], "v": [-5.0, -5.0]})
+    out = fit_then_apply(
+        "group_agg", train, test, group="p", value="v", order="age", aggs=["first"]
+    )
+    assert out["v_first_by_p"].isna().tolist() == [False, True]
+    assert out["v_first_by_p"].iloc[0] == 1.0
+    with pytest.raises(KeyParamsError, match="out-of-fold"):
+        get_transform("group_agg").parse(
+            {"group": "p", "value": "y", "aggs": ["max"], "target": "y"}
+        )
