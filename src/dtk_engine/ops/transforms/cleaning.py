@@ -34,6 +34,59 @@ def drop_columns(
     )
 
 
+class ReorderColumnsParams(TransformParams):
+    columns: list[str] = columns_field(
+        "Columns to move, kept in this order", source="step", required=True, min_length=1
+    )
+    position: Literal["first", "last", "before", "after"] = Field(
+        description="Where to put them: at the start, at the end, or next to `anchor`"
+    )
+    anchor: str | None = column_field(
+        None, "Column to sit before / after (required for 'before' / 'after')",
+        source="step",
+    )
+    missing_ok: bool = Field(
+        default=False, description="Ignore listed columns absent from the frame"
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> ReorderColumnsParams:
+        if len(set(self.columns)) != len(self.columns):
+            raise ValueError("columns must not repeat")
+        needs_anchor = self.position in ("before", "after")
+        if needs_anchor and self.anchor is None:
+            raise ValueError(f"anchor is required when position is {self.position!r}")
+        if not needs_anchor and self.anchor is not None:
+            raise ValueError("anchor only applies to position 'before' / 'after'")
+        if self.anchor in self.columns:
+            raise ValueError("anchor must not be one of the moved columns")
+        return self
+
+
+@transform(
+    "reorder_columns", params_model=ReorderColumnsParams, title="Reorder columns"
+)
+def reorder_columns(
+    df: pd.DataFrame, params: ReorderColumnsParams, state: dict
+) -> pd.DataFrame:
+    """Move the listed columns to the start, the end, or next to an anchor column."""
+    missing = [c for c in params.columns if c not in df.columns]
+    if missing and not params.missing_ok:
+        raise KeyError(f"columns not in frame: {missing}")
+    if params.anchor is not None and params.anchor not in df.columns:
+        raise KeyError(f"anchor not in frame: {params.anchor!r}")
+    moved = [c for c in params.columns if c in df.columns]
+    rest = [c for c in df.columns if c not in moved]
+    if params.position == "first":
+        order = moved + rest
+    elif params.position == "last":
+        order = rest + moved
+    else:
+        at = rest.index(params.anchor) + (params.position == "after")
+        order = rest[:at] + moved + rest[at:]
+    return df[order]
+
+
 class RenameParams(TransformParams):
     mapping: dict[str, str] = Field(
         min_length=1, description="Old column name -> new column name"
