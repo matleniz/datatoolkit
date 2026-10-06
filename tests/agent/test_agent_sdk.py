@@ -39,7 +39,7 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
     for name in (
         "ANTHROPIC_API_KEY", "DTK_AGENT_CLI", "DTK_AGENT_MODEL", "DTK_AGENT_MAX_TURNS",
-        "DTK_AGENT_MAX_TOKENS", *agent_sdk._PROVIDER_ENVS,
+        "DTK_AGENT_MAX_TOKENS", "DTK_AGENT_COMPACT_AT", *agent_sdk._PROVIDER_ENVS,
     ):
         monkeypatch.delenv(name, raising=False)
     agent_sdk._cli_auth.cache_clear()
@@ -208,6 +208,35 @@ def _result(**kw) -> ResultMessage:
     base = {"subtype": "success", "duration_ms": 1, "duration_api_ms": 1, "is_error": False,
             "num_turns": 1, "session_id": "x"}
     return ResultMessage(**{**base, **kw})
+
+
+@pytest.mark.parametrize(
+    "value, window", [(None, "60000"), ("40000", "40000"), ("off", None), ("junk", "60000")]
+)
+async def test_compaction_window_reaches_the_cli(fake, monkeypatch, value, window):
+    """#151: the CLI auto-compacts at DTK_AGENT_COMPACT_AT (default 60k tokens)."""
+    if value is not None:
+        monkeypatch.setenv("DTK_AGENT_COMPACT_AT", value)
+    _, _, _, client = await _started(fake, UiBridge("t"))
+    assert client.options.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW") == window
+
+
+async def test_compaction_is_announced(fake):
+    from claude_agent_sdk import SystemMessage
+
+    bridge = UiBridge("t")
+    listener = Listener(bridge)
+    _, chat, adapter, client = await _started(fake, bridge)
+    chat.turn = "t1"
+    meta = {"trigger": "auto", "pre_tokens": 61234}
+    client.script = [
+        SystemMessage(subtype="compact_boundary", data={"compact_metadata": meta}),
+        SystemMessage(subtype="init", data={}),
+        _result(usage={"input_tokens": 1, "output_tokens": 1}, stop_reason="end_turn"),
+    ]
+    await adapter.send("hello")
+    events = [e for e in listener.events() if e["type"] == "compacted"]
+    assert events == [{"type": "compacted", "turn": "t1", "trigger": "auto", "pre_tokens": 61234}]
 
 
 async def test_turn_translation(fake):
