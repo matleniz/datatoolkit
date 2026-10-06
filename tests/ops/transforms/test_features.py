@@ -349,3 +349,17 @@ def test_group_agg_first_uses_train_only_and_refuses_target():
         get_transform("group_agg").parse(
             {"group": "p", "value": "y", "aggs": ["max"], "target": "y"}
         )
+
+
+def test_group_agg_first_last_order_equals_value():
+    df = pd.DataFrame({"p": ["a", "a", "b", "b"], "age": [60.0, 55.0, 70.0, 72.0]})
+    out = run("group_agg", df, group="p", value="age", aggs=["first", "min"], order="age")
+    assert out["age_first_by_p"].tolist() == out["age_min_by_p"].tolist() == [
+        55.0, 55.0, 70.0, 70.0,
+    ]
+
+
+def test_group_agg_first_last_order_equals_group():
+    df = pd.DataFrame({"p": [3, 1, 1], "v": [1.0, 2.0, 3.0]})
+    out = run("group_agg", df, group="p", value="v", aggs=["last"], order="p")
+    assert out["v_last_by_p"].tolist() == [1.0, 3.0, 3.0]
