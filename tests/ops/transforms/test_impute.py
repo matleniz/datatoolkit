@@ -204,7 +204,7 @@ def test_impute_formula_fills_only_missing_rows():
     out = t.apply(test, p, state)
     # Observed 40.0 kept although age - years = 64; undefined expr -> stays NaN.
     assert out["age_at_diagnosis"].tolist()[:2] == [47.0, 40.0]
-    assert np.isnan(out["age_at_diagnosis"].iloc[2])
+    assert pd.isna(out["age_at_diagnosis"].iloc[2])
     assert out.index.tolist() == [4, 4, 5]
     assert test["age_at_diagnosis"].isna().sum() == 2  # input untouched
 
@@ -446,3 +446,33 @@ def test_group_params_schema_allows_studio_prefill():
     assert impute["fallback"]["x-dtk-when"] == {"strategy": list(GROUP_STRATEGIES)}
     ffill = transform_schema("ffill")["properties"]
     assert ffill["by"]["x-dtk-semantic"] == "group_id"
+
+
+def test_impute_keeps_integer_dtype_when_fill_is_integral():
+    train = pd.DataFrame({"n": [1.0, 2.0, np.nan, 3.0], "m": [1.0, 2.0, np.nan, 4.0]})
+    t, p, state = _fit("impute", train, columns=["n"], strategy="median")
+    out = t.apply(train, p, state)
+    assert out["n"].dtype == "int64"
+    assert out["n"].tolist() == [1, 2, 2, 3]
+    assert out["m"].dtype == float  # untouched column
+
+    # a test frame with an entirely filled column also gets int64
+    assert t.apply(pd.DataFrame({"n": [np.nan, 5.0]}), p, state)["n"].dtype == "int64"
+
+
+def test_impute_integer_dtype_not_forced_on_fractional_fill_or_values():
+    train = pd.DataFrame({"n": [1.0, 2.0, np.nan, 4.0], "f": [0.5, np.nan, 1.5, 2.0]})
+    t, p, state = _fit("impute", train, columns=["n"], strategy="mean")
+    assert t.apply(train, p, state)["n"].dtype == float  # mean 2.33
+    t, p, state = _fit(
+        "impute", train, columns=["f"], strategy="constant", fill_value=0
+    )
+    assert t.apply(train, p, state)["f"].dtype == float  # known values fractional
+
+
+def test_impute_group_fill_keeps_nullable_int_when_nan_remains():
+    df = pd.DataFrame({"g": ["a", "a", "b", "b"], "v": [1.0, np.nan, np.nan, np.nan]})
+    t, p, state = _fit("impute", df, columns=["v"], strategy="group_mean", by="g")
+    out = t.apply(df, p, state)
+    assert out["v"].dtype == "Int64"
+    assert out["v"].isna().tolist() == [False, False, True, True]

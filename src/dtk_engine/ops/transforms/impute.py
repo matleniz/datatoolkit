@@ -228,6 +228,25 @@ def _filled(series: pd.Series, fill) -> pd.Series:
     return series.mask(missing, fill) if missing.any() else series
 
 
+def _keep_integer(before: pd.Series, after: pd.Series) -> pd.Series:
+    """Cast back to an integer dtype a float column that only held whole numbers.
+
+    Applies when something was filled and both the known values and the result
+    are integral: ``int64`` when nothing is missing any more, else nullable
+    ``Int64``. Anything else is returned untouched.
+    """
+    if not pd.api.types.is_float_dtype(before) or not before.isna().any():
+        return after
+    if not pd.api.types.is_float_dtype(after):
+        return after
+    values = after.dropna().to_numpy(dtype=float)
+    if len(values) == 0 or not np.isfinite(values).all():
+        return after
+    if (values != np.round(values)).any():
+        return after
+    return after.astype("Int64" if after.isna().any() else "int64")
+
+
 @transform(
     "impute",
     params_model=ImputeParams,
@@ -244,10 +263,12 @@ def impute(df: pd.DataFrame, params: ImputeParams, state: dict) -> pd.DataFrame:
     fills = _fills(df, params, state)
     fallback = state["fill"] if params.strategy in GROUP_STRATEGIES else {}
     for col in params.columns:
-        missing = out[col].isna()
-        out[col] = _filled(out[col], fills[col])
+        before = out[col]
+        missing = before.isna()
+        out[col] = _filled(before, fills[col])
         if col in fallback:
             out[col] = out[col].fillna(fallback[col])
+        out[col] = _keep_integer(before, out[col])
         if params.add_indicator:
             name = f"{col}{INDICATOR_SUFFIX}"
             if name in out.columns:
