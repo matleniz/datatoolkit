@@ -227,14 +227,56 @@ def _result(**kw) -> ResultMessage:
 
 
 @pytest.mark.parametrize(
-    "value, window", [(None, "60000"), ("40000", "40000"), ("off", None), ("junk", "60000")]
+    "value, window",
+    [(None, "100000"), ("40000", "40000"), ("off", None), ("junk", "100000"), ("40%", "100000")],
 )
 async def test_compaction_window_reaches_the_cli(fake, monkeypatch, value, window):
-    """#151: the CLI auto-compacts at DTK_AGENT_COMPACT_AT (default 60k tokens)."""
+    """#151 / #193: DTK_AGENT_COMPACT_AT reaches the CLI; unset (or a share) with no
+    known model window = FALLBACK_COMPACT_AT."""
     if value is not None:
         monkeypatch.setenv("DTK_AGENT_COMPACT_AT", value)
     _, _, _, client = await _started(fake, UiBridge("t"))
     assert client.options.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW") == window
+
+
+def _usage(window: int, inp: int) -> dict:
+    return {"inputTokens": inp, "outputTokens": 1, "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0, "contextWindow": window}
+
+
+@pytest.mark.parametrize("value, window", [(None, 150_000), ("40%", 120_000), ("50000", 50_000)])
+def test_compaction_follows_the_learnt_model_window(monkeypatch, value, window):
+    """#193: once the CLI reported a model's window, the default is half of it."""
+    if value is not None:
+        monkeypatch.setenv("DTK_AGENT_COMPACT_AT", value)
+    # the main model is the entry with the most input, not a side model
+    usage = {"claude-x": _usage(300_000, 9000), "claude-side": _usage(200_000, 10)}
+    assert agent_sdk.remember_window("opus", usage) == 300_000
+    assert agent_sdk.known_window("opus") == 300_000
+    assert agent_sdk.compact_window("opus") == window
+    assert agent_sdk.known_window(None) is None  # another model: still the fallback
+
+
+def test_a_broken_windows_file_is_ignored():
+    path = agent_sdk._windows_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json")
+    assert agent_sdk.known_window(None) is None
+    assert agent_sdk.compact_window(None) == agent_sdk.FALLBACK_COMPACT_AT
+
+
+async def test_a_turn_result_teaches_the_window(fake):
+    bridge = UiBridge("t")
+    Listener(bridge)
+    _, chat, adapter, client = await _started(fake, bridge)
+    chat.turn = "t1"
+    client.script = [_result(
+        usage={"input_tokens": 1, "output_tokens": 1}, stop_reason="end_turn",
+        model_usage={"claude-x": _usage(400_000, 5)},
+    )]
+    await adapter.send("hi")
+    assert agent_sdk.known_window(adapter.model_name) == 400_000
+    assert agent_sdk.compact_window(adapter.model_name) == 200_000
 
 
 async def test_compaction_is_announced(fake):

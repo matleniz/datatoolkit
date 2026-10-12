@@ -16,7 +16,8 @@ Studio tab. Destructive steps need no prompt here: Studio reviews them
 (``propose_steps`` answers ``pending: "review"``).
 
 Env: ``DTK_AGENT_MODEL`` (default: the CLI's), ``DTK_AGENT_MAX_TURNS``
-(default 25 tool round trips per message), ``DTK_AGENT_CLI``.
+(default 25 tool round trips per message), ``DTK_AGENT_CLI``,
+``DTK_AGENT_COMPACT_AT`` (see ``compact_window``).
 """
 
 from __future__ import annotations
@@ -180,25 +181,84 @@ def _max_turns() -> int:
     return value if value > 0 else DEFAULT_MAX_TURNS
 
 
-DEFAULT_COMPACT_AT = 60_000
+COMPACT_SHARE = 0.5  # default: compact at half the model's context window
+FALLBACK_COMPACT_AT = 100_000  # until the model's window is known
 _OFF = {"0", "off", "none", "false"}
+_WINDOWS_FILE = "model-windows.json"
 
 
-def compact_window() -> int | None:
-    """Auto-compaction window (tokens) for the CLI, ``DTK_AGENT_COMPACT_AT``
-    (default 60k; ``off`` = the CLI's own default, near the model window).
+def _windows_path() -> Path:
+    return dtk_home() / "agent" / _WINDOWS_FILE
 
-    Passed as ``CLAUDE_CODE_AUTO_COMPACT_WINDOW``: the CLI summarises older
-    turns once the context approaches it (datatoolkit-issues#151).
-    """
-    raw = os.environ.get("DTK_AGENT_COMPACT_AT", "").strip().lower()
+
+def known_window(model_name: str | None) -> int | None:
+    """The context window (tokens) last reported by the CLI for ``model_name``
+    (None = the CLI's default model), from ``$DTK_HOME/agent/model-windows.json``."""
+    try:
+        windows = json.loads(_windows_path().read_text())
+        value = int(windows.get(model_name or "default") or 0)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+    return value if value > 0 else None
+
+
+def remember_window(model_name: str | None, model_usage: dict | None) -> int | None:
+    """Store the window of the model that did the turn's work (the
+    ``modelUsage`` entry with the most input), keyed by the asked model."""
+    entries = [u for u in (model_usage or {}).values() if isinstance(u, dict)]
+    if not entries:
+        return None
+    main = max(entries, key=lambda u: sum(
+        int(u.get(k) or 0) for k in ("inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
+    ))
+    window = int(main.get("contextWindow") or 0)
+    if window <= 0 or known_window(model_name) == window:
+        return window or None
+    path = _windows_path()
+    try:
+        windows = json.loads(path.read_text()) if path.is_file() else {}
+        windows = windows if isinstance(windows, dict) else {}
+        windows[model_name or "default"] = window
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_text(json.dumps(windows, indent=1))
+    except (OSError, ValueError):
+        return window
+    return window
+
+
+def _parse_compact(raw: str, window: int | None) -> int | None | str:
+    """``DTK_AGENT_COMPACT_AT`` -> tokens, None (off) or "default" (unset / junk)."""
     if raw in _OFF:
         return None
+    if raw.endswith("%"):
+        try:
+            share = float(raw[:-1]) / 100
+        except ValueError:
+            return "default"
+        if not 0 < share <= 1:
+            return "default"
+        return int(window * share) if window else FALLBACK_COMPACT_AT
     try:
-        value = int(raw) if raw else DEFAULT_COMPACT_AT
+        value = int(raw) if raw else 0
     except ValueError:
-        return DEFAULT_COMPACT_AT
-    return value if value > 0 else None
+        return "default"
+    return value if value > 0 else "default"
+
+
+def compact_window(model_name: str | None = None) -> int | None:
+    """Auto-compaction window (tokens) for the CLI (datatoolkit-issues#193).
+
+    ``DTK_AGENT_COMPACT_AT``: tokens, a share of the model's window (``40%``)
+    or ``off`` (the CLI's own default, near the window). Unset: half the
+    model's context window, as the CLI last reported it for this model
+    (``known_window``), else ``FALLBACK_COMPACT_AT``. Passed as
+    ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` when the CLI starts.
+    """
+    window = known_window(model_name)
+    value = _parse_compact(os.environ.get("DTK_AGENT_COMPACT_AT", "").strip().lower(), window)
+    if value == "default":
+        return int(window * COMPACT_SHARE) if window else FALLBACK_COMPACT_AT
+    return value
 
 
 def _workdir() -> Path:
@@ -218,8 +278,8 @@ def _tokens(usage: dict | None) -> tuple[int, int, int, int]:
     return total_in, int(usage.get("output_tokens") or 0), write, read
 
 
-def _compact_env() -> dict[str, str]:
-    window = compact_window()
+def _compact_env(model_name: str | None = None) -> dict[str, str]:
+    window = compact_window(model_name)
     return {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(window)} if window else {}
 
 
@@ -266,7 +326,7 @@ class SdkAdapter:
             model=self.model_name,
             cli_path=cli_path(),
             cwd=str(_workdir()),
-            env=_compact_env(),
+            env=_compact_env(self.model_name),
         )
         self.client = ClaudeSDKClient(options)
         await self.client.connect()
@@ -368,6 +428,7 @@ class SdkAdapter:
 
     def _on_result(self, message: Any) -> str:
         assert self.chat is not None
+        remember_window(self.model_name, getattr(message, "model_usage", None))
         if message.usage:
             _set_usage(self.chat, _tokens(message.usage), context=None)
         if message.is_error and not self._capped and not self.chat.cancelled:
