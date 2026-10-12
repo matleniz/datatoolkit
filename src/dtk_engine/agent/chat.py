@@ -155,6 +155,9 @@ class ChatSession:
         self._permissions: dict[str, asyncio.Future] = {}
         # Workspaces this conversation was introduced to (reset with the adapter).
         self.introduced: set[str] = set()
+        # Set when the model lost its history (compaction, dropped turns): the
+        # next turn re-sends the intro and the full step list (#188).
+        self.reintro = False
 
     # -- what adapters call ----------------------------------------------
     def emit(self, type_: str, **fields: Any) -> None:
@@ -487,6 +490,10 @@ class AgentHub:
             return ""
         key = (ctx.get("session") or chat.session, name)
         first = TRACKER.seen(key) is None
+        if chat.reintro:
+            chat.reintro = False
+            chat.introduced.discard(name)
+            first = True
         note = turn_note(ctx, steps, TRACKER.changes(key, steps), first)
         return note + await self._intro_note(chat, name)
 

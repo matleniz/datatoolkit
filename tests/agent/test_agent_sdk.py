@@ -237,6 +237,7 @@ async def test_compaction_is_announced(fake):
     await adapter.send("hello")
     events = [e for e in listener.events() if e["type"] == "compacted"]
     assert events == [{"type": "compacted", "turn": "t1", "trigger": "auto", "pre_tokens": 61234}]
+    assert chat.reintro  # #188: the next turn re-sends the intro and the step list
 
 
 async def test_turn_translation(fake):

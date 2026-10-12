@@ -258,10 +258,12 @@ class SdkAdapter:
         await self.client.connect()
 
     def _on_system(self, message: Any) -> None:
-        """A CLI compaction: tell the panel (older turns are now a summary)."""
+        """A CLI compaction: tell the panel (older turns are now a summary) and
+        have the next turn re-send the intro and the full step list (#188)."""
         assert self.chat is not None
         if message.subtype != "compact_boundary":
             return
+        self.chat.reintro = True
         meta = (message.data or {}).get("compact_metadata") or {}
         self.chat.emit("compacted", trigger=meta.get("trigger"), pre_tokens=meta.get("pre_tokens"))
 
