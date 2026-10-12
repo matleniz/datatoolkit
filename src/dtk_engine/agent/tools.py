@@ -207,7 +207,7 @@ class _Tools:
     async def list_transforms(self, args: dict) -> dict:
         ops = await _compute(contract.list_transforms)
         if not args.get("detail"):
-            ops = policy.compact_catalog(ops, ("op", "title", "needs_target"))
+            ops = policy.compact_catalog(ops, ("op", "title", "needs_target"), "description")
         return policy.frame(ops)
 
     async def transform_schema(self, args: dict) -> dict:
@@ -490,7 +490,8 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
              "session": _SESSION,
          }, ("key",)), t.run_key, True),
         ("list_transforms",
-         "List the transform ops usable in workspace steps (op, title; descriptions with detail).",
+         ("List the transform ops usable in workspace steps (op, title, one-line "
+          "summary; full descriptions with detail)."),
          _schema({"detail": _DETAIL}), t.list_transforms, True),
         ("transform_schema", "JSON Schema of a transform op's params.",
          _schema({"op": _STR}, ("op",)), t.transform_schema, True),

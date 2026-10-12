@@ -233,9 +233,10 @@ def _filled(series: pd.Series, fill) -> pd.Series:
     params_model=ImputeParams,
     fit=_fit_impute,
     title="Impute",
-    description="Fill missing values with a statistic learned on train (median, "
-    "mean, mode, constant), a formula of other columns, or from the same "
-    "entity's rows (group mean / previous / interpolated value).",
+    description="Fill missing values: a train statistic (median, mean, mode, "
+    "constant), a formula of other columns, or the same entity's rows "
+    "(group_mean / group_prev / group_interp by an id column); optional "
+    "<col>_was_missing flag. One step, no helper columns needed.",
 )
 def impute(df: pd.DataFrame, params: ImputeParams, state: dict) -> pd.DataFrame:
     """Fill missing values: train statistic, constant, formula or group fill."""

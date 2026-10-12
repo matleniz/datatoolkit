@@ -245,3 +245,13 @@ def test_control_files_refused_even_if_workspace_references_them(home):
     assert str(runtime) in policy.workspace_paths()
     with pytest.raises(policy.PolicyError):
         policy.check_args({"path": str(runtime)})
+
+
+def test_summary_line_first_sentence_on_one_line():
+    from dtk_engine.agent.policy import SUMMARY_CHARS, summary_line
+
+    assert summary_line(None) is None
+    assert summary_line("Keep rows (incl. where). Then more.") == "Keep rows (incl. where)."
+    assert summary_line("Two\n  lines here") == "Two lines here"
+    long = summary_line("x" * (SUMMARY_CHARS + 50))
+    assert len(long) == SUMMARY_CHARS and long.endswith("…")

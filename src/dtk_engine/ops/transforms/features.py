@@ -291,7 +291,9 @@ def _group_agg_fit(df: pd.DataFrame, params: GroupAggParams) -> dict:
     params_model=GroupAggParams,
     fit=_group_agg_fit,
     title="Group aggregate",
-    description="Join per-group statistics (fitted on train) onto each row.",
+    description="Join per-group statistics (fitted on train; groups unseen in "
+    "train get NaN) onto each row. To fill missing values from the same "
+    "entity's rows, use impute group strategies instead.",
 )
 def group_agg(df: pd.DataFrame, params: GroupAggParams, state: dict) -> pd.DataFrame:
     """Add per-group statistics of a column; unseen groups get NaN."""

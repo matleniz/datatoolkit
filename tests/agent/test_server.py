@@ -317,6 +317,20 @@ async def test_heavy_reads_are_compact_by_default(client, bridge):
     assert all("description" in o for o in ops)
 
 
+async def test_list_transforms_compact_has_one_line_summaries(client):
+    """#185: the compact catalog says what each op can do, in one line each."""
+    from dtk_engine.agent.policy import SUMMARY_CHARS
+
+    ops = _payload(await client.call_tool("list_transforms", {}))["data"]
+    assert all("description" not in o and o.get("summary") for o in ops)
+    assert all(len(o["summary"]) <= SUMMARY_CHARS and "\n" not in o["summary"] for o in ops)
+    by_op = {o["op"]: o["summary"] for o in ops}
+    assert "group_interp" in by_op["impute"] and "was_missing" in by_op["impute"]
+    assert not by_op["impute"].endswith("…")
+    assert "impute" in by_op["group_agg"] or "unseen" in by_op["group_agg"]
+    assert len(json.dumps(ops)) < 8000  # stays a cheap first call
+
+
 async def test_study_in_memory_leaves_no_trace(client, bridge, home):
     """#155 acceptance: the ledd study (mask 1 row in 5, impute two ways, score)
     runs with preview_steps + evaluate only: no command reaches Studio, the
