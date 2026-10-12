@@ -114,3 +114,28 @@ def test_overwrite_removes_code_and_csv(exported):
 def test_unknown_format_is_refused(exported, tmp_path):
     with pytest.raises(KeyParamsError, match="formats"):
         contract.export_workspace("demo", str(tmp_path / "x"), formats=["xlsx"])
+
+
+def test_onehot_missing_option_replays_in_script(tmp_path):
+    contract.save_workspace({
+        "name": "miss",
+        "datasets": {
+            "train": {"x": {"kind": "csv", "path": str(TRAIN_CSV)}},
+            "test": {"x": {"kind": "csv", "path": str(TEST_CSV)}},
+        },
+        "steps": [{"op": "onehot", "target": "both",
+                   "params": {"columns": ["Embarked", "Cabin"], "missing": True}}],
+    })
+    out = tmp_path / "export"
+    contract.export_workspace("miss", str(out), formats=["parquet", "py"])
+    expected = _parquet(out, "train")
+    assert "Cabin_missing" in expected.columns
+    script = (out / "code" / "pipeline.py").read_text()
+    check = tmp_path / "check.py"
+    check.write_text(
+        script.replace("print(train.shape", "(train.shape")
+        + f"\ntrain.reset_index(drop=True).to_parquet({str(tmp_path / 'tr.parquet')!r})\n"
+    )
+    done = subprocess.run([sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    _same(pd.read_parquet(tmp_path / "tr.parquet"), expected)

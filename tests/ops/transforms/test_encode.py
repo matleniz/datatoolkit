@@ -91,3 +91,40 @@ def test_ordinal_params_required_and_unique():
         t.parse({"categories": {"size": []}})
     with pytest.raises(KeyParamsError):
         t.parse({"categories": {"size": ["S", "S"]}})
+
+
+def test_onehot_missing_own_category():
+    train = pd.DataFrame({"c": ["b", "a", None, "a", None]})
+    t, p, state = _fit("onehot", train, columns=["c"], missing=True)
+    json.dumps(state)
+    assert state["c"]["missing"] == "kept"
+    out = t.apply(pd.DataFrame({"c": [None, "a", "z"]}), p, state)
+    assert out.columns.tolist() == ["c_a", "c_b", "c_missing"]
+    assert out.values.tolist() == [[0, 0, 1], [1, 0, 0], [0, 0, 0]]
+    # Default: missing stays an all-zero row, no extra column.
+    t, p, state = _fit("onehot", train, columns=["c"])
+    assert t.apply(train, p, state).columns.tolist() == ["c_a", "c_b"]
+
+
+def test_onehot_missing_never_seen_on_train_adds_no_column():
+    t, p, state = _fit(
+        "onehot", pd.DataFrame({"c": ["a", "b"]}), columns=["c"], missing=True
+    )
+    out = t.apply(pd.DataFrame({"c": [None]}), p, state)
+    assert out.columns.tolist() == ["c_a", "c_b"]
+
+
+def test_onehot_missing_with_drop_first_and_min_frequency():
+    train = pd.DataFrame({"c": ["a"] * 6 + ["b"] * 3 + [None]})
+    t, p, state = _fit("onehot", train, columns=["c"], missing=True, drop_first=True)
+    assert t.apply(train, p, state).columns.tolist() == ["c_b", "c_missing"]
+    t, p, state = _fit("onehot", train, columns=["c"], missing=True, min_frequency=2)
+    assert state["c"]["missing"] == "infrequent"
+    out = t.apply(train, p, state)
+    assert out.columns.tolist() == ["c_a", "c_b", "c_infrequent"]
+    assert out["c_infrequent"].tolist() == [0] * 9 + [1]
+    # handle_unknown="error": missing is known, never an error.
+    t, p, state = _fit(
+        "onehot", train, columns=["c"], missing=True, handle_unknown="error"
+    )
+    t.apply(pd.DataFrame({"c": [None]}), p, state)

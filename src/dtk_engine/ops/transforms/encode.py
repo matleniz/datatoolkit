@@ -18,6 +18,7 @@ from dtk_engine.params import columns_field
 from dtk_engine.transform_registry import TransformParams, transform
 
 INFREQUENT_SUFFIX = "infrequent"
+MISSING_SUFFIX = "missing"
 UNKNOWN_CODE = -1
 
 Category = str | int | float | bool
@@ -45,6 +46,12 @@ class OnehotParams(TransformParams):
         default="ignore",
         description="Category unseen on train: all-zero row (ignore) or raise",
     )
+    missing: bool = Field(
+        default=False,
+        description="Treat missing as a category of its own: adds a <col>_missing "
+        "column (last, after the categories) when missing was seen on train; it "
+        "follows min_frequency and drop_first like any category",
+    )
 
     @field_validator("min_frequency")
     @classmethod
@@ -65,10 +72,13 @@ def _fit_onehot(df: pd.DataFrame, params: OnehotParams) -> dict:
                 threshold = math.ceil(threshold * counts.sum())
         # Sorted by their text so the output columns do not depend on row order.
         cats = sorted(counts.index, key=str)
+        n_missing = int(df[col].isna().sum())
         state[col] = {
             "categories": [_py(c) for c in cats if counts[c] >= threshold],
             "infrequent": [_py(c) for c in cats if counts[c] < threshold],
         }
+        if params.missing and n_missing:
+            state[col]["missing"] = "kept" if n_missing >= threshold else "infrequent"
     return state
 
 
@@ -78,9 +88,23 @@ def _dummies(s: pd.Series, col: str, learned: dict, params: OnehotParams):
     if params.handle_unknown == "error" and not known.all():
         unseen = sorted(map(str, s[~known].unique()))
         raise ValueError(f"onehot: unknown categories in {col!r}: {unseen}")
-    columns = {f"{col}_{c}": (s == c) for c in kept[1 if params.drop_first else 0 :]}
-    if infrequent:
-        columns[f"{col}_{INFREQUENT_SUFFIX}"] = s.isin(infrequent)
+    # Missing is the last category: it is the one dropped by drop_first only
+    # when nothing else is kept.
+    names = [str(c) for c in kept] + (
+        [MISSING_SUFFIX] if learned.get("missing") == "kept" else []
+    )
+    masks = [s == c for c in kept] + (
+        [s.isna()] if learned.get("missing") == "kept" else []
+    )
+    start = 1 if params.drop_first else 0
+    columns = {
+        f"{col}_{n}": m for n, m in zip(names[start:], masks[start:], strict=True)
+    }
+    if infrequent or learned.get("missing") == "infrequent":
+        grouped = s.isin(infrequent)
+        if learned.get("missing") == "infrequent":
+            grouped = grouped | s.isna()
+        columns[f"{col}_{INFREQUENT_SUFFIX}"] = grouped
     return pd.DataFrame(columns, index=s.index).astype(int)
 
 
@@ -89,8 +113,9 @@ def onehot(df: pd.DataFrame, params: OnehotParams, state: dict) -> pd.DataFrame:
     """One 0/1 column per train category, in place of the column.
 
     Output names are ``<col>_<category>`` (categories sorted as text), plus
-    ``<col>_infrequent`` when ``min_frequency`` grouped some. Missing and
-    unknown values give an all-zero row (impute first to keep missingness).
+    ``<col>_infrequent`` when ``min_frequency`` grouped some. Unknown values
+    give an all-zero row; so do missing ones unless ``missing`` is set, which
+    adds ``<col>_missing`` (a missing value is then a category of its own).
     """
     missing = [c for c in params.columns if c not in df.columns]
     if missing:
