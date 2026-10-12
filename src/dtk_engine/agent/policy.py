@@ -328,8 +328,16 @@ def _head(text: str | None, limit: int) -> str | None:
     return text[:limit] + "…"
 
 
+def _flat(value: Any) -> str:
+    if isinstance(value, list) and all(isinstance(v, str | int | float) for v in value):
+        return ",".join(str(v) for v in value)
+    if isinstance(value, str | int | float | bool) or value is None:
+        return str(value)
+    return json.dumps(value, separators=(",", ":"), default=str)
+
+
 def _step_line(step: dict) -> dict:
-    params = json.dumps(step.get("params") or {}, separators=(",", ":"), default=str)
+    params = " ".join(f"{k}={_flat(v)}" for k, v in (step.get("params") or {}).items())
     line = {k: step[k] for k in ("id", "op", "target") if k in step}
     line["params"] = _head(params, _PARAM_CHARS)
     if step.get("note"):

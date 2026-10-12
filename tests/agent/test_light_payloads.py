@@ -62,7 +62,7 @@ def test_compact_workspace_lines_and_heads():
     step = out["steps"][1]
     assert set(step) == {"id", "op", "target", "params", "has_note"}
     assert "has_note" not in out["steps"][0]
-    assert step["params"] == '{"columns":["Fare"]}'
+    assert step["params"] == "columns=Fare"
     wide = {"steps": [{"id": "s1", "op": "x", "target": "both", "params": {"c": "y" * 500}}]}
     assert len(compact_workspace(wide)["steps"][0]["params"]) <= 81
     assert len(out["notes"]["workspace"]) < 100
