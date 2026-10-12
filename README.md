@@ -336,6 +336,7 @@ packs are never on in the image.
 | `DTK_AGENT_PACK` | default pack: `api-anthropic` (default), `api-openai` or `stub`; anything else refuses to start |
 | `ANTHROPIC_API_KEY`, `DTK_ANTHROPIC_*`, `DTK_OPENAI_*` | provider settings, from the environment only (table above) |
 | `DTK_UI_ALLOWED_HOSTS` | extra hostnames accepted in `Host` (comma separated); `localhost` / `127.0.0.1` / `[::1]` always are. Needed only when the browser reaches the proxy by another name |
+| `DTK_UI_RECONNECT_GRACE` | seconds a command waits for Studio's event stream to (re)attach before `no_studio` (default `3`, `0` = fail at once; bounded by the command timeout) |
 | `DTK_CORS_ORIGINS` | extra origins (comma separated, e.g. `https://dtk.example`). Not needed when Studio and `/api` share an origin (nginx in front) |
 
 ```bash

@@ -512,3 +512,73 @@ def test_review_over_http_round_trip():
             assert final.status_code == 200
             status = httpx.get(f"{srv.url}/api/ui/commands/{cid}", headers=AUTH, timeout=5)
             assert status.json() == {"id": cid, "ok": True, "identity": "i2"}
+
+
+# -- reconnect grace (datatoolkit-issues#190) ------------------------------
+
+
+def test_reconnect_within_grace_delivers_command():
+    async def scenario():
+        bridge = UiBridge("t", reconnect_grace=2)
+        task = asyncio.create_task(bridge.send_command({"type": "x"}, timeout=5))
+        await asyncio.sleep(0.1)  # no listener yet: the command waits
+        assert not task.done()
+        queue = bridge.add_listener("s")
+        cmd = await asyncio.wait_for(queue.get(), 1)
+        assert bridge.ack({"id": cmd["id"], "ok": True})
+        assert await asyncio.wait_for(task, 1) == {"id": cmd["id"], "ok": True}
+
+    asyncio.run(scenario())
+
+
+def test_no_listener_after_grace_is_no_studio():
+    async def scenario():
+        bridge = UiBridge("t", reconnect_grace=0.1)
+        started = time.monotonic()
+        result = await bridge.send_command({"type": "x", "id": "a"}, timeout=5)
+        assert result == {"id": "a", "ok": False, "error": "no_studio"}
+        assert 0.09 <= time.monotonic() - started < 1
+
+    asyncio.run(scenario())
+
+
+def test_grace_is_bounded_by_command_timeout():
+    async def scenario():
+        bridge = UiBridge("t", reconnect_grace=5)
+        started = time.monotonic()
+        result = await bridge.send_command({"type": "x", "id": "a"}, timeout=0.1)
+        assert result["error"] == "no_studio"
+        assert time.monotonic() - started < 1
+
+    asyncio.run(scenario())
+
+
+def test_listener_drop_and_return_within_grace_keeps_pending_command():
+    async def scenario():
+        bridge = UiBridge("t", reconnect_grace=2)
+        queue = bridge.add_listener("s")
+        task = asyncio.create_task(bridge.send_command({"type": "x"}, timeout=5))
+        await asyncio.sleep(0.05)  # queued, not read: the old stream dropped first
+        bridge.remove_listener("s", queue)
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        again = bridge.add_listener("s")
+        cmd = await asyncio.wait_for(again.get(), 1)  # redelivered
+        bridge.ack({"id": cmd["id"], "ok": True})
+        assert (await asyncio.wait_for(task, 1))["ok"] is True
+
+    asyncio.run(scenario())
+
+
+def test_listener_drop_without_return_fails_after_grace():
+    async def scenario():
+        bridge = UiBridge("t", reconnect_grace=0.1)
+        queue = bridge.add_listener("s")
+        task = asyncio.create_task(bridge.send_command({"type": "x", "id": "a"}, timeout=5))
+        await asyncio.sleep(0.02)
+        bridge.remove_listener("s", queue)
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        assert await asyncio.wait_for(task, 1) == {"id": "a", "ok": False, "error": "no_studio"}
+
+    asyncio.run(scenario())
