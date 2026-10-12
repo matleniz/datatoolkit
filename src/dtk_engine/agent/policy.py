@@ -312,9 +312,33 @@ def compact_align(data: dict) -> dict:
     return {**data, "columns": others, "matched": matched, "note": _DETAIL_HINT}
 
 
-def compact_catalog(items: list[dict], keys: tuple[str, ...]) -> list[dict]:
-    """``list_keys`` / ``list_transforms`` reduced to ``keys`` (true flags only)."""
-    return [{k: item[k] for k in keys if item.get(k) not in (None, False)} for item in items]
+SUMMARY_CHARS = 240  # a catalog entry's one-line summary
+_SENTENCE_END = re.compile(r"\.\s+(?=[A-Z])")  # not "incl. where"
+
+
+def summary_line(text: str | None) -> str | None:
+    """The first sentence of ``text`` on one line, cut to ``SUMMARY_CHARS``."""
+    if not text:
+        return None
+    line = " ".join(text.split())
+    end = _SENTENCE_END.search(line)
+    line = line if end is None else line[: end.start() + 1]
+    return line if len(line) <= SUMMARY_CHARS else line[: SUMMARY_CHARS - 1] + "…"
+
+
+def compact_catalog(
+    items: list[dict], keys: tuple[str, ...], summary: str | None = None
+) -> list[dict]:
+    """``list_keys`` / ``list_transforms`` reduced to ``keys`` (true flags only),
+    plus ``summary``: the first sentence of that field, when given."""
+    out = []
+    for item in items:
+        entry = {k: item[k] for k in keys if item.get(k) not in (None, False)}
+        line = summary_line(item.get(summary)) if summary else None
+        if line:
+            entry["summary"] = line
+        out.append(entry)
+    return out
 
 
 def check_command(cmd_type: str) -> None:
