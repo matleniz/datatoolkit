@@ -207,7 +207,7 @@ def test_system_prompt_step_note_and_memory_rules():
         "One user decision = one step",
         "helper columns",
         "replace / remove by id",
-        "step.note in propose_steps",
+        "set_note (kind step) on each of its",
         "add_indicator",
         "workspace document",
         "remember",
