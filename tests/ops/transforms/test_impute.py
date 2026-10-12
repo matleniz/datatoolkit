@@ -204,7 +204,7 @@ def test_impute_formula_fills_only_missing_rows():
     out = t.apply(test, p, state)
     # Observed 40.0 kept although age - years = 64; undefined expr -> stays NaN.
     assert out["age_at_diagnosis"].tolist()[:2] == [47.0, 40.0]
-        assert pd.isna(out["age_at_diagnosis"].iloc[2])
+    assert pd.isna(out["age_at_diagnosis"].iloc[2])
     assert out.index.tolist() == [4, 4, 5]
     assert test["age_at_diagnosis"].isna().sum() == 2  # input untouched
 
