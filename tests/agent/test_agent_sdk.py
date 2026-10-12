@@ -200,6 +200,22 @@ async def test_every_ui_command_tool_is_allowed_with_session_pinned(fake):
         assert spec.tool_name in client.options.system_prompt
 
 
+def test_system_prompt_step_note_and_memory_rules():
+    from dtk_engine.agent.packs.agent_sdk import SYSTEM_PROMPT
+
+    for rule in (
+        "One user decision = one step",
+        "helper columns",
+        "replace / remove by id",
+        "set_note (kind step) on each of its",
+        "add_indicator",
+        "workspace document",
+        "remember",
+    ):
+        assert rule in SYSTEM_PROMPT, rule
+    assert "{studio_tools}" not in SYSTEM_PROMPT
+
+
 def _stream(event: dict) -> StreamEvent:
     return StreamEvent(uuid="u", session_id="x", event=event)
 
