@@ -489,3 +489,12 @@ async def test_context_too_long_with_one_turn_is_an_error(monkeypatch, serve):
     _, _, events = await run("api-openai")
     assert next(e for e in events if e["type"] == "error")["code"] == "invalid_request_error"
     assert len(server.bodies()) == 1
+
+
+async def test_dropped_turns_flag_the_intro_for_resend(monkeypatch, serve):
+    """#188: whole turns dropped from the history take the intro with them."""
+    setup_pack(monkeypatch, "api-openai")
+    monkeypatch.setattr(api_chat, "HISTORY_CHARS", 3000)
+    serve(Server([openai_text("ok") for _ in range(20)]))
+    hub, _ = await chat_turns([f"{i} " + "x" * 500 for i in range(8)])
+    assert hub._chat("s1").reintro

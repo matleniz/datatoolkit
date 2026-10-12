@@ -545,6 +545,8 @@ class ApiAdapter:
             return False
         del self.history[:cut]
         self._mark = max(0, self._mark - cut)
+        if self.chat is not None:
+            self.chat.reintro = True  # the dropped turns held the intro (#188)
         return True
 
     def _compact(self) -> None:

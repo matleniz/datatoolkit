@@ -125,3 +125,25 @@ async def test_documents_once_per_conversation(home, monkeypatch):
     assert "Workspace documents" not in await hub._workspace_note(chat)
     chat.introduced = set()  # what a new adapter (a new conversation) does
     assert "Workspace documents" in await hub._workspace_note(chat)
+
+
+async def test_reintro_resends_intro_and_full_steps(home):
+    """#188: after a compaction / dropped turns the next note is a first one again."""
+    from dtk_engine.agent.chat import AgentHub
+    from dtk_engine.agent.packs.stub import chat_pack
+
+    contract.add_document("demo", _upload(home, "dictionary.md", "x"))
+    bridge = UiBridge("t")
+    bridge.put_context({"session": "s1", "workspace": "demo", "role": "train", "version": 0,
+                        "latest": 0, "identity": "i"})
+    hub = AgentHub(bridge, chat_pack())
+    chat = hub._chat("s1")
+    await hub._workspace_note(chat)
+    second = await hub._workspace_note(chat)
+    assert "unchanged since you last looked" in second and "Workspace documents" not in second
+    chat.reintro = True
+    third = await hub._workspace_note(chat)
+    assert "No steps yet." in third  # the full list, as for a first turn
+    assert "[Workspace documents (read_document): d1 dictionary.md]" in third
+    assert not chat.reintro
+    assert "Workspace documents" not in await hub._workspace_note(chat)
