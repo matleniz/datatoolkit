@@ -20,6 +20,13 @@ the target session's listeners and returns the ack dict
 listener, or the listener went away before acking) and ``timeout``. A
 ``stale`` ack is just an ack Studio sends; it is passed through.
 
+Reconnect grace (``DTK_UI_RECONNECT_GRACE`` seconds, default 3, 0 = off): an
+``EventSource`` that is reconnecting has no listener for a moment. With no
+listener, ``send_command`` waits up to the grace (bounded by its timeout) for
+one to attach before answering ``no_studio``; when a session's last listener
+drops, its pending commands and reviews are failed only after the grace, and
+commands that were queued but never read are redelivered to the new listener.
+
 Reviews (a command Studio holds for the user, e.g. a destructive
 ``propose_steps``): Studio first sends an **interim** ack ``{id, pending:
 "review"}``; ``send_command`` then returns at once ``{id, ok: None, pending:
@@ -73,6 +80,7 @@ from typing import Any
 
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 DEFAULT_REVIEW_TIMEOUT = 900.0
+DEFAULT_RECONNECT_GRACE = 3.0
 MAX_RESULTS = 200
 _TOKEN_IN_QUERY = re.compile(r"([?&]token=)[^&\s\"']*", re.IGNORECASE)
 
@@ -84,6 +92,15 @@ def review_timeout_from_env() -> float:
     except ValueError:
         return DEFAULT_REVIEW_TIMEOUT
     return value if value > 0 else DEFAULT_REVIEW_TIMEOUT
+
+
+def reconnect_grace_from_env() -> float:
+    """``DTK_UI_RECONNECT_GRACE`` seconds (>= 0; 0 = fail at once), else 3."""
+    try:
+        value = float(os.environ.get("DTK_UI_RECONNECT_GRACE", ""))
+    except ValueError:
+        return DEFAULT_RECONNECT_GRACE
+    return value if value >= 0 else DEFAULT_RECONNECT_GRACE
 
 
 def allowed_hosts() -> set[str]:
@@ -103,9 +120,21 @@ def host_name(host_header: str) -> str:
 class UiBridge:
     """Context store, SSE listener registry and command / ack relay."""
 
-    def __init__(self, token: str | None = None, *, review_timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        review_timeout: float | None = None,
+        reconnect_grace: float | None = None,
+    ) -> None:
         self.token: str = token or os.environ.get("DTK_UI_TOKEN") or secrets.token_urlsafe(32)
         self.review_timeout = review_timeout or review_timeout_from_env()
+        self.reconnect_grace = (
+            reconnect_grace_from_env() if reconnect_grace is None else max(reconnect_grace, 0.0)
+        )
+        self._grace_timers: dict[str, asyncio.TimerHandle] = {}
+        self._undelivered: dict[str, list[dict]] = {}  # queued, never read, last listener gone
+        self._attach_waiters: list[asyncio.Future] = []
         self._contexts: dict[str, dict] = {}  # insertion order = recency (last PUT last)
         self._listeners: dict[str, list[asyncio.Queue]] = {}
         self._pending: dict[str, tuple[asyncio.Future, str]] = {}
@@ -136,6 +165,15 @@ class UiBridge:
             queue.put_nowait(None)
         first = not self._listeners.get(session)
         self._listeners.setdefault(session, []).append(queue)
+        timer = self._grace_timers.pop(session, None)
+        if timer is not None:
+            timer.cancel()
+        for cmd in self._undelivered.pop(session, []):
+            if cmd["id"] in self._pending:  # not timed out meanwhile
+                queue.put_nowait(cmd)
+        for waiter in self._attach_waiters:
+            if not waiter.done():
+                waiter.set_result(None)
         if first:
             self._notify(session, True)
         return queue
@@ -146,9 +184,63 @@ class UiBridge:
             queues.remove(queue)
         if not queues:
             had = self._listeners.pop(session, None) is not None
-            self._fail_pending(session, "no_studio")
+            self._fail_after_grace(session, queue)
             if had:
                 self._notify(session, False)
+
+    def _fail_after_grace(self, session: str, queue: asyncio.Queue) -> None:
+        """Last listener of ``session`` is gone: fail its commands now, or after the grace."""
+        waiting = any(s == session for _, s in self._pending.values()) or any(
+            s == session for s, _ in self._reviews.values()
+        )
+        if not waiting:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self.reconnect_grace <= 0 or self._closed or loop is None:
+            self._fail_pending(session, "no_studio")
+            return
+        while not queue.empty():
+            item = queue.get_nowait()
+            if isinstance(item, dict) and item.get("id") in self._pending:
+                self._undelivered.setdefault(session, []).append(item)
+        previous = self._grace_timers.pop(session, None)
+        if previous is not None:
+            previous.cancel()
+        self._grace_timers[session] = loop.call_later(
+            self.reconnect_grace, self._grace_expired, session
+        )
+
+    def _grace_expired(self, session: str) -> None:
+        self._grace_timers.pop(session, None)
+        if not self.has_listener(session):
+            self._undelivered.pop(session, None)
+            self._fail_pending(session, "no_studio")
+
+    async def _wait_for_listener(self, session: str | None, wait: float) -> str | None:
+        """Target session once one (re)attaches within ``wait`` seconds, else None."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            waiter: asyncio.Future = loop.create_future()
+            self._attach_waiters.append(waiter)
+            try:
+                await asyncio.wait_for(waiter, remaining)
+            except TimeoutError:
+                return None
+            finally:
+                self._attach_waiters.remove(waiter)
+                waiter.cancel()
+            if self._closed:
+                return None
+            target = self.target_session(session)
+            if target is not None:
+                return target
 
     def _notify(self, session: str, listening: bool) -> None:
         for hook in self.listener_hooks:
@@ -170,6 +262,13 @@ class UiBridge:
         for queues in self._listeners.values():
             for queue in queues:
                 queue.put_nowait(None)
+        for timer in self._grace_timers.values():
+            timer.cancel()
+        self._grace_timers.clear()
+        self._undelivered.clear()
+        for waiter in self._attach_waiters:
+            if not waiter.done():
+                waiter.set_result(None)
         sessions = {s for _, s in self._pending.values()} | {s for s, _ in self._reviews.values()}
         for session in sessions:
             self._fail_pending(session, "no_studio")
@@ -252,6 +351,8 @@ class UiBridge:
         """Relay ``cmd`` to Studio and wait for its ack (see module docstring)."""
         cid = str(cmd.get("id") or f"c{next(self._ids)}")
         target = self.target_session(session)
+        if target is None and self.reconnect_grace > 0 and not self._closed:
+            target = await self._wait_for_listener(session, min(self.reconnect_grace, timeout))
         if target is None:
             return {"id": cid, "ok": False, "error": "no_studio"}
         if cid in self._pending or cid in self._reviews:
