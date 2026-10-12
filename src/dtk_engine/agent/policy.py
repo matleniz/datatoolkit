@@ -318,7 +318,7 @@ def compact_catalog(items: list[dict], keys: tuple[str, ...]) -> list[dict]:
 
 
 NOTE_HEAD = 80  # chars of a note kept in the compact ``get_workspace``
-NOTE_CAP = 400  # chars of a note kept by ``get_notes`` unless ``full``
+NOTE_CAP = 200  # chars of a note kept by ``get_notes`` unless ``full``
 _PARAM_CHARS = 80
 
 
