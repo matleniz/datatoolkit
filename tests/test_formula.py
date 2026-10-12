@@ -109,6 +109,8 @@ def test_nan_propagation_and_divide_by_zero():
         ("(lambda x: x)(a)", "calling the result of an expression"),
         ("round(a, ndigits=1)", "keyword arguments is not allowed"),
         ('"hello"', "text constant 'hello'"),
+        ('a < "x"', "text constant 'x'"),
+        ('a == "x" == b', "text constant 'x'"),
         ("__import__('os')", "unknown function __import__\\(\\)"),
         ("eval(a)", "unknown function eval\\(\\)"),
         ("[a]", "a list literal is not allowed"),
@@ -279,25 +281,30 @@ _AGE = _PY["Age"].to_numpy()
         # numpy namespace -> whitelist
         ("np.log1p(np.abs(a))", np.log1p(np.abs(_A))),
         ("numpy.sqrt(b ** 2)", np.sqrt(_B**2)),
-        ("np.log2(Age) + np.log10(Age) + np.log(Age)",
-         np.log2(_AGE) + np.log10(_AGE) + np.log(_AGE)),
+        (
+            "np.log2(Age) + np.log10(Age) + np.log(Age)",
+            np.log2(_AGE) + np.log10(_AGE) + np.log(_AGE),
+        ),
         ("np.exp(a / 10)", np.exp(_A / 10)),
         ("np.round(a / 3, 2)", np.round(_A / 3, 2)),
         ("np.floor(a) + np.ceil(b)", np.floor(_A) + np.ceil(_B)),
         ("np.sign(a) * np.square(b)", np.sign(_A) * np.square(_B)),
-        ("np.sin(a) + np.cos(b) + np.tanh(a)",
-         np.sin(_A) + np.cos(_B) + np.tanh(_A)),
+        ("np.sin(a) + np.cos(b) + np.tanh(a)", np.sin(_A) + np.cos(_B) + np.tanh(_A)),
         ("np.clip(a, -1, 3)", np.clip(_A, -1, 3)),
         ("np.where(a > 0, a, b)", np.where(_A > 0, _A, _B)),
-        ("np.minimum(a, b) + np.maximum(a, b)",
-         np.minimum(_A, _B) + np.maximum(_A, _B)),
+        (
+            "np.minimum(a, b) + np.maximum(a, b)",
+            np.minimum(_A, _B) + np.maximum(_A, _B),
+        ),
         ("np.isnan(a)", np.zeros(4)),
         ("np.pi * a", np.pi * _A),
         ("numpy.pi", np.full(4, np.pi)),
         # conditional expression -> where (nested)
         ("a if a > b else b", np.where(_A > _B, _A, _B)),
-        ("0 if Age < 18 else (1 if Age < 65 else 2)",
-         np.where(_AGE < 18, 0.0, np.where(_AGE < 65, 1.0, 2.0))),
+        (
+            "0 if Age < 18 else (1 if Age < 65 else 2)",
+            np.where(_AGE < 18, 0.0, np.where(_AGE < 65, 1.0, 2.0)),
+        ),
         # boolean logic, element-wise -> 0/1
         ("Age >= 18 and a > 0", ((_AGE >= 18) & (_A > 0)).astype(float)),
         ("Age < 18 or Age > 65", ((_AGE < 18) | (_AGE > 65)).astype(float)),
@@ -306,8 +313,10 @@ _AGE = _PY["Age"].to_numpy()
         ("(a > 0) | (b < 0)", ((_A > 0) | (_B < 0)).astype(float)),
         ("~(a > 0)", (~(_A > 0)).astype(float)),
         ("18 <= Age < 65", ((_AGE >= 18) & (_AGE < 65)).astype(float)),
-        ("a > 0 and b > 0 and Age > 30",
-         ((_A > 0) & (_B > 0) & (_AGE > 30)).astype(float)),
+        (
+            "a > 0 and b > 0 and Age > 30",
+            ((_A > 0) & (_B > 0) & (_AGE > 30)).astype(float),
+        ),
         # arithmetic operators
         ("a ** 2", _A**2),
         ("Age % 7", np.mod(_AGE, 7)),
@@ -321,8 +330,7 @@ _AGE = _PY["Age"].to_numpy()
         # column access
         ('df["Nom col"] * 2', _PY["Nom col"].to_numpy() * 2),
         ("df.Age - df['a']", _AGE - _A),
-        ('np.log(df["Age"]) if df.a > 0 else -1',
-         np.where(_A > 0, np.log(_AGE), -1.0)),
+        ('np.log(df["Age"]) if df.a > 0 else -1', np.where(_A > 0, np.log(_AGE), -1.0)),
     ],
 )
 def test_python_style_accepted(expr, expected):
@@ -356,9 +364,9 @@ def test_python_style_accepted(expr, expected):
         ("a.b", r"attribute access is only allowed as np\.<function> or df\.<column>"),
         ("df.a.b", r"attribute access is only allowed as np\.<function>"),
         ("a[0]", r'subscript is only allowed as df\["column"\]'),
-        ("df[0]", r'df\[\.\.\.\] needs a column name in quotes'),
-        ("df[a]", r'df\[\.\.\.\] needs a column name in quotes'),
-        ("df['a':'b']", r'df\[\.\.\.\] needs a column name in quotes'),
+        ("df[0]", r"df\[\.\.\.\] needs a column name in quotes"),
+        ("df[a]", r"df\[\.\.\.\] needs a column name in quotes"),
+        ("df['a':'b']", r"df\[\.\.\.\] needs a column name in quotes"),
         ("log(a)(b)", "calling the result of an expression is not allowed"),
         ("np.log(a).real", "attribute access is only allowed"),
         ("__builtins__", "dunder name __builtins__ is not allowed"),
@@ -569,7 +577,9 @@ def test_fillna():
 
 
 def test_fill_only_missing_rows():
-    out = _ev([40.0, _NAN, _NAN], "where(isna(x), age - 5.6, x)", age=[50.0, 60.0, 70.0])
+    out = _ev(
+        [40.0, _NAN, _NAN], "where(isna(x), age - 5.6, x)", age=[50.0, 60.0, 70.0]
+    )
     assert out.tolist() == pytest.approx([40.0, 54.4, 64.4])
 
 
@@ -585,3 +595,57 @@ def test_nan_functions_validation():
 def test_description_mentions_nan_functions():
     desc = get_transform("formula").description
     assert "isna" in desc and "fillna" in desc
+
+
+def _text_df():
+    return pd.DataFrame(
+        {"sex": ["male", "female", None, "male"], "n": [1.0, 2.0, 3.0, np.nan]}
+    )
+
+
+def test_text_column_in_arithmetic_is_refused_by_name():
+    with pytest.raises(KeyParamsError, match="column 'sex' holds text"):
+        _run(_text_df(), name="y", expr="sex + 1")
+    with pytest.raises(KeyParamsError, match="column 'sex' holds text"):
+        _run(_text_df(), name="y", expr='fillna(df["sex"], 0)')
+
+
+def test_numeric_column_with_junk_tokens_still_reads():
+    df = pd.DataFrame({"age": ["10", "unknown", "30", "40"]})
+    out = _run(df, name="y", expr="age * 2")
+    assert out["y"].tolist()[0::2] == [20.0, 60.0]
+    assert np.isnan(out["y"].iloc[1])
+
+
+@pytest.mark.parametrize(
+    "expr", ['sex == "male"', 'df["sex"] == "male"', '"male" == df.sex']
+)
+def test_text_equality(expr):
+    out = _run(_text_df(), name="y", expr=expr)["y"]
+    assert out.iloc[[0, 1, 3]].tolist() == [1.0, 0.0, 1.0]
+    assert np.isnan(out.iloc[2])
+
+
+def test_text_inequality_and_composition():
+    out = _run(_text_df(), name="y", expr='where(sex != "male", n, -n)')["y"]
+    assert out.iloc[[0, 1, 3]].tolist()[:2] == [-1.0, 2.0]
+    out = _run(_text_df(), name="y", expr='(sex == "male") * n')["y"]
+    assert out.iloc[[0, 1]].tolist() == [1.0, 0.0]
+
+
+def test_isna_notna_on_text_column():
+    df = _text_df()
+    assert _run(df, name="y", expr="isna(sex)")["y"].tolist() == [0.0, 0.0, 1.0, 0.0]
+    assert _run(df, name="y", expr='notna(df["sex"])')["y"].tolist() == [
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+    ]
+    assert _run(df, name="y", expr="isna(n)")["y"].tolist() == [0.0, 0.0, 0.0, 1.0]
+
+
+def test_evaluate_text_equality_for_callers():
+    from dtk_engine.ops.transforms.formula import evaluate
+
+    assert evaluate(_text_df(), 'sex == "female"')[1] == 1.0

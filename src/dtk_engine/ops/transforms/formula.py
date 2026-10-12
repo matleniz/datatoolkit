@@ -10,6 +10,10 @@ before the walk: ``np.f(x)`` -> ``f(x)``, ``a if c else b`` -> ``where(c, a, b)`
 are element-wise on truthiness (!= 0) and return 0/1. Any other attribute,
 subscript or method call is refused with a message naming the construct.
 
+Text columns are refused by default (a column that is not numeric); they are
+accepted only in ``col == "text"`` / ``col != "text"`` (0/1, NaN where the
+column is missing) and as the direct argument of ``isna`` / ``notna``.
+
 Group functions (``group_mean(x, by=patient_id)``, ``group_prev`` /
 ``group_interp(x, by=..., order=age)``, see ``ops/groups.py``) compute each
 row from the rows of its own entity in the same frame; they are the only
@@ -39,6 +43,8 @@ IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_]*$"
 _VAR_PREFIX = "_dtk_var_"
 _COL_PREFIX = "_dtk_col_"  # df.col / df["col"] references
 _GRP_PREFIX = "_dtk_grp_"  # by= columns: env holds group codes, not values
+_TXT_PREFIX = "_dtk_txt_"  # col == "text": env holds the raw values (object)
+_NA_PREFIX = "_dtk_na_"  # isna(col) / notna(col): env holds the raw NaN mask
 _VAR_TOKEN = re.compile(r"@([A-Za-z_][A-Za-z0-9_]*)")
 _DIV_EPS = 1e-12
 
@@ -98,9 +104,7 @@ _FUNCS: dict[str, _Func] = {
 }
 # np.<name> -> canonical whitelist name (same function, numpy spelling).
 _NP_FUNCS = {
-    f.np_name or name: name
-    for name, f in _FUNCS.items()
-    if not f.keywords and f.numpy
+    f.np_name or name: name for name, f in _FUNCS.items() if not f.keywords and f.numpy
 }
 
 
@@ -210,9 +214,7 @@ class _Normalizer(ast.NodeTransformer):
                     )
                 node.func = ast.Name(id=_NP_FUNCS[parts[1]], ctx=ast.Load())
                 if parts[1] in ("minimum", "maximum") and len(node.args) != 2:
-                    _not_allowed(
-                        f"{name}() takes 2 arguments, got {len(node.args)}"
-                    )
+                    _not_allowed(f"{name}() takes 2 arguments, got {len(node.args)}")
             elif parts is not None and parts[0] == "df" and len(parts) == 2:
                 _not_allowed(
                     f"method calls like df.{func.attr}(...) are not allowed "
@@ -266,7 +268,11 @@ class _Normalizer(ast.NodeTransformer):
     def visit_IfExp(self, node: ast.IfExp) -> ast.AST:
         return ast.Call(
             func=ast.Name(id="where", ctx=ast.Load()),
-            args=[self.visit(node.test), self.visit(node.body), self.visit(node.orelse)],
+            args=[
+                self.visit(node.test),
+                self.visit(node.body),
+                self.visit(node.orelse),
+            ],
             keywords=[],
         )
 
@@ -380,7 +386,7 @@ class _Compiler:
         if isinstance(node.value, str):
             _refuse(
                 f"text constant {_restore_vars(node.value)!r}",
-                'only df["column"] takes a string',
+                'only col == "text" / col != "text" take a string',
             )
         if type(node.value) not in (int, float):
             _refuse(f"constant {node.value!r}", "only numbers are")
@@ -412,8 +418,57 @@ class _Compiler:
         reduce = np.logical_and if isinstance(node.op, ast.And) else np.logical_or
         return lambda env, n: _logical([v(env, n) for v in values], reduce.reduce)
 
+    def _column_ref(self, node: ast.AST) -> str | None:
+        """Column named by a plain / ``df.col`` / ``df["col"]`` node, else None."""
+        if not isinstance(node, ast.Name):
+            return None
+        key = node.id
+        if key.startswith((_VAR_PREFIX, "__")) or key in _CONSTANTS:
+            return None
+        return key.removeprefix(_COL_PREFIX)
+
+    def _text_compare(self, node: ast.Compare) -> Compiled | None:
+        """``col == "text"`` / ``col != "text"`` (either order) -> 0/1, NaN where
+        the column is missing; None when ``node`` is not that form."""
+        if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            return None
+        a, b = node.left, node.comparators[0]
+        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+            a, b = b, a
+        col = self._column_ref(a)
+        if col is None or not (
+            isinstance(b, ast.Constant) and isinstance(b.value, str)
+        ):
+            return None
+        text = _restore_vars(b.value)
+        negate = isinstance(node.ops[0], ast.NotEq)
+        key = f"{_TXT_PREFIX}{col}"
+        self.cols[key] = col
+
+        def run(env: dict[str, np.ndarray], n: int) -> np.ndarray:
+            raw = env[key]
+            missing = np.asarray(pd.isna(raw), dtype=bool)
+            hit = np.asarray(raw == text, dtype=bool) ^ negate
+            return np.where(missing, np.nan, hit.astype(float))
+
+        return run
+
+    def _na_call(self, fname: str, args: list[ast.expr]) -> Compiled | None:
+        """``isna(col)`` / ``notna(col)`` on a column: raw missingness, so a text
+        column gives correct 0/1 (numeric coercion would make it all NaN)."""
+        col = self._column_ref(args[0]) if len(args) == 1 else None
+        if fname not in ("isna", "notna", "isnull") or col is None:
+            return None
+        key = f"{_NA_PREFIX}{col}"
+        self.cols[key] = col
+        want = fname != "notna"
+        return lambda env, n: (env[key] == want).astype(float)
+
     def _Compare(self, node: ast.Compare) -> Compiled:
         """Comparisons evaluate to 0/1; any NaN operand yields NaN."""
+        text = self._text_compare(node)
+        if text is not None:
+            return text
         fns = [_CMPOPS.get(type(op)) or _refuse(_op_label(op)) for op in node.ops]
         operands = [self.compile(v) for v in [node.left, *node.comparators]]
 
@@ -439,6 +494,9 @@ class _Compiler:
             )
         keywords = self._keywords(fname, fn, node.keywords)
         _check_args(fname, fn, args)
+        na = self._na_call(fname, args)
+        if na is not None:
+            return na
         compiled = [self.compile(a) for a in args]
         return lambda env, n: fn.impl(
             *(c(env, n) for c in compiled),
@@ -487,8 +545,7 @@ def _check_args(fname: str, fn: _Func, args: list[ast.expr]) -> None:
     lo, hi = fn.arity
     if lo == hi and len(args) != lo:
         _not_allowed(
-            f"{fname}() takes {lo} argument"
-            f"{'' if lo == 1 else 's'}, got {len(args)}"
+            f"{fname}() takes {lo} argument{'' if lo == 1 else 's'}, got {len(args)}"
         )
     if hi is not None and len(args) > hi:
         _not_allowed(f"{fname}() takes at most {hi} arguments")
@@ -526,8 +583,7 @@ def _compile_expr(
     unknown = compiler.used_vars - (declared_vars or set())
     if unknown:
         raise ValueError(
-            "formula: unknown @variable "
-            f"{sorted(unknown)}; declare it in `variables`"
+            f"formula: unknown @variable {sorted(unknown)}; declare it in `variables`"
         )
     return run, compiler.cols
 
@@ -573,7 +629,9 @@ def _fit_formula(df: pd.DataFrame, params: FormulaParams) -> dict:
         "@variables. Missing values: isna(x) / notna(x) give 0/1 (never NaN), "
         "fillna(x, v) replaces NaN in x by v; where(c, a, b) returns NaN when "
         "c is NaN, so test missingness first, e.g. "
-        "where(isna(x), y - 5.6, x) fills only the missing rows."
+        "where(isna(x), y - 5.6, x) fills only the missing rows. Text columns "
+        'are refused in arithmetic; they are accepted only as col == "text" / '
+        'col != "text" (0/1, NaN where missing) and in isna(col) / notna(col).'
     ),
 )
 def formula(df: pd.DataFrame, params: FormulaParams, state: dict) -> pd.DataFrame:
@@ -589,6 +647,34 @@ def check_expr(expr: str) -> None:
     _compile_expr(expr, None)
 
 
+def _is_text(series: pd.Series, num: pd.Series) -> bool:
+    """Text = most non-missing values do not parse as numbers. A numeric column
+    with a few junk tokens (``"unknown"``) is not text: the junk reads as NaN."""
+    present = int(series.notna().sum())
+    return present > 0 and int(num.notna().sum()) * 2 < present
+
+
+def _missing_mask(series: pd.Series) -> np.ndarray:
+    """What ``isna`` sees: raw missingness of a text column, else the NaN of
+    the numeric reading (junk tokens count as missing, as in arithmetic)."""
+    num = pd.to_numeric(series, errors="coerce")
+    if _is_text(series, num):
+        return series.isna().to_numpy(dtype=bool)
+    return num.isna().to_numpy(dtype=bool)
+
+
+def _numeric_column(series: pd.Series, col: str) -> np.ndarray:
+    """The column as floats; a text column is refused by name."""
+    num = pd.to_numeric(series, errors="coerce")
+    if _is_text(series, num):
+        raise KeyParamsError(
+            f"formula: column {col!r} holds text, not numbers; a formula only "
+            f'reads numeric columns. Use {col} == "value" / {col} != "value" '
+            f"or isna({col}) / notna({col}) on it, or encode it first"
+        )
+    return num.to_numpy(dtype=float)
+
+
 def evaluate(
     df: pd.DataFrame, expr: str, variables: dict[str, float | None] | None = None
 ) -> np.ndarray:
@@ -600,16 +686,19 @@ def evaluate(
     run, cols = _compile_expr(expr, None if variables is None else set(variables))
     n = len(df)
     env: dict[str, np.ndarray] = {
-        name: np.full(n, value, dtype=float)
-        for name, value in _CONSTANTS.items()
+        name: np.full(n, value, dtype=float) for name, value in _CONSTANTS.items()
     }
     for key, col in cols.items():
         if col not in df.columns:
             raise KeyParamsError(f"formula: unknown column {col!r}")
         if key.startswith(_GRP_PREFIX):
             env[key] = groups.group_codes(df[col])
+        elif key.startswith(_TXT_PREFIX):
+            env[key] = df[col].astype(object).to_numpy()
+        elif key.startswith(_NA_PREFIX):
+            env[key] = _missing_mask(df[col])
         else:
-            env[key] = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+            env[key] = _numeric_column(df[col], col)
     for name, value in (variables or {}).items():
         fill = np.nan if value is None else float(value)
         env[f"{_VAR_PREFIX}{name}"] = np.full(n, fill, dtype=float)
