@@ -257,6 +257,14 @@ def test_compaction_follows_the_learnt_model_window(monkeypatch, value, window):
     assert agent_sdk.known_window(None) is None  # another model: still the fallback
 
 
+@pytest.mark.parametrize("window, default", [(1_000_000, 200_000), (128_000, 100_000)])
+def test_the_default_is_clamped(window, default):
+    """#193: a 1M window must not mean 500k of context per call; under 200k the
+    CLI's own 100k floor applies anyway."""
+    agent_sdk.remember_window(None, {"m": _usage(window, 10)})
+    assert agent_sdk.compact_window(None) == default
+
+
 def test_a_broken_windows_file_is_ignored():
     path = agent_sdk._windows_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,7 +284,7 @@ async def test_a_turn_result_teaches_the_window(fake):
     )]
     await adapter.send("hi")
     assert agent_sdk.known_window(adapter.model_name) == 400_000
-    assert agent_sdk.compact_window(adapter.model_name) == 200_000
+    assert agent_sdk.compact_window(adapter.model_name) == 200_000  # half, in range
 
 
 async def test_compaction_is_announced(fake):

@@ -181,7 +181,9 @@ def _max_turns() -> int:
     return value if value > 0 else DEFAULT_MAX_TURNS
 
 
-COMPACT_SHARE = 0.5  # default: compact at half the model's context window
+COMPACT_SHARE = 0.5  # default: compact at half the model's context window,
+COMPACT_RANGE = (100_000, 200_000)  # clamped: the CLI floors the window at 100k;
+# a 1M window would otherwise mean up to 500k of context on every call
 FALLBACK_COMPACT_AT = 100_000  # until the model's window is known
 _OFF = {"0", "off", "none", "false"}
 _WINDOWS_FILE = "model-windows.json"
@@ -251,14 +253,23 @@ def compact_window(model_name: str | None = None) -> int | None:
     ``DTK_AGENT_COMPACT_AT``: tokens, a share of the model's window (``40%``)
     or ``off`` (the CLI's own default, near the window). Unset: half the
     model's context window, as the CLI last reported it for this model
-    (``known_window``), else ``FALLBACK_COMPACT_AT``. Passed as
-    ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` when the CLI starts.
+    (``known_window``), clamped to ``COMPACT_RANGE``; else
+    ``FALLBACK_COMPACT_AT``. Passed as ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` when
+    the CLI starts. The CLI (2.1.296) floors that window at 100k and compacts
+    some 33k tokens before it (measured: 60k set -> compactions at 67-69k).
     """
     window = known_window(model_name)
     value = _parse_compact(os.environ.get("DTK_AGENT_COMPACT_AT", "").strip().lower(), window)
     if value == "default":
-        return int(window * COMPACT_SHARE) if window else FALLBACK_COMPACT_AT
+        return _default_window(window)
     return value
+
+
+def _default_window(window: int | None) -> int:
+    if not window:
+        return FALLBACK_COMPACT_AT
+    low, high = COMPACT_RANGE
+    return min(max(int(window * COMPACT_SHARE), low), high)
 
 
 def _workdir() -> Path:

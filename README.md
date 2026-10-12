@@ -261,8 +261,9 @@ included; stops the turn), `DTK_AGENT_MODEL` (default: the CLI's),
 `DTK_AGENT_COMPACT_AT` (`agent-sdk`: the CLI summarises older turns once the
 context nears this many tokens, or this share of the model's window (`40%`);
 default: half the model's context window, as the CLI last reported it for that
-model in `$DTK_HOME/agent/model-windows.json`, else 100000 until a first turn
-told it; `off` = the CLI's default near the model window; passed as
+model in `$DTK_HOME/agent/model-windows.json`, kept within 100000-200000, else
+100000 until a first turn told it; the CLI floors the window at 100000 and
+compacts about 33k tokens before it; `off` = the CLI's default near the model window; passed as
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` when the CLI starts),
 `DTK_AGENT_CLI`, `DTK_AGENT_TERMINAL` (terminal packs, below). The `stub`
 pack (`dtk-api --agent stub`) is scripted and makes no network calls;
