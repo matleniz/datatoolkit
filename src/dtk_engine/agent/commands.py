@@ -28,6 +28,7 @@ _STR = {"type": "string"}
 _NAME = {"type": "string", "minLength": 1}
 _RID = {"type": "integer", "minimum": 0, "description": "Row id (the grid's rid)."}
 _TARGET = {"type": "string", "enum": ["train", "test", "both"]}
+NOTE_MAX = 4000  # engine ``workspace.models.NOTE_MAX``
 _STEP = {
     "type": "object",
     "properties": {
@@ -36,6 +37,11 @@ _STEP = {
         "params": {
             "type": "object",
             "description": "Op params; the schema comes from transform_schema {op}.",
+        },
+        "note": {
+            "type": "string",
+            "maxLength": NOTE_MAX,
+            "description": "Optional note stored on the step (same field as set_note).",
         },
     },
     "required": ["op"],
@@ -59,7 +65,6 @@ CHART_AGGS = ["count", "mean", "sum", "median"]
 # Web ``FILTER_OPS`` (the ``filter_rows`` op's condition ops).
 FILTER_OPS = ["eq", "ne", "gt", "ge", "lt", "le", "isin", "notin", "isna", "notna"]
 CHART_NAME_MAX = 64
-NOTE_MAX = 4000  # engine ``workspace.models.NOTE_MAX``
 MEMORY_ENTRY_MAX = 500  # engine ``workspace.models.MEMORY_ENTRY_MAX``
 MEMORY_KINDS = ["fact", "decision", "preference", "todo"]
 _MEMORY_ID = {"type": "string", "pattern": "^m[0-9a-z-]{1,32}$", "description": "Memory entry id."}
@@ -151,7 +156,9 @@ _PROPOSE_STEPS = CommandSpec(
         "steps by `id` (from get_workspace / workspace_changes): an id-based proposal "
         "applies even if the user edited other steps meanwhile, and is acked `stale` "
         "(with `stale: [{id, reason}]`) only if a step it targets was removed or "
-        "changed. `add` appends; the ack's `added_ids` are the new steps' ids. "
+        "changed. `add` appends; the ack's `added_ids` are the new steps' ids. A "
+        "step may carry an optional `note` (a finding or the reason for the step): "
+        "it becomes the step's note, so no set_note is needed afterwards. "
         "Destructive ops (remove, drop_columns, filter_rows, drop_low_variance, "
         "drop_correlated) wait for the user's review and return `pending: \"review\"`: "
         "poll get_command_status with the returned id. workspace and base_identity "

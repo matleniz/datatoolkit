@@ -81,6 +81,8 @@ INVALID: list[tuple[str, dict]] = [
     ("remember", {"text": "x", "kind": "note"}),
     ("remember", {"text": "x", "memory_id": "d1"}),
     ("forget", {}),
+    ("propose_steps", {"ops": [{"add": {"step": {"op": "impute", "note": "x" * 4001}}}]}),
+    ("propose_steps", {"ops": [{"add": {"step": {"op": "impute", "note": 3}}}]}),
 ]
 # Added by datatoolkit-issues#100 (Studio commands beyond phase 1).
 NEW_TOOLS = {
@@ -143,6 +145,15 @@ def test_schema_is_valid_and_accepts_the_example(cmd_type):
 def test_schema_refuses_what_studio_refuses(cmd_type, args):
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(args, UI_COMMANDS[cmd_type].input_schema)
+
+
+def test_propose_steps_accepts_a_step_note():
+    schema = UI_COMMANDS["propose_steps"].input_schema
+    step = {"op": "impute", "params": {}, "note": "median: skewed"}
+    for kind in ("add", "replace"):
+        body = {"step": step, **({"id": "s1"} if kind == "replace" else {})}
+        jsonschema.validate({"ops": [{kind: body}]}, schema)
+    jsonschema.validate({"ops": [{"add": {"step": {**step, "note": "x" * 4000}}}]}, schema)
 
 
 def test_tool_schemas_are_plain_objects_with_session():
