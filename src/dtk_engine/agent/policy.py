@@ -341,6 +341,75 @@ def compact_catalog(
     return out
 
 
+NOTE_HEAD = 80  # chars of a note kept in the compact ``get_workspace``
+NOTE_CAP = 200  # chars of a note kept by ``get_notes`` unless ``full``
+_PARAM_CHARS = 80
+
+
+def _head(text: str | None, limit: int) -> str | None:
+    if text is None or len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
+def _flat(value: Any) -> str:
+    if isinstance(value, list) and all(isinstance(v, str | int | float) for v in value):
+        return ",".join(str(v) for v in value)
+    if isinstance(value, str | int | float | bool) or value is None:
+        return str(value)
+    return json.dumps(value, separators=(",", ":"), default=str)
+
+
+def _step_line(step: dict) -> dict:
+    params = " ".join(f"{k}={_flat(v)}" for k, v in (step.get("params") or {}).items())
+    line = {k: step[k] for k in ("id", "op", "target") if k in step}
+    line["params"] = _head(params, _PARAM_CHARS)
+    if step.get("note"):
+        line["has_note"] = True
+    return line
+
+
+def compact_workspace(ws: dict) -> dict:
+    """A workspace for an agent: steps as one short line each (id, op, target,
+    params cut, ``has_note``), notes cut to a head, memory texts cut. The full
+    dict is ``detail: true``; ``get_notes`` / ``get_memory`` give full texts."""
+    out = dict(ws)
+    out["steps"] = [_step_line(s) for s in ws.get("steps") or []]
+    notes = ws.get("notes") or {}
+    out["notes"] = {
+        "workspace": _head(notes.get("workspace"), NOTE_HEAD),
+        "columns": {k: _head(v, NOTE_HEAD) for k, v in (notes.get("columns") or {}).items()},
+    }
+    out["documents"] = [
+        {k: v for k, v in d.items() if k != "note"} | ({"has_note": True} if d.get("note") else {})
+        for d in ws.get("documents") or []
+    ]
+    out["memory"] = [{**m, "text": _head(m.get("text"), NOTE_HEAD)} for m in ws.get("memory") or []]
+    out["note"] = "compact form; pass detail: true for full step params and notes"
+    return out
+
+
+def cap_notes(notes: dict, limit: int = NOTE_CAP) -> dict:
+    """``{workspace, steps, columns}`` with each text cut to ``limit`` chars;
+    ``capped`` lists what was cut (``workspace``, ``step:<id>``, ``column:<name>``)."""
+    capped: list[str] = []
+
+    def cut(label: str, text: Any) -> Any:
+        if isinstance(text, str) and len(text) > limit:
+            capped.append(label)
+            return text[:limit] + "…"
+        return text
+
+    out = {
+        "workspace": cut("workspace", notes.get("workspace")),
+        "steps": {k: cut(f"step:{k}", v) for k, v in (notes.get("steps") or {}).items()},
+        "columns": {k: cut(f"column:{k}", v) for k, v in (notes.get("columns") or {}).items()},
+    }
+    if capped:
+        out["capped"] = capped
+    return out
+
+
 def check_command(cmd_type: str) -> None:
     if cmd_type not in UI_COMMANDS:
         raise PolicyError(f"command not allowed for the agent: {cmd_type}")

@@ -218,7 +218,8 @@ class _Tools:
         return policy.frame(await _compute(contract.list_workspace_summaries))
 
     async def get_workspace(self, args: dict) -> dict:
-        return policy.frame(await _compute(contract.get_workspace, _need(args, "name")))
+        ws = await _compute(contract.get_workspace, _need(args, "name"))
+        return policy.frame(ws if args.get("detail") else policy.compact_workspace(ws))
 
     async def _workspace_dict(self, view: _View) -> dict:
         return await _compute(contract.get_workspace, view.workspace)
@@ -291,11 +292,17 @@ class _Tools:
         view = await self._view(args)
         ws = await self._workspace_dict(view)
         resolved = await _compute(contract.column_notes, ws, view.role, view.version)
-        data = {
-            "workspace": (ws.get("notes") or {}).get("workspace"),
-            "steps": {s["id"]: s["note"] for s in ws.get("steps") or [] if s.get("note")},
-            "columns": resolved["notes"],
-        }
+        steps = {s["id"]: s["note"] for s in ws.get("steps") or [] if s.get("note")}
+        columns = resolved["notes"]
+        step_id, names = args.get("step_id"), args.get("columns")
+        workspace = (ws.get("notes") or {}).get("workspace")
+        if step_id is not None or names:  # narrowed read: only what was asked
+            steps = {k: v for k, v in steps.items() if k == step_id}
+            columns = {k: v for k, v in columns.items() if k in (names or ())}
+            workspace = None
+        data = {"workspace": workspace, "steps": steps, "columns": columns}
+        if not args.get("full"):
+            data = policy.cap_notes(data)
         return policy.frame(data, identity=_identity(view, ws))
 
     async def _workspace_name(self, args: dict) -> str:
@@ -498,8 +505,10 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
         ("list_workspaces", "Summaries of the saved workspaces.",
          _schema(), t.list_workspaces, True),
         ("get_workspace",
-         "A saved workspace (datasets, steps with their stable `id`, ...).",
-         _schema({"name": _STR}, ("name",)), t.get_workspace, True),
+         ("A saved workspace (datasets, ...). Compact by default: steps as lines "
+          "(stable `id`, op, target, cut params, has_note), notes cut to a head; "
+          "`detail: true` for full params and notes (get_notes reads notes)."),
+         _schema({"name": _STR, "detail": _DETAIL}, ("name",)), t.get_workspace, True),
         ("get_rows",
          (f"Rows of a workspace dataset at a version (default {policy.DEFAULT_ROWS}, "
           f"max {policy.MAX_ROWS})."),
@@ -556,8 +565,15 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
          }, ("exprs",)), t.evaluate, True),
         ("get_notes",
          ("The user's and your notes: on the workspace, on steps (by id) and on "
-          "columns (names at the version, renames followed). Write with set_note."),
-         _schema(dict(_VIEW)), t.get_notes, True),
+          "columns (names at the version, renames followed). Each text is cut to "
+          f"{policy.NOTE_CAP} chars (`capped` names them): `full: true` for whole "
+          "texts, `step_id` / `columns` to narrow. Write with set_note."),
+         _schema({
+             **_VIEW,
+             "full": {"type": "boolean", "description": "Whole texts (default: cut)."},
+             "step_id": {**_STR, "description": "Only this step's note."},
+             "columns": {**_COLUMNS, "description": "Only these columns' notes."},
+         }), t.get_notes, True),
         ("get_memory",
          ("Your workspace memory: the short facts saved with remember (also given at "
           "the start of each chat), with their ids, and its size against the cap."),
