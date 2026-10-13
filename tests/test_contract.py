@@ -438,3 +438,20 @@ def test_save_and_preview_reject_invalid_steps(tmp_path, monkeypatch, step, erro
     assert list_workspaces() == []
     with pytest.raises(error):
         preview_workspace(ws, "train")
+
+
+@pytest.mark.parametrize("spec", [{"path": "x.csv"}, {"kind": "nope", "path": "x.csv"}])
+def test_source_columns_bad_kind_is_readable(spec):
+    from dtk_engine import contract
+
+    with pytest.raises(KeyParamsError, match=r'needs "kind" \(one of csv, .*sql\)') as e:
+        contract.source_columns(spec)
+    assert "discriminator" not in str(e.value)
+
+
+def test_run_key_bad_source_kind_is_readable():
+    from dtk_engine import contract
+
+    key_id = contract.list_keys()[0]["id"]
+    with pytest.raises(KeyParamsError, match='needs "kind"'):
+        contract.run_key(key_id, {"source": {"path": "x.csv"}})

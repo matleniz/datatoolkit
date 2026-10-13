@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path, PurePath
+from typing import NoReturn, get_args
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -138,6 +139,24 @@ def key_schema(key_id: str) -> dict:
     return get_key(key_id).params_model.model_json_schema()
 
 
+def _source_kinds() -> list[str]:
+    union = get_args(SourceSpec)[0]
+    return [m.model_fields["kind"].default for m in get_args(union)]
+
+
+def _raise_params_error(exc: ValidationError) -> NoReturn:
+    """Raise KeyParamsError for a pydantic error; a bad source ``kind`` gets a
+    readable message (valid kinds + example) instead of the raw discriminator
+    one, and no cause (http.py would answer the cause's raw details)."""
+    if any(e["type"].startswith("union_tag_") for e in exc.errors()):
+        kinds = ", ".join(_source_kinds())
+        raise KeyParamsError(
+            f'source spec needs "kind" (one of {kinds}), '
+            'e.g. {"kind": "csv", "path": "..."}'
+        ) from None
+    raise KeyParamsError(str(exc)) from exc
+
+
 def run_key(key_id: str, params: dict) -> dict:
     """Run a key; returns its Result as a JSON dict.
 
@@ -150,7 +169,7 @@ def run_key(key_id: str, params: dict) -> dict:
     try:
         parsed = k.params_model.model_validate(params)
     except ValidationError as exc:
-        raise KeyParamsError(str(exc)) from exc
+        _raise_params_error(exc)
     return k.run(parsed).model_dump(mode="json")
 
 
@@ -163,7 +182,7 @@ def source_columns(spec: dict) -> list[dict]:
     try:
         parsed = TypeAdapter(SourceSpec).validate_python(spec)
     except ValidationError as exc:
-        raise KeyParamsError(str(exc)) from exc
+        _raise_params_error(exc)
     df = load(parsed)
     return [
         {"name": str(c), "dtype": str(df[c].dtype), "numeric": is_numeric(df[c])}
