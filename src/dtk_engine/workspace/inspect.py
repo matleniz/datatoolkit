@@ -29,7 +29,6 @@ from dtk_engine.ops.compare.schema import (
 )
 from dtk_engine.ops.consistency import DATE_LIKE_MIN_SHARE, date_format
 from dtk_engine.ops.consistency import normalize as _normalize_text
-from dtk_engine.ops.join import label_columns
 from dtk_engine.ops.missing import sentinel_counts
 from dtk_engine.ops.outliers import univariate_outliers
 from dtk_engine.ops.profile import (
@@ -42,8 +41,12 @@ from dtk_engine.ops.profile import (
 from dtk_engine.ops.suggested import suggested_params as _suggested_params
 from dtk_engine.ops.transforms.cleaning import FilterRowsParams, _condition_mask
 from dtk_engine.ops.transforms.formula import evaluate as _evaluate_expr
-from dtk_engine.sources import load
-from dtk_engine.workspace.dataset import cached_frame, raw_workspace_frame
+from dtk_engine.workspace.dataset import (
+    cached_frame,
+    label_name,
+    raw_workspace_frame,
+    replay_label,
+)
 from dtk_engine.workspace.models import Step, Workspace
 from dtk_engine.workspace.replay import (
     needs_train,
@@ -165,7 +168,7 @@ def _replay_role(
         train = None
         if role == "test" and needs_train(steps):
             train = _raw_role(ws, "train", labeled)
-        return replay(steps, role, frame, train)
+        return replay(steps, role, frame, train, replay_label(ws))
 
     return cached_frame(ws, "replay_rid", role, steps, labeled, compute)
 
@@ -593,7 +596,7 @@ def preview_step(ws: Workspace, step: dict | Step, role: str) -> dict:
     if ws.datasets.test is not None and (target != "train" or role == "test"):
         test = prefix if role == "test" else _replay_role(ws, "test", ws.steps)
     train_after, test_after, last = replay_step(
-        parsed_step, len(ws.steps), train, test
+        parsed_step, len(ws.steps), train, test, replay_label(ws)
     )
     after = train_after if role == "train" else test_after
     if after is None:
@@ -652,7 +655,9 @@ def _draft_frames(
         test = before.copy(deep=False) if role == "test" else _replay_role(ws, "test", ws.steps)
     fitted = []
     for offset, step in enumerate(steps):
-        train, test, last = replay_step(step, len(ws.steps) + offset, train, test)
+        train, test, last = replay_step(
+            step, len(ws.steps) + offset, train, test, replay_label(ws)
+        )
         fitted.append(last)
     after = train if role == "train" else test
     if after is None:
@@ -763,13 +768,7 @@ def column_notes(ws: Workspace, role: str, version: int | None = None) -> dict:
 
 
 def _label_name(ws: Workspace) -> str | None:
-    train = ws.datasets.train
-    if train.target_column is not None:
-        return train.target_column
-    if train.y is None:
-        return None
-    _, value = label_columns(load(train.y), ws.label.key)
-    return value
+    return label_name(ws)
 
 
 def _samples(series: pd.Series) -> list[Any]:
