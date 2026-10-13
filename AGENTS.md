@@ -21,3 +21,5 @@ streamlit (or any UI dependency) to this repo.
 - Tests: `uv run pytest`
 - Lint: `uv run ruff check .` (incl. complexity ≤ 10); layer contract: `tests/test_layers.py`
 - Gate: `fleet gate` must be clean before any PR.
+- Before each commit: `uv run ruff check --fix <changed files>`; never commit with
+  ruff findings. (`ruff format` is not enforced in this repo: do not reformat files.)
