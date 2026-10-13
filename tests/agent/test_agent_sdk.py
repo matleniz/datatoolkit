@@ -228,11 +228,13 @@ def _result(**kw) -> ResultMessage:
 
 @pytest.mark.parametrize(
     "value, window",
-    [(None, "100000"), ("40000", "40000"), ("off", None), ("junk", "100000"), ("40%", "100000")],
+    [(None, "133000"), ("100000", "133000"), ("40000", "100000"), ("off", None),
+     ("junk", "133000"), ("40%", "133000")],
 )
 async def test_compaction_window_reaches_the_cli(fake, monkeypatch, value, window):
-    """#151 / #193: DTK_AGENT_COMPACT_AT reaches the CLI; unset (or a share) with no
-    known model window = FALLBACK_COMPACT_AT."""
+    """#151 / #193 / #204: DTK_AGENT_COMPACT_AT reaches the CLI as the window that makes
+    it compact at that context size (threshold + 33k, floored at 100k); unset (or a
+    share) with no known model window = FALLBACK_COMPACT_AT."""
     if value is not None:
         monkeypatch.setenv("DTK_AGENT_COMPACT_AT", value)
     _, _, _, client = await _started(fake, UiBridge("t"))
@@ -263,6 +265,17 @@ def test_the_default_is_clamped(window, default):
     CLI's own 100k floor applies anyway."""
     agent_sdk.remember_window(None, {"m": _usage(window, 10)})
     assert agent_sdk.compact_window(None) == default
+
+
+@pytest.mark.parametrize(
+    "threshold, model_window, window",
+    [(100_000, None, 133_000), (150_000, 300_000, 183_000), (50_000, None, 100_000),
+     (167_000, 200_000, 200_000), (200_000, 1_000_000, 233_000)],
+)
+def test_cli_window_adds_the_summary_buffer(threshold, model_window, window):
+    """#204: the CLI compacts 33k below its window (floored at 100k, capped at the
+    model's), so the variable is threshold + 33k."""
+    assert agent_sdk.cli_window(threshold, model_window) == window
 
 
 def test_a_broken_windows_file_is_ignored():
