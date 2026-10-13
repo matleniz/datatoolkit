@@ -32,7 +32,7 @@ import pandas as pd
 
 from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
-from dtk_engine.workspace.dataset import raw_workspace_frame
+from dtk_engine.workspace.dataset import raw_workspace_frame, replay_label
 from dtk_engine.workspace.models import Workspace
 from dtk_engine.workspace.notebook import notebook_json, script_text
 from dtk_engine.workspace.replay import replay_fitted
@@ -318,7 +318,7 @@ def export_workspace(
     test = None
     if ws.datasets.test is not None:
         test = raw_workspace_frame(ws, "test", labeled=True)
-    train, test, fitted = replay_fitted(ws.steps, train, test)
+    train, test, fitted = replay_fitted(ws.steps, train, test, replay_label(ws))
 
     exported_at = datetime.now(UTC).isoformat()
     frames = {"train": train} if test is None else {"train": train, "test": test}

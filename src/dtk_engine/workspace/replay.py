@@ -75,12 +75,22 @@ def _step_context(i: int, step: Step, split: str | None = None) -> Iterator[None
         ) from exc
 
 
+def _label_last(frame: pd.DataFrame | None, label: str | None) -> pd.DataFrame | None:
+    """``frame`` with the ``label`` column moved to the end (as is when absent / last)."""
+    if frame is None or label is None or label not in frame.columns:
+        return frame
+    if frame.columns[-1] == label:
+        return frame
+    return frame[[c for c in frame.columns if c != label] + [label]]
+
+
 def _run(
     steps: list[Step],
     train: pd.DataFrame | None,
     test: pd.DataFrame | None,
     train_until: int,
     start: int = 0,
+    label: str | None = None,
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None, list[dict]]:
     """The one replay loop: steps in order over the train and test frames.
 
@@ -91,7 +101,9 @@ def _run(
     Returns (train, test, fitted) with per step ``{"fitted_on", "state"}``
     (``None`` / ``{}`` for a skipped step). ``start`` is the log index of
     ``steps[0]`` when the frames already went through the earlier steps
-    (indices, including ``train_until``, are log indices).
+    (indices, including ``train_until``, are log indices). With ``label`` set
+    (workspace ``label_last``), the label column is moved back to the end of
+    each frame after every step that left it elsewhere.
     """
     fitted = []
     resolved = _resolve(steps)  # fails before any work
@@ -108,6 +120,8 @@ def _run(
             if step.target != "train" and test is not None:
                 with _step_context(i, step, split="test"):
                     test = t.apply(test, params, state)
+            train = _label_last(train, label)
+            test = _label_last(test, label)
         fitted.append({"fitted_on": fitted_on, "state": state})
     return train, test, fitted
 
@@ -117,24 +131,29 @@ def replay(
     role: str,
     frame: pd.DataFrame,
     train: pd.DataFrame | None = None,
+    label: str | None = None,
 ) -> pd.DataFrame:
     """Apply the steps that target ``role`` to ``frame``, in log order.
 
     For ``role="test"`` with "both" steps, pass the untransformed ``train`` frame:
     it is replayed alongside so each "both" step fits on train as of that step.
+    ``label``: keep that column last after each step (workspace ``label_last``).
     """
     if role == "train":
-        return _run(steps, frame, None, len(steps))[0]
+        return _run(steps, frame, None, len(steps), label=label)[0]
     validate_steps(steps)  # an invalid step wins over a missing train frame
     if train is None and needs_train(steps):
         raise SourceError("replaying a 'both' step on test needs the train frame")
     # Train only matters up to the last "both" step.
     last_both = max((i for i, s in enumerate(steps) if s.target == "both"), default=-1)
-    return _run(steps, train, frame, last_both)[1]
+    return _run(steps, train, frame, last_both, label=label)[1]
 
 
 def replay_fitted(
-    steps: list[Step], train: pd.DataFrame, test: pd.DataFrame | None = None
+    steps: list[Step],
+    train: pd.DataFrame,
+    test: pd.DataFrame | None = None,
+    label: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict]]:
     """Replay every step on train and test in one pass, keeping the fitted states.
 
@@ -143,7 +162,7 @@ def replay_fitted(
     learned by a "both" / "train" step on train, or by a "test" step on test;
     ``None`` / ``{}`` for a "test" step without a test frame).
     """
-    return _run(steps, train, test, len(steps))
+    return _run(steps, train, test, len(steps), label=label)
 
 
 def replay_step(
@@ -151,6 +170,7 @@ def replay_step(
     index: int,
     train: pd.DataFrame | None,
     test: pd.DataFrame | None,
+    label: str | None = None,
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None, dict]:
     """Fit and apply ``step`` (log position ``index``) on frames already replayed
     through the ``index`` earlier steps.
@@ -159,5 +179,5 @@ def replay_step(
     replaying the prefix: callers pass cached prefix frames. A ``None`` frame is
     left alone (and a step fitted on it is skipped). Returns (train, test, fitted).
     """
-    train, test, fitted = _run([step], train, test, index + 1, start=index)
+    train, test, fitted = _run([step], train, test, index + 1, start=index, label=label)
     return train, test, fitted[0]

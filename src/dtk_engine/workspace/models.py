@@ -151,6 +151,8 @@ class Workspace(_Strict):
     name: str = Field(pattern=NAME_PATTERN)
     datasets: Datasets
     label: LabelJoin = Field(default_factory=LabelJoin)
+    # Keep the label column last through replay / export (datatoolkit-issues#196).
+    label_last: bool = False
     merges: list[MergeSpec] = Field(default_factory=list)
     variables: list[VariableSpec] = Field(default_factory=list)
     charts: list[ChartSpec] = Field(default_factory=list)

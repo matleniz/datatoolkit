@@ -21,7 +21,7 @@ from pydantic import ValidationError
 
 from dtk_engine.cache import LRU, digest, stamps
 from dtk_engine.errors import KeyParamsError, SourceError
-from dtk_engine.ops.join import LabelJoinError, join_labels, merge_table
+from dtk_engine.ops.join import LabelJoinError, join_labels, label_columns, merge_table
 from dtk_engine.sources.registry import load, reader
 from dtk_engine.sources.spec import DatasetSource
 from dtk_engine.workspace.models import Step, Workspace
@@ -51,11 +51,28 @@ def workspace_key(
         "role": role,
         "labeled": labeled,
         "label": ws.label.model_dump(mode="json"),
+        "label_last": ws.label_last,
         "merges": [m.model_dump(mode="json") for m in ws.merges],
         "datasets": d.model_dump(mode="json"),
         "steps": [s.model_dump(mode="json", exclude={"id", "note"}) for s in steps],
     }
     return digest(payload, file_stamps)
+
+
+def label_name(ws: Workspace) -> str | None:
+    """Name of the label column the workspace's train dataset carries, if any."""
+    train = ws.datasets.train
+    if train.target_column is not None:
+        return train.target_column
+    if train.y is None:
+        return None
+    _, value = label_columns(load(train.y), ws.label.key)
+    return value
+
+
+def replay_label(ws: Workspace) -> str | None:
+    """The label to keep last through replay: set only when ``ws.label_last``."""
+    return label_name(ws) if ws.label_last else None
 
 
 def cached_frame(
@@ -111,7 +128,7 @@ def workspace_frame(
         train = None
         if role == "test" and needs_train(steps):
             train = raw_workspace_frame(ws, "train", labeled)
-        return replay(steps, role, frame, train)
+        return replay(steps, role, frame, train, replay_label(ws))
 
     return cached_frame(ws, "replay", role, steps, labeled, compute)
 
