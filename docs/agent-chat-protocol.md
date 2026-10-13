@@ -375,5 +375,10 @@ its normal workspace save (no dedicated route).
   note (and the documents line): `[Workspace memory (yours, from earlier
   chats; update with remember / forget):\n- m1 (fact) …]`. Later turns do not
   repeat it; a new adapter (new chat, pack change, reaped session) starts over.
+- `propose_steps` steps take an optional `note` (string, at most 4000
+  characters) next to `op` / `target` / `params`. Studio stores it as the
+  step's note (the same field as `set_note`) and shows it in the review of a
+  pending proposal, so a destructive proposal can explain itself before it has
+  a step id.
 - System prompt: notes (`set_note`) hold a finding on a step / column; memory
   holds session-spanning context (quirks, decisions, preferences, todos).
