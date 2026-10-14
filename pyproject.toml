@@ -35,7 +35,7 @@ dtk-mcp = "dtk_engine.agent.cli:main"
 # fastapi/uvicorn also listed here so `uv sync` (gate) can run the HTTP tests;
 # the optional extra `api` is what consumers install for `dtk-api`.
 dev = [
-    "ruff", "pytest", "httpx", "fastapi", "uvicorn", "mcp>=2.2,<3", "websockets",
+    "ruff", "pytest", "pytest-cov", "httpx", "fastapi", "uvicorn", "mcp>=2.2,<3", "websockets",
     "claude-agent-sdk>=0.2.163,<0.3", "pypdf>=6",
 ]
 
