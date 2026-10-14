@@ -108,7 +108,10 @@ def _error_body(exc: BaseException) -> dict:
 
 async def _body(request: Request, *required: str, message: str = "") -> dict:
     """JSON object body holding every ``required`` key, else a ``KeyParamsError``."""
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
+        raise KeyParamsError(f"request body is not valid JSON: {exc}") from None
     if not isinstance(body, dict) or any(key not in body for key in required):
         raise KeyParamsError(message or f"body must include {' and '.join(required)}")
     return body
@@ -761,11 +764,21 @@ def uvicorn_log_config() -> dict:
     return config
 
 
+def _port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("must be between 1 and 65535")
+    return port
+
+
 def main(argv: list[str] | None = None) -> None:
     """CLI entry: ``dtk-api [--host HOST] [--port PORT] [--agent [PACK]] [--terminal]``."""
     parser = argparse.ArgumentParser(prog="dtk-api", description="datatoolkit HTTP API")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=_port, default=8765)
     parser.add_argument(
         "--agent", nargs="?", const="agent-sdk", metavar="PACK",
         help="enable the in-Studio agent chat (pack: agent-sdk (default), api-anthropic, "
