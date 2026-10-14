@@ -10,6 +10,11 @@ permissions:
 
 jobs:
   ci:
+    name: ci (py${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -19,7 +24,7 @@ jobs:
           enable-cache: true
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       # Mirrors the local gate (GATE_CMDS) minus ruff's --fix: CI only checks.
       - run: uv sync --frozen
       - run: uv run ruff check .
