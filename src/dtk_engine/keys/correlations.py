@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 from pydantic import Field
 
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, valid_names_hint
 from dtk_engine.ops.columns import is_numeric, numeric_feature, pick_columns
 from dtk_engine.ops.correlation import (
     DEFAULT_THRESHOLD,
@@ -95,7 +95,7 @@ def correlations_result(
     if not 2 <= top_n <= MAX_COLUMNS:
         raise KeyParamsError(f"{op}: top_n must be between 2 and {MAX_COLUMNS}")
     if target is not None and target not in df.columns:
-        raise KeyParamsError(f"{op}: target {target!r} not in the frame")
+        raise KeyParamsError(f"{op}: target {target!r} not in the frame" + valid_names_hint("columns", [str(c) for c in df.columns], target))
     picked, n_capped = pick_columns(
         df,
         columns or [],

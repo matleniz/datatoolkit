@@ -172,8 +172,10 @@ agent; `docs/agent-chat-protocol.md`) read PDF text with the optional extra
 
 Optional extra `agent` (the official `mcp` SDK): the contract as MCP tools
 (keys, transforms, workspaces, rows / profiles) plus one tool per Studio
-command, which drives the open Studio. Reads are capped and path-scoped, and
-every call is audited (`dtk_engine.agent.policy`). `preview_steps` (a list of
+command, which drives the open Studio. Reads are capped and path-scoped (a CSV outside `$DTK_HOME` is refused
+unless it sits under `$DTK_HOME/uploads`, e.g. via `PUT /api/uploads/{filename}`,
+or a saved workspace uses it), and every call is audited
+(`dtk_engine.agent.policy`). `preview_steps` (a list of
 steps dry-run in memory) and `evaluate` (statistics of formula expressions at
 a version or after draft steps) let the agent explore without touching the
 pipeline or the undo history. Notes (`get_notes` / `set_note`): free text

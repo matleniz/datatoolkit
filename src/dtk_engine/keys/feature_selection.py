@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.express as px
 from pydantic import Field
 
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, valid_names_hint
 from dtk_engine.ops.advisor import advise
 from dtk_engine.ops.selection import (
     COLLINEAR_CORR,
@@ -78,7 +78,7 @@ def selection_result(
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.select_features``)."""
     if target not in df.columns:
-        raise KeyParamsError(f"feature_selection: target {target!r} not in the frame")
+        raise KeyParamsError(f"feature_selection: target {target!r} not in the frame" + valid_names_hint("columns", [str(c) for c in df.columns], target))
     if df[target].notna().sum() == 0:
         raise KeyParamsError(f"feature_selection: target {target!r} is all missing")
     task = resolve_task(df[target], task)

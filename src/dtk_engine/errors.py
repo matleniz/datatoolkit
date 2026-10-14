@@ -10,6 +10,37 @@ from pydantic import ValidationError
 class UnknownKeyError(KeyError):
     """The requested key id is not registered."""
 
+    def __str__(self) -> str:  # KeyError would show the repr (quoted message)
+        return str(self.args[0]) if self.args else ""
+
+
+_LIST_CAP = 20
+
+
+def _near(name: object, names: list[str]) -> str | None:
+    from rapidfuzz import process
+
+    hit = process.extractOne(str(name), names, score_cutoff=70)
+    return hit[0] if hit else None
+
+
+def valid_names_hint(
+    label: str, names: list[str], wanted: object = None, *, cap: int = _LIST_CAP
+) -> str:
+    """``"; did you mean 'x'? <label>: a, b, ... (N total)"`` for an error message.
+
+    A close match to ``wanted`` comes first; the list is capped at ``cap``.
+    """
+    names = [str(n) for n in names]
+    close = _near(wanted, names) if wanted is not None else None
+    if close is not None:
+        names = [close] + [n for n in names if n != close]
+    shown = ", ".join(names[:cap])
+    if len(names) > cap:
+        shown += f", ... ({len(names)} total)"
+    lead = f"; did you mean {close!r}?" if close is not None else ";"
+    return f"{lead} {label}: {shown}"
+
 
 class KeyParamsError(ValueError):
     """The params passed to a key failed validation.

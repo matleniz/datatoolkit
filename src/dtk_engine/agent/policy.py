@@ -129,7 +129,9 @@ def check_args(args: Any) -> None:
             continue
         raise PolicyError(
             f"path not allowed for the agent: {path} "
-            "(files under $DTK_HOME or used by a workspace only)"
+            "(files under $DTK_HOME or used by a workspace only). To use this file: "
+            "copy it under $DTK_HOME/uploads (or PUT /api/uploads/{filename}), "
+            "or save a workspace that uses it"
         )
 
 

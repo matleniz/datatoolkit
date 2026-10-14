@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pydantic import Field
 
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, valid_names_hint
 from dtk_engine.ops.columns import pick_columns, value_kind
 from dtk_engine.ops.distribution import MISSING_LABEL, OTHER_LABEL, TOP_K, natural_key
 from dtk_engine.ops.selection import resolve_task
@@ -105,7 +105,7 @@ def target_result(
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.target_analysis``)."""
     op = "target_analysis"
     if target not in df.columns:
-        raise KeyParamsError(f"{op}: target {target!r} not in the frame")
+        raise KeyParamsError(f"{op}: target {target!r} not in the frame" + valid_names_hint("columns", [str(c) for c in df.columns], target))
     rows = labeled_rows(df, target)
     if rows.empty:
         raise KeyParamsError(f"{op}: target {target!r} has no value")

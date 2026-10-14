@@ -21,11 +21,18 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePath
 from typing import NoReturn, get_args
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from . import keys  # noqa: F401  (registers every key)
 from .cache import LRU
-from .errors import KeyParamsError, SourceError, UnknownTransformError
+from .errors import (
+    KeyParamsError,
+    SourceError,
+    UnknownTransformError,
+    message_from_validation_details,
+    valid_names_hint,
+    validation_error_details,
+)
 from .ops import transforms  # noqa: F401  (registers every transform op)
 from .ops.columns import is_numeric
 from .registry import all_keys, get_key
@@ -144,7 +151,9 @@ def _source_kinds() -> list[str]:
     return [m.model_fields["kind"].default for m in get_args(union)]
 
 
-def _raise_params_error(exc: ValidationError) -> NoReturn:
+def _raise_params_error(
+    exc: ValidationError, model: type[BaseModel] | None = None
+) -> NoReturn:
     """Raise KeyParamsError for a pydantic error; a bad source ``kind`` gets a
     readable message (valid kinds + example) instead of the raw discriminator
     one, and no cause (http.py would answer the cause's raw details)."""
@@ -154,6 +163,17 @@ def _raise_params_error(exc: ValidationError) -> NoReturn:
             f'source spec needs "kind" (one of {kinds}), '
             'e.g. {"kind": "csv", "path": "..."}'
         ) from None
+    if model is not None and any(e["type"] == "extra_forbidden" for e in exc.errors()):
+        details = validation_error_details(exc)
+        valid = sorted(model.model_fields)
+        for item in details:
+            if item["type"] == "extra_forbidden" and len(item["loc"]) == 1:
+                item["msg"] += valid_names_hint(
+                    "valid params", valid, item["loc"][0], cap=len(valid)
+                )
+        raise KeyParamsError(
+            message_from_validation_details(details), details=details
+        ) from exc
     raise KeyParamsError(str(exc)) from exc
 
 
@@ -169,7 +189,7 @@ def run_key(key_id: str, params: dict) -> dict:
     try:
         parsed = k.params_model.model_validate(params)
     except ValidationError as exc:
-        _raise_params_error(exc)
+        _raise_params_error(exc, k.params_model)
     return k.run(parsed).model_dump(mode="json")
 
 

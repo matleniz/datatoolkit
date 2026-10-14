@@ -19,7 +19,12 @@ from pandas.api import types as pdt
 from pydantic import ValidationError
 
 from dtk_engine.cache import memoize
-from dtk_engine.errors import KeyParamsError, SourceError, key_params_from_validation
+from dtk_engine.errors import (
+    KeyParamsError,
+    SourceError,
+    key_params_from_validation,
+    valid_names_hint,
+)
 from dtk_engine.ops._util import json_scalar, py
 from dtk_engine.ops.compare import schema_diff
 from dtk_engine.ops.compare.schema import (
@@ -231,7 +236,7 @@ def _resolve_columns(
         raise KeyParamsError(f"{op}: columns must be a list of strings, got {columns!r}")
     absent = [c for c in columns if c not in df.columns]
     if absent:
-        raise KeyParamsError(f"{op}: columns not in the frame {absent}")
+        raise KeyParamsError(f"{op}: columns not in the frame {absent}" + valid_names_hint("columns", [str(c) for c in df.columns], absent[0]))
     return list(dict.fromkeys(columns))
 
 
