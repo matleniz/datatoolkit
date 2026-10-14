@@ -20,6 +20,11 @@ def _records(spec: JsonSource, path: str) -> list | dict:
         return json.load(fh)
 
 
+def _has_content(path: str) -> bool:
+    with open(path, "rb") as fh:
+        return bool(fh.read().strip())
+
+
 @reader("json")
 def read_json(spec: JsonSource) -> pd.DataFrame:
     path = resolve_path(spec.path)
@@ -34,6 +39,11 @@ def read_json(spec: JsonSource) -> pd.DataFrame:
         return pd.json_normalize(data, sep="_")
     except FileNotFoundError:
         raise SourceError(f"json source not found: {spec.path}") from None
+    except json.JSONDecodeError as exc:
+        what = "file is empty" if not _has_content(path) else (
+            f"not valid JSON (line {exc.lineno}, column {exc.colno})"
+        )
+        raise SourceError(f"cannot read json {spec.path}: {what}") from None
     except LookupError:
         raise SourceError(f"unknown encoding {spec.encoding!r}") from None
     # JSONDecodeError / UnicodeDecodeError are ValueErrors.

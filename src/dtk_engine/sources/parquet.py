@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pyarrow as pa
 
 from dtk_engine.errors import SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
@@ -21,6 +22,13 @@ def read_parquet(spec: ParquetSource) -> pd.DataFrame:
         )
     except FileNotFoundError:
         raise SourceError(f"parquet source not found: {spec.path}") from None
+    except pa.ArrowInvalid as exc:
+        if "Parquet" not in str(exc):  # e.g. a bad filter value: keep the detail
+            raise SourceError(f"cannot read parquet {spec.path}: {exc}") from exc
+        raise SourceError(
+            f"cannot read parquet {spec.path}: not a valid parquet file "
+            "(empty, truncated or corrupted)"
+        ) from None
     # ArrowInvalid / ArrowKeyError (unknown column) are ValueError / KeyError.
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SourceError(f"cannot read parquet {spec.path}: {exc}") from exc
