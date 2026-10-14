@@ -48,6 +48,11 @@ class WorkspaceNotFoundError(KeyError):
     """No workspace with this name in the store."""
 
 
+class WorkspaceCorruptError(Exception):
+    """A stored workspace file cannot be read: garbage, wrong shape, or a
+    version this engine does not know. A storage problem, not a params error."""
+
+
 class WorkspaceStore(Protocol):
     def list(self) -> list[str]: ...
 
@@ -69,6 +74,17 @@ def default_root() -> Path:
     home = os.environ.get("DTK_HOME")
     base = Path(home) if home else Path.home() / ".datatoolkit"
     return base / "workspaces"
+
+
+def _corrupt_message(name: str, raw: str) -> str:
+    """Short reason a stored file failed validation (no path, no pydantic dump)."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and "version" in data:
+        return f"workspace {name!r} has an unsupported version {data['version']!r}"
+    return f"workspace {name!r} is corrupt: its file is not a valid workspace"
 
 
 class JsonWorkspaceStore:
@@ -114,8 +130,8 @@ class JsonWorkspaceStore:
             raise WorkspaceNotFoundError(name) from None
         try:
             return Workspace.model_validate_json(raw)
-        except ValidationError as exc:
-            raise KeyParamsError(f"invalid workspace file {path}: {exc}") from exc
+        except ValidationError:
+            raise WorkspaceCorruptError(_corrupt_message(name, raw)) from None
 
     def _save_unlocked(self, workspace: Workspace) -> None:
         path = self._path(workspace.name)

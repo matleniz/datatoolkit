@@ -52,7 +52,7 @@ from .workspace.models import (
     fill_memory_ids,
     fill_step_ids,
 )
-from .workspace.store import WorkspaceNotFoundError
+from .workspace.store import WorkspaceCorruptError, WorkspaceNotFoundError
 
 _SHAPES = LRU(max_entries=256)
 
@@ -284,7 +284,7 @@ def _with_stored_counters(store: JsonWorkspaceStore, workspace: dict) -> dict:
     back (datatoolkit-issues#180)."""
     try:
         stored = store.get(workspace.get("name")).id_counters
-    except (WorkspaceNotFoundError, KeyParamsError, ValueError, TypeError, OSError):
+    except (WorkspaceNotFoundError, WorkspaceCorruptError, KeyParamsError, ValueError, TypeError, OSError):
         return workspace
     sent = workspace.get("id_counters")
     sent = sent if isinstance(sent, dict) else {}

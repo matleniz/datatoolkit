@@ -18,7 +18,7 @@ from dtk_engine import (
 )
 from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
 from dtk_engine.errors import KeyParamsError, UnknownKeyError, UnknownTransformError
-from dtk_engine.workspace import WorkspaceNotFoundError
+from dtk_engine.workspace import WorkspaceCorruptError, WorkspaceNotFoundError
 
 KEY_IDS = [k["id"] for k in list_keys()]
 
@@ -455,3 +455,23 @@ def test_run_key_bad_source_kind_is_readable():
     key_id = contract.list_keys()[0]["id"]
     with pytest.raises(KeyParamsError, match='needs "kind"'):
         contract.run_key(key_id, {"source": {"path": "x.csv"}})
+
+
+CORRUPT_WORKSPACES = [
+    ("{not json", "corrupt"),
+    ("[]", "corrupt"),
+    ("", "corrupt"),
+    ('{"name":"x","version":99}', "unsupported version 99"),
+]
+
+
+@pytest.mark.parametrize(("content", "expected"), CORRUPT_WORKSPACES)
+def test_get_workspace_corrupt_file(tmp_path, monkeypatch, content, expected):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    (root / "x.json").write_text(content, encoding="utf-8")
+    with pytest.raises(WorkspaceCorruptError) as info:
+        get_workspace("x")
+    assert expected in str(info.value)
+    assert str(tmp_path) not in str(info.value)

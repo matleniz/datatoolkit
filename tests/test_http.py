@@ -421,3 +421,24 @@ def test_workspace_rows_filter_sort_http(client):
 
     body["filter"]["conditions"][0]["column"] = "nope"
     assert client.post("/api/workspace/rows", json=body).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("{not json", "corrupt"),
+        ("[]", "corrupt"),
+        ("", "corrupt"),
+        ('{"name":"x","version":99}', "unsupported version 99"),
+    ],
+)
+def test_corrupt_workspace_file_500(client, home, content, expected):
+    root = home / "workspaces"
+    root.mkdir()
+    (root / "x.json").write_text(content, encoding="utf-8")
+    r = client.get("/api/workspaces/x")
+    assert r.status_code == 500
+    body = r.json()
+    assert body["type"] == "WorkspaceCorruptError"
+    assert expected in body["message"]
+    assert str(home) not in body["message"] and "validation error" not in body["message"]
