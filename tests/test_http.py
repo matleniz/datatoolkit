@@ -442,3 +442,60 @@ def test_corrupt_workspace_file_500(client, home, content, expected):
     assert body["type"] == "WorkspaceCorruptError"
     assert expected in body["message"]
     assert str(home) not in body["message"] and "validation error" not in body["message"]
+
+
+_BAD_BODIES = {
+    "malformed": b"{",
+    "non_utf8": b"\xff\xfe\x00{",
+    "empty": b"",
+    "list": b"[1]",
+    "scalar": b"3",
+}
+_BODY_ROUTES = [
+    ("post", "/api/keys/dataset_overview/run"),
+    ("put", "/api/workspaces/w"),
+    ("post", "/api/workspaces/w/rename"),
+    ("post", "/api/workspace/preview"),
+    ("post", "/api/source/columns"),
+]
+
+
+@pytest.mark.parametrize("kind", sorted(_BAD_BODIES))
+@pytest.mark.parametrize(("method", "url"), _BODY_ROUTES)
+def test_bad_json_body_is_422(client, method, url, kind):
+    r = client.request(
+        method.upper(),
+        url,
+        content=_BAD_BODIES[kind],
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["type"] == "KeyParamsError"
+    if kind in ("malformed", "non_utf8", "empty"):
+        assert body["message"].startswith("request body is not valid JSON: ")
+
+
+@pytest.mark.parametrize("kind", sorted(_BAD_BODIES))
+def test_bad_json_body_ui_commands_422(home, kind):
+    app = create_app()
+    token = app.state.ui_bridge.token
+    with TestClient(app, base_url="http://127.0.0.1:8765") as c:
+        r = c.post(
+            "/api/ui/commands",
+            content=_BAD_BODIES[kind],
+            headers={"content-type": "application/json", "authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 422, r.text
+    assert r.json()["type"] == "KeyParamsError"
+
+
+def test_main_rejects_out_of_range_port(capsys):
+    from dtk_engine.http import main
+
+    for bad in ("99999", "0", "-1", "abc"):
+        with pytest.raises(SystemExit) as exc:
+            main(["--port", bad])
+        assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--port: must be between 1 and 65535" in err
