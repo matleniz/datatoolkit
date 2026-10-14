@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable
 
 import pandas as pd
 
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, valid_names_hint
 from dtk_engine.ops.profile import semantic_type
 
 # Semantic types a key analyses by default ("every eligible column"): ids, free
@@ -66,7 +66,7 @@ def pick_columns(
         return picked, 0
     absent = [c for c in columns if c not in df.columns]
     if absent:
-        raise KeyParamsError(f"{op}: columns not in the frame {absent}")
+        raise KeyParamsError(f"{op}: columns not in the frame {absent}" + valid_names_hint("columns", [str(c) for c in df.columns], absent[0]))
     clash = [c for c in columns if c in excluded]
     if clash:
         raise KeyParamsError(f"{op}: {clash} cannot be picked (it is the target)")

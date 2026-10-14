@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from pydantic import Field, model_validator
 
 from dtk_engine.demo_data import TEST_CSV
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, valid_names_hint
 from dtk_engine.ops.columns import is_numeric, pick_columns, value_kind
 from dtk_engine.ops.distribution import (
     GROUP,
@@ -232,12 +232,12 @@ def _check_split(df, by, by_label, target) -> None:
     if by is not None and by_label:
         raise KeyParamsError(f"{_OP}: pass by or by_label, not both")
     if by is not None and by not in df.columns:
-        raise KeyParamsError(f"{_OP}: by {by!r} not in the frame")
+        raise KeyParamsError(f"{_OP}: by {by!r} not in the frame" + valid_names_hint("columns", [str(c) for c in df.columns], by))
     if by_label:
         if target is None:
             raise KeyParamsError(f"{_OP}: by_label needs a target column")
         if target not in df.columns:
-            raise KeyParamsError(f"{_OP}: target {target!r} not in the frame")
+            raise KeyParamsError(f"{_OP}: target {target!r} not in the frame" + valid_names_hint("columns", [str(c) for c in df.columns], target))
 
 
 def _group_spec(df, by, by_label, target, top_k, target_bins):

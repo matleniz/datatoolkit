@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.express as px
 from pydantic import Field
 
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, valid_names_hint
 from dtk_engine.ops.missing import (
     DROP_PCT,
     REVIEW_PCT,
@@ -335,7 +335,7 @@ def _scoped(
         return df, test
     absent = [c for c in columns if c not in df.columns]
     if absent:
-        raise KeyParamsError(f"missing_values: columns not in the frame {absent}")
+        raise KeyParamsError(f"missing_values: columns not in the frame {absent}" + valid_names_hint("columns", [str(c) for c in df.columns], absent[0]))
     work = df[list(dict.fromkeys(columns))]
     if test is None:
         return work, None

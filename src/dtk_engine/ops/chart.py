@@ -13,7 +13,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, valid_names_hint
 from dtk_engine.ops.columns import is_numeric, numeric_feature
 from dtk_engine.result import plotly_lock
 
@@ -97,7 +97,7 @@ def build_figure(
     cols = _used_columns(chart, x, y, color, facet_row, facet_col, size, columns)
     absent = [c for c in cols if c not in df.columns]
     if absent:
-        raise KeyParamsError(f"{OP}: columns not in the frame {absent}")
+        raise KeyParamsError(f"{OP}: columns not in the frame {absent}" + valid_names_hint("columns", [str(c) for c in df.columns], absent[0]))
 
     if color is not None:
         series = df[color]

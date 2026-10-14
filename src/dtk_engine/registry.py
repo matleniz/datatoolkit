@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from .errors import UnknownKeyError
+from .errors import UnknownKeyError, valid_names_hint
 from .result import Result
 
 
@@ -54,7 +54,10 @@ def get_key(key_id: str) -> Key:
     try:
         return _REGISTRY[key_id]
     except KeyError:
-        raise UnknownKeyError(key_id) from None
+        raise UnknownKeyError(
+            f"unknown key {key_id!r}"
+            + valid_names_hint("available", sorted(_REGISTRY), key_id, cap=len(_REGISTRY))
+        ) from None
 
 
 def all_keys() -> list[Key]:
