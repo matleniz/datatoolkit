@@ -28,8 +28,8 @@ agent-sdk = [
 ]
 
 [project.scripts]
-dtk-api = "dtk_engine.http:main"
-dtk-mcp = "dtk_engine.agent.cli:main"
+dtk-api = "dtk_engine._launch:api_main"
+dtk-mcp = "dtk_engine._launch:mcp_main"
 
 [dependency-groups]
 # fastapi/uvicorn also listed here so `uv sync` (gate) can run the HTTP tests;
