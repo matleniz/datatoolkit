@@ -14,6 +14,7 @@ from dtk_engine.workspace.models import (
 )
 from dtk_engine.workspace.store import (
     JsonWorkspaceStore,
+    WorkspaceCorruptError,
     WorkspaceNotFoundError,
     WorkspaceStore,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "LabelJoin",
     "Step",
     "Workspace",
+    "WorkspaceCorruptError",
     "WorkspaceNotFoundError",
     "WorkspaceStore",
 ]

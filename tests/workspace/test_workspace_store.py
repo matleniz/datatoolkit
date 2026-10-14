@@ -4,7 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from dtk_engine.errors import KeyParamsError
-from dtk_engine.workspace import JsonWorkspaceStore, Workspace, WorkspaceNotFoundError
+from dtk_engine.workspace import (
+    JsonWorkspaceStore,
+    Workspace,
+    WorkspaceCorruptError,
+    WorkspaceNotFoundError,
+)
 from dtk_engine.workspace.store import default_root
 
 
@@ -81,7 +86,7 @@ def test_store_rejects_bad_name_and_corrupt_file(tmp_path):
     with pytest.raises(KeyParamsError):
         store.get("../x")
     (tmp_path / "bad.json").write_text("{not json")
-    with pytest.raises(KeyParamsError, match="invalid workspace file"):
+    with pytest.raises(WorkspaceCorruptError, match="corrupt"):
         store.get("bad")
 
 

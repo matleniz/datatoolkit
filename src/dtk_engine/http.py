@@ -53,7 +53,7 @@ from dtk_engine.ui_bridge import (
     host_name,
     write_runtime,
 )
-from dtk_engine.workspace import WorkspaceNotFoundError
+from dtk_engine.workspace import WorkspaceCorruptError, WorkspaceNotFoundError
 
 
 def _cors_origins() -> list[str]:
@@ -670,6 +670,7 @@ async def delete_agent_attachment(att_id: str, session: str, request: Request):
 _ERROR_STATUS: dict[type[Exception], int] = {
     **dict.fromkeys((UnknownKeyError, UnknownTransformError, WorkspaceNotFoundError), 404),
     **dict.fromkeys((KeyParamsError, SourceError), 422),
+    WorkspaceCorruptError: 500,
     Exception: 500,
 }
 
