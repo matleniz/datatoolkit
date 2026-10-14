@@ -11,6 +11,41 @@ Install (engine only, no front):
 uv pip install git+https://github.com/matleniz/datatoolkit
 ```
 
+The bare package installs the `dtk-api` and `dtk-mcp` scripts but not their
+dependencies; add the extras you need (`api`, `agent`, `pdf`, `agent-sdk`):
+
+```bash
+uv pip install "dtk-engine[api] @ git+https://github.com/matleniz/datatoolkit"    # dtk-api
+uv pip install "dtk-engine[agent] @ git+https://github.com/matleniz/datatoolkit"  # dtk-mcp (+ dtk-api /mcp)
+```
+
+From a clone, `uv sync --extra api` (or `--extra agent`) does the same; it
+needs a checkout and is a contributor command. Without the extra, `dtk-api` /
+`dtk-mcp` print the install command above and exit 1.
+
+Command-line doors: `dtk-api` (HTTP) and `dtk-mcp` (MCP over stdio) only. The
+engine has no `dtk` CLI and no `python -m dtk_engine`; to run a key from a
+script use the Python door below, or `curl` against `dtk-api`.
+
+## Run a key on your own CSV
+
+```python
+from dtk_engine import Result, key_schema, list_keys, run_key
+
+print([k["id"] for k in list_keys()])  # entries carry `id`, `title`, `needs_target`...
+key_schema("dataset_overview")         # JSON Schema of its params (incl. `source`)
+src = {"kind": "csv", "path": "data.csv"}
+Result(**run_key("dataset_overview", {"source": src})).show()
+```
+
+The same through `dtk-api` (extra `api`; start it with `dtk-api`):
+
+```bash
+curl -X POST localhost:8765/api/keys/dataset_overview/run \
+  -H 'content-type: application/json' \
+  -d '{"params": {"source": {"kind": "csv", "path": "data.csv"}}}'
+```
+
 Docker (HTTP API, image `ghcr.io/matleniz/datatoolkit-engine`): workspaces and
 uploads are stored under `DTK_HOME=/data`, so mount a volume there. The
 entrypoint fixes ownership of `/data` (e.g. a bind mount auto-created by the
