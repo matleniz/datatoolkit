@@ -185,6 +185,9 @@ COMPACT_SHARE = 0.5  # default: compact at half the model's context window,
 COMPACT_RANGE = (100_000, 200_000)  # clamped: the CLI floors the window at 100k;
 # a 1M window would otherwise mean up to 500k of context on every call
 FALLBACK_COMPACT_AT = 100_000  # until the model's window is known
+CLI_WINDOW_FLOOR = 100_000  # CLAUDE_CODE_AUTO_COMPACT_WINDOW is floored at 100k...
+CLI_SUMMARY_BUFFER = 33_000  # ...and compaction fires at window - 33k (measured, 2.1.296:
+# 20k summary output + 13k buffer), not at the window itself (datatoolkit-issues#204)
 _OFF = {"0", "off", "none", "false"}
 _WINDOWS_FILE = "model-windows.json"
 
@@ -254,9 +257,10 @@ def compact_window(model_name: str | None = None) -> int | None:
     or ``off`` (the CLI's own default, near the window). Unset: half the
     model's context window, as the CLI last reported it for this model
     (``known_window``), clamped to ``COMPACT_RANGE``; else
-    ``FALLBACK_COMPACT_AT``. Passed as ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` when
-    the CLI starts. The CLI (2.1.296) floors that window at 100k and compacts
-    some 33k tokens before it (measured: 60k set -> compactions at 67-69k).
+    ``FALLBACK_COMPACT_AT``. This is the context size at which compaction
+    should fire; ``cli_window`` turns it into the CLI's variable (the CLI
+    compacts 33k below its window, which it floors at 100k, so thresholds
+    under 67k are not reachable).
     """
     window = known_window(model_name)
     value = _parse_compact(os.environ.get("DTK_AGENT_COMPACT_AT", "").strip().lower(), window)
@@ -289,9 +293,20 @@ def _tokens(usage: dict | None) -> tuple[int, int, int, int]:
     return total_in, int(usage.get("output_tokens") or 0), write, read
 
 
+def cli_window(threshold: int, model_window: int | None = None) -> int:
+    """``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` making the CLI compact at ``threshold``
+    tokens of context: it compacts ``CLI_SUMMARY_BUFFER`` below the window, and
+    caps the window at the model's (datatoolkit-issues#204)."""
+    window = max(threshold + CLI_SUMMARY_BUFFER, CLI_WINDOW_FLOOR)
+    return min(window, model_window) if model_window else window
+
+
 def _compact_env(model_name: str | None = None) -> dict[str, str]:
-    window = compact_window(model_name)
-    return {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(window)} if window else {}
+    threshold = compact_window(model_name)
+    if not threshold:
+        return {}
+    window = cli_window(threshold, known_window(model_name))
+    return {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(window)}
 
 
 def _set_usage(chat: ChatSession, tokens: tuple[int, int, int, int], context: int | None) -> bool:
