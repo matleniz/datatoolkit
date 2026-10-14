@@ -82,8 +82,11 @@ def _corrupt_message(name: str, raw: str) -> str:
         data = json.loads(raw)
     except ValueError:
         data = None
-    if isinstance(data, dict) and "version" in data:
-        return f"workspace {name!r} has an unsupported version {data['version']!r}"
+    version = data.get("version") if isinstance(data, dict) else None
+    # The engine knows no stored version (the model has no version field):
+    # any int version is a file written by another engine.
+    if isinstance(version, int) and not isinstance(version, bool):
+        return f"workspace {name!r} has an unsupported version {version}"
     return f"workspace {name!r} is corrupt: its file is not a valid workspace"
 
 
