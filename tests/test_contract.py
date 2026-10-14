@@ -10,6 +10,7 @@ from dtk_engine import (
     key_schema,
     list_keys,
     list_transforms,
+    list_workspace_summaries,
     list_workspaces,
     preview_workspace,
     run_key,
@@ -475,3 +476,27 @@ def test_get_workspace_corrupt_file(tmp_path, monkeypatch, content, expected):
         get_workspace("x")
     assert expected in str(info.value)
     assert str(tmp_path) not in str(info.value)
+
+
+def test_list_workspaces_marks_corrupt_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    (root / "bad.json").write_text("{not json", encoding="utf-8")
+    (root / "ver.json").write_text('{"name":"ver","version":99}', encoding="utf-8")
+    expected = [
+        {"name": "bad", "corrupt": True, "error": "WorkspaceCorruptError"},
+        {"name": "ver", "corrupt": True, "error": "WorkspaceCorruptError"},
+    ]
+    assert list_workspaces() == expected
+    assert list_workspace_summaries() == expected
+
+
+def test_version_message_only_for_int_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    (root / "x.json").write_text('{"name":"x","version":"v"}', encoding="utf-8")
+    with pytest.raises(WorkspaceCorruptError, match="corrupt") as info:
+        get_workspace("x")
+    assert "unsupported" not in str(info.value)

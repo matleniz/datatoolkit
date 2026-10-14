@@ -204,9 +204,21 @@ def transform_schema(op: str) -> dict:
 # Workspaces: stored under $DTK_HOME/workspaces (default ~/.datatoolkit).
 
 
+def _corrupt_entry(name: str, exc: Exception) -> dict:
+    """Marker row for an unreadable workspace file: ``name`` + error type."""
+    return {"name": name, "corrupt": True, "error": type(exc).__name__}
+
+
 def list_workspaces() -> list[dict]:
+    """Stored workspaces; an unreadable file becomes ``{name, corrupt, error}``."""
     store = JsonWorkspaceStore()
-    return [store.get(name).model_dump(mode="json") for name in store.list()]
+    out: list[dict] = []
+    for name in store.list():
+        try:
+            out.append(store.get(name).model_dump(mode="json"))
+        except WorkspaceCorruptError as exc:
+            out.append(_corrupt_entry(name, exc))
+    return out
 
 
 def list_workspace_summaries() -> list[dict]:
@@ -219,10 +231,17 @@ def list_workspace_summaries() -> list[dict]:
     Shape is content-addressed and cached: the first summaries call for a
     workspace may replay frames; later calls with unchanged content reuse the
     cached tuple without loading frames (MAT-200). Sorted by name. Fronts must
-    not recompute this from full workspace dicts.
+    not recompute this from full workspace dicts. An unreadable file is listed as
+    ``{name, corrupt: true, error}`` instead of failing the whole list.
     """
     store = JsonWorkspaceStore()
-    return [_workspace_summary(store, name) for name in store.list()]
+    out: list[dict] = []
+    for name in store.list():
+        try:
+            out.append(_workspace_summary(store, name))
+        except WorkspaceCorruptError as exc:
+            out.append(_corrupt_entry(name, exc))
+    return out
 
 
 def get_workspace(name: str) -> dict:
