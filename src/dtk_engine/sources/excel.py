@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from zipfile import BadZipFile
+
 import pandas as pd
+from openpyxl.utils.exceptions import InvalidFileException
 
 from dtk_engine.errors import SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
@@ -28,6 +31,11 @@ def read_excel(spec: ExcelSource) -> pd.DataFrame:
         )
     except FileNotFoundError:
         raise SourceError(f"excel source not found: {spec.path}") from None
+    except (BadZipFile, InvalidFileException):
+        raise SourceError(
+            f"cannot read excel {spec.path}: not a valid .xlsx file "
+            "(empty, truncated or corrupted)"
+        ) from None
     # Unknown sheet -> ValueError; bad zip / not an xlsx -> BadZipFile / InvalidFileException.
     except Exception as exc:
         raise SourceError(f"cannot read excel {spec.path}: {exc}") from exc
