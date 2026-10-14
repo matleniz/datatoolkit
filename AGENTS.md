@@ -19,6 +19,7 @@ streamlit (or any UI dependency) to this repo.
   `HOWTO/add-a-key.md` the recipe. Contradiction → `propose-doc-change`.
 - Setup: `uv sync`
 - Tests: `uv run pytest`
+- Coverage (dev-only, no gate): `uv run pytest --cov=dtk_engine --cov-report=term-missing`
 - Lint: `uv run ruff check .` (incl. complexity ≤ 10); layer contract: `tests/test_layers.py`
 - Gate: `fleet gate` must be clean before any PR.
 - Before each commit: `uv run ruff check --fix <changed files>`; never commit with
