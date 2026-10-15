@@ -235,3 +235,17 @@ def test_large_utf8_file_cut_mid_character_stays_utf8(tmp_path):
     # 'é' is 2 bytes: the sample boundary falls inside one iff the offset is odd.
     assert content[:SNIFF_CHARS][-1:] == b"\xc3"
     assert _facts(tmp_path, content)["encoding_guess"] == "utf-8"
+
+
+@pytest.mark.parametrize("raw", [b"", b"not a zip at all", b"PK\x03\x04truncated"])
+def test_corrupt_xlsx_same_message_as_excel_source(tmp_path, raw):
+    path = tmp_path / "bad.xlsx"
+    path.write_bytes(raw)
+    with pytest.raises(SourceError) as via_inspect:
+        run_key("file_inspect", {"path": str(path)})
+    with pytest.raises(SourceError) as via_source:
+        run_key("dataset_overview", {"source": {"kind": "excel", "path": str(path)}})
+    assert "not a valid .xlsx file (empty, truncated or corrupted)" in str(
+        via_inspect.value
+    )
+    assert str(via_inspect.value) == str(via_source.value)

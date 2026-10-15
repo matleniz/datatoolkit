@@ -28,6 +28,7 @@ from dtk_engine.sources.csv_pandas import (
     resolve_path,
     sniff_sep,
 )
+from dtk_engine.sources.excel import read_excel_checked
 
 PREVIEW_BYTES = 120
 # Records read to guess the header / leading zeros.
@@ -163,10 +164,7 @@ def _record_lists(node: dict, prefix: str) -> list[tuple[str, int]]:
 
 def _excel_sheets(path: str, shown: str) -> pd.DataFrame:
     """One row per sheet; ``suggested_header`` is a 0-based value for ``header``."""
-    try:
-        sheets = pd.read_excel(path, sheet_name=None, header=None, engine="openpyxl")
-    except Exception as exc:
-        raise SourceError(f"cannot read excel {shown}: {exc}") from exc
+    sheets = read_excel_checked(path, shown, sheet_name=None, header=None)
     return pd.DataFrame(
         [
             {
