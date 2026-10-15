@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
 from zipfile import BadZipFile
 
 import pandas as pd
-from openpyxl.utils.exceptions import InvalidFileException
 
 from dtk_engine.errors import SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
@@ -21,21 +21,37 @@ def read_excel(spec: ExcelSource) -> pd.DataFrame:
             f"cannot read excel {spec.path}: legacy .xls is not supported, "
             "only .xlsx is supported (re-save the file as .xlsx)"
         )
+    return read_excel_checked(
+        path,
+        spec.path,
+        sheet_name=spec.sheet,
+        header=spec.header,
+        usecols=spec.usecols,
+    )
+
+
+def read_excel_checked(path: str, shown: str, **kw: Any) -> Any:
+    """``pd.read_excel`` (openpyxl) with every failure mapped to SourceError."""
     try:
-        return pd.read_excel(
-            path,
-            sheet_name=spec.sheet,
-            header=spec.header,
-            usecols=spec.usecols,
-            engine="openpyxl",
-        )
+        from openpyxl.utils.exceptions import InvalidFileException
+    except ImportError:
+        raise SourceError(
+            f"cannot read excel {shown}: openpyxl is not installed (uv sync)"
+        ) from None
+    try:
+        return pd.read_excel(path, engine="openpyxl", **kw)
     except FileNotFoundError:
-        raise SourceError(f"excel source not found: {spec.path}") from None
+        raise SourceError(f"excel source not found: {shown}") from None
     except (BadZipFile, InvalidFileException):
         raise SourceError(
-            f"cannot read excel {spec.path}: not a valid .xlsx file "
+            f"cannot read excel {shown}: not a valid .xlsx file "
             "(empty, truncated or corrupted)"
         ) from None
-    # Unknown sheet -> ValueError; bad zip / not an xlsx -> BadZipFile / InvalidFileException.
+    except ImportError:
+        raise SourceError(
+            f"cannot read excel {shown}: openpyxl is not installed (uv sync)"
+        ) from None
+    # Unknown sheet / bad header / unreadable cells -> ValueError; a zip that is
+    # not an xlsx -> KeyError; keep the always-typed guarantee for the rest.
     except Exception as exc:
-        raise SourceError(f"cannot read excel {spec.path}: {exc}") from exc
+        raise SourceError(f"cannot read excel {shown}: {exc}") from exc

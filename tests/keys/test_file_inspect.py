@@ -235,3 +235,63 @@ def test_large_utf8_file_cut_mid_character_stays_utf8(tmp_path):
     # 'é' is 2 bytes: the sample boundary falls inside one iff the offset is odd.
     assert content[:SNIFF_CHARS][-1:] == b"\xc3"
     assert _facts(tmp_path, content)["encoding_guess"] == "utf-8"
+
+
+@pytest.mark.parametrize("raw", [b"", b"not a zip at all", b"PK\x03\x04truncated"])
+def test_corrupt_xlsx_same_message_as_excel_source(tmp_path, raw):
+    path = tmp_path / "bad.xlsx"
+    path.write_bytes(raw)
+    with pytest.raises(SourceError) as via_inspect:
+        run_key("file_inspect", {"path": str(path)})
+    with pytest.raises(SourceError) as via_source:
+        run_key("dataset_overview", {"source": {"kind": "excel", "path": str(path)}})
+    assert "not a valid .xlsx file (empty, truncated or corrupted)" in str(
+        via_inspect.value
+    )
+    assert str(via_inspect.value) == str(via_source.value)
+
+
+def _both_doors(path):
+    with pytest.raises(SourceError) as a:
+        run_key("file_inspect", {"path": str(path)})
+    with pytest.raises(SourceError) as b:
+        run_key("dataset_overview", {"source": {"kind": "excel", "path": str(path)}})
+    return str(a.value), str(b.value)
+
+
+def test_zip_that_is_not_an_xlsx_is_a_typed_source_error(tmp_path):
+    import zipfile
+
+    path = tmp_path / "notxlsx.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("hello.txt", "hi")
+    a, b = _both_doors(path)
+    assert a == b
+    assert a.startswith("cannot read excel")
+
+
+def test_missing_openpyxl_gets_the_install_hint(tmp_path, monkeypatch):
+    import sys
+
+    path = tmp_path / "f.xlsx"
+    pd.DataFrame({"a": [1]}).to_excel(path, index=False)
+    for name in [m for m in sys.modules if m.split(".")[0] == "openpyxl"]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "openpyxl", None)
+    a, b = _both_doors(path)
+    assert a == b
+    assert "openpyxl is not installed (uv sync)" in a
+
+
+def test_missing_sheet_name_is_a_typed_source_error(tmp_path):
+    from dtk_engine.sources.excel import read_excel_checked
+
+    path = tmp_path / "f.xlsx"
+    pd.DataFrame({"a": [1]}).to_excel(path, index=False)
+    with pytest.raises(SourceError, match="nope"):
+        read_excel_checked(str(path), str(path), sheet_name="nope")
+    with pytest.raises(SourceError, match="nope"):
+        run_key(
+            "dataset_overview",
+            {"source": {"kind": "excel", "path": str(path), "sheet": "nope"}},
+        )
