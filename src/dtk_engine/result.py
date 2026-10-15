@@ -123,6 +123,10 @@ class Result(BaseModel):
         the user (``PLOTLY_RENDERER`` or ``plotly.io.renderers.default``),
         figures are shown. Elsewhere they are not (plotly would open a browser
         and wait): one line says how to get them.
+
+        Known limitation: ``renderers.default = "browser"`` set in code is
+        indistinguishable from plotly's own default, so it is treated as the
+        default (figures not displayed); use ``PLOTLY_RENDERER=browser`` for that.
         """
         import plotly.io
 
