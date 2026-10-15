@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import html
 import json
+import os
 import threading
 from collections.abc import Callable
 from typing import Any, Literal
@@ -116,11 +117,31 @@ class Result(BaseModel):
         self.tables.append(Table(title=title, records=records, group=group, kind=kind))
 
     def show(self) -> None:
-        """Render in a notebook: print metrics, show each figure."""
+        """Print metrics, show each figure; never blocks.
+
+        In a notebook / IPython kernel, or with a plotly renderer configured by
+        the user (``PLOTLY_RENDERER`` or ``plotly.io.renderers.default``),
+        figures are shown. Elsewhere they are not (plotly would open a browser
+        and wait): one line says how to get them.
+
+        Known limitation: ``renderers.default = "browser"`` set in code is
+        indistinguishable from plotly's own default, so it is treated as the
+        default (figures not displayed); use ``PLOTLY_RENDERER=browser`` for that.
+        """
         import plotly.io
 
         for name, value in self.metrics.items():
             print(f"{name}: {value}")
+        if not self.figures:
+            return
+        if not _can_display_figures(plotly.io):
+            n = len(self.figures)
+            print(
+                f"{n} figure{'s' if n > 1 else ''} not displayed (no notebook): "
+                "use `result.figures[i].plotly` (Plotly JSON, "
+                "`plotly.io.from_json(json.dumps(...))`) or set PLOTLY_RENDERER."
+            )
+            return
         for figure in self.figures:
             with plotly_lock:
                 fig = plotly.io.from_json(json.dumps(figure.plotly))
@@ -158,3 +179,19 @@ class Result(BaseModel):
 
 def _label(item: Table | Figure) -> str:
     return f"{item.group} / {item.title}" if item.group else item.title
+
+
+def _can_display_figures(pio: Any) -> bool:
+    """True in an IPython kernel, or when a non-browser renderer is configured."""
+    if os.environ.get("PLOTLY_RENDERER"):
+        return True
+    try:
+        from IPython import get_ipython
+
+        shell = get_ipython()
+    except ImportError:
+        shell = None
+    if shell is not None and getattr(shell, "kernel", None) is not None:
+        return True
+    # plotly's own default outside a notebook is "browser": blocks, so not used.
+    return pio.renderers.default not in (None, "", "browser")
