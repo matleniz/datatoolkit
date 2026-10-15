@@ -45,13 +45,15 @@ def run(params: Params) -> Result:
 
 def duplicates_result(df: pd.DataFrame, subset: list[str] | None = None) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.duplicates``)."""
-    subset = default_subset(df) if subset is None else subset
+    auto = subset is None
+    subset = default_subset(df) if auto else subset
     missing = [c for c in subset if c not in df.columns]
     if missing:
         raise ValueError(f"subset columns not in the frame: {missing}")
     n_rows = len(df)
     n_exact, exact_rows = exact_duplicates(df)
     result = Result(
+        headline=_exact_clause(n_exact, n_rows),
         metrics={
             "rows": n_rows,
             "n_exact_duplicates": n_exact,
@@ -76,9 +78,32 @@ def duplicates_result(df: pd.DataFrame, subset: list[str] | None = None) -> Resu
         result.add_table("conflicting columns", by_column)
         result.add_table("conflicting rows", conflict_rows.head(SAMPLE_ROWS))
         result.text = ADVICE
+        result.headline += "; " + _groups_clause(
+            n_groups, n_conflicts, subset, auto
+        )
     else:
+        result.headline += "; no identity columns detected"
         result.text = (
             "No identity columns detected: pass `subset` to look for partial "
             "duplicates and conflicts. " + ADVICE
         )
     return result
+
+
+def _exact_clause(n_exact: int, n_rows: int) -> str:
+    if not n_rows:
+        return "No rows"
+    if not n_exact:
+        return "No exact duplicate rows"
+    plural = "s" if n_exact != 1 else ""
+    return f"{n_exact} exact duplicate row{plural} ({100 * n_exact / n_rows:.1f} %)"
+
+
+def _groups_clause(n_groups: int, n_conflicts: int, subset: list[str], auto: bool) -> str:
+    on = f"on {', '.join(subset)}" + (" (auto)" if auto else "")
+    if not n_groups:
+        return f"no duplicate groups {on}"
+    clause = f"{n_groups} group{'s' if n_groups != 1 else ''} {on}"
+    if n_conflicts:
+        clause += f", {n_conflicts} with conflicting values"
+    return clause
