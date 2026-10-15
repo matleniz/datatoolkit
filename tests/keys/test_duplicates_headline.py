@@ -39,3 +39,9 @@ def test_explicit_subset_with_conflicts_headline():
 def test_empty_frame_headline():
     result = duplicates_result(pd.DataFrame({"id": [], "v": []}))
     assert result.headline.startswith("No rows")
+
+
+def test_tiny_share_is_not_rendered_as_zero():
+    df = pd.DataFrame({"v": [0, *range(10_000)]})
+    result = duplicates_result(df, [])
+    assert result.headline.startswith("1 exact duplicate row (<0.1 %)")

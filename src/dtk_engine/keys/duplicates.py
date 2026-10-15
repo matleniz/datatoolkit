@@ -96,7 +96,9 @@ def _exact_clause(n_exact: int, n_rows: int) -> str:
     if not n_exact:
         return "No exact duplicate rows"
     plural = "s" if n_exact != 1 else ""
-    return f"{n_exact} exact duplicate row{plural} ({100 * n_exact / n_rows:.1f} %)"
+    pct = 100 * n_exact / n_rows
+    pct_str = f"{pct:.1f} %" if round(pct, 1) > 0 else "<0.1 %"
+    return f"{n_exact} exact duplicate row{plural} ({pct_str})"
 
 
 def _groups_clause(n_groups: int, n_conflicts: int, subset: list[str], auto: bool) -> str:
