@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.errors import KeyParamsError, SourceError, valid_names_hint
 from dtk_engine.keys.chart import chart_result
 from dtk_engine.keys.column_distribution import distribution_result
 from dtk_engine.keys.correlations import correlations_result
@@ -136,7 +136,25 @@ def transform(df: pd.DataFrame, op: str, **params) -> pd.DataFrame:
     """Fit ``op`` on ``df`` and apply it (to fit on train and apply to test,
     use ``DtkTransformer``)."""
     t = get_transform(op)
-    return t.fit_apply(df, t.parse(params))
+    parsed = t.parse(params)
+    _check_columns(df, op, parsed)
+    return t.fit_apply(df, parsed)
+
+
+def _check_columns(df: pd.DataFrame, op: str, params: BaseModel) -> None:
+    """KeyParamsError (with the valid columns) when a ``columns`` / ``column``
+    param names columns absent from ``df``."""
+    picked = getattr(params, "columns", None)
+    names = list(picked) if isinstance(picked, list) else []
+    single = getattr(params, "column", None)
+    if isinstance(single, str):
+        names.append(single)
+    absent = [c for c in names if c not in df.columns]
+    if absent:
+        raise KeyParamsError(
+            f"{op}: columns not in the frame {absent}"
+            + valid_names_hint("columns", [str(c) for c in df.columns], absent[0])
+        )
 
 
 def duplicates(df: pd.DataFrame, subset: list[str] | None = None) -> Result:
