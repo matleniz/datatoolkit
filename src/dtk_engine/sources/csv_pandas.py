@@ -398,12 +398,12 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
     try:
         with open(path, "rb") as fh:
             raw = fh.read()
-        if not raw.strip():
-            raise SourceError("file is empty")
         encoding = guess_encoding(raw) if spec.encoding == "auto" else spec.encoding
         # A BOM is never content (utf-8 / utf-16 codecs without -sig keep it).
         text = raw.decode(encoding).removeprefix("\ufeff")
         del raw
+        if not text.strip():
+            raise SourceError("file is empty")
         text, sep, skipped = _trim_and_sniff(text, spec)
         text = _check_mixed_sep(text, sep, spec, skipped)
         decimal = spec.decimal

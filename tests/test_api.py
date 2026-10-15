@@ -74,3 +74,21 @@ def test_load_header_only_csv_still_loads(tmp_path):
     p = tmp_path / "h.csv"
     p.write_text("a,b\n")
     assert list(api.load(str(p)).columns) == ["a", "b"]
+
+
+def test_transform_missing_ok_missing_column_is_noop():
+    df = pd.DataFrame({"a": [1, 2]})
+    out = api.transform(df, "drop_columns", columns=["zzz"], missing_ok=True)
+    assert list(out.columns) == ["a"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"  \n\n", b"\xef\xbb\xbf", b"\xff\xfe", " \n".encode("utf-16")],
+    ids=["whitespace", "utf8-bom", "utf16-bom", "utf16-bom-blank"],
+)
+def test_load_blank_csv_is_empty_error(tmp_path, content):
+    p = tmp_path / "blank.csv"
+    p.write_bytes(content)
+    with pytest.raises(SourceError, match="file is empty"):
+        api.load(str(p))

@@ -137,13 +137,18 @@ def transform(df: pd.DataFrame, op: str, **params) -> pd.DataFrame:
     use ``DtkTransformer``)."""
     t = get_transform(op)
     parsed = t.parse(params)
-    _check_columns(df, op, parsed)
-    return t.fit_apply(df, parsed)
+    try:
+        return t.fit_apply(df, parsed)
+    except KeyError as exc:
+        _raise_missing_columns(df, op, parsed, exc)
+        raise
 
 
-def _check_columns(df: pd.DataFrame, op: str, params: BaseModel) -> None:
-    """KeyParamsError (with the valid columns) when a ``columns`` / ``column``
-    param names columns absent from ``df``."""
+def _raise_missing_columns(
+    df: pd.DataFrame, op: str, params: BaseModel, exc: KeyError
+) -> None:
+    """KeyParamsError (with the valid columns) when the op's KeyError comes from
+    a ``columns`` / ``column`` param naming columns absent from ``df``."""
     picked = getattr(params, "columns", None)
     names = list(picked) if isinstance(picked, list) else []
     single = getattr(params, "column", None)
@@ -154,7 +159,7 @@ def _check_columns(df: pd.DataFrame, op: str, params: BaseModel) -> None:
         raise KeyParamsError(
             f"{op}: columns not in the frame {absent}"
             + valid_names_hint("columns", [str(c) for c in df.columns], absent[0])
-        )
+        ) from exc
 
 
 def duplicates(df: pd.DataFrame, subset: list[str] | None = None) -> Result:
