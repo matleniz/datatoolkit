@@ -6,7 +6,6 @@ from typing import Any
 from zipfile import BadZipFile
 
 import pandas as pd
-from openpyxl.utils.exceptions import InvalidFileException
 
 from dtk_engine.errors import SourceError
 from dtk_engine.sources.csv_pandas import resolve_path
@@ -32,7 +31,13 @@ def read_excel(spec: ExcelSource) -> pd.DataFrame:
 
 
 def read_excel_checked(path: str, shown: str, **kw: Any) -> Any:
-    """``pd.read_excel`` (openpyxl) with file/format errors mapped to SourceError."""
+    """``pd.read_excel`` (openpyxl) with every failure mapped to SourceError."""
+    try:
+        from openpyxl.utils.exceptions import InvalidFileException
+    except ImportError:
+        raise SourceError(
+            f"cannot read excel {shown}: openpyxl is not installed (uv sync)"
+        ) from None
     try:
         return pd.read_excel(path, engine="openpyxl", **kw)
     except FileNotFoundError:
@@ -46,6 +51,7 @@ def read_excel_checked(path: str, shown: str, **kw: Any) -> Any:
         raise SourceError(
             f"cannot read excel {shown}: openpyxl is not installed (uv sync)"
         ) from None
-    # Unknown sheet / bad header / unreadable cells -> ValueError; the rest is I/O.
-    except (ValueError, OSError) as exc:
+    # Unknown sheet / bad header / unreadable cells -> ValueError; a zip that is
+    # not an xlsx -> KeyError; keep the always-typed guarantee for the rest.
+    except Exception as exc:
         raise SourceError(f"cannot read excel {shown}: {exc}") from exc
