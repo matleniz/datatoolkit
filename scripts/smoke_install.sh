@@ -24,16 +24,16 @@ run() {
   local want=$1 got=0; shift
   echo "+ $*"
   OUT=$("$@" 2>&1) || got=$?
-  echo "$OUT" | head -n 6
-  if echo "$OUT" | grep -q Traceback; then fail "traceback from: $*"; fi
+  head -n 6 <<<"$OUT"
+  if grep -q Traceback <<<"$OUT"; then fail "traceback from: $*"; fi
   [ "$got" = "$want" ] || fail "exit $got (wanted $want) from: $*"
 }
 
 # hint <script> <extra>: the script prints the one-line install hint and exits 1.
 hint() {
   run 1 "$BIN/$1" --help
-  [ "$(echo "$OUT" | wc -l)" = 1 ] || fail "$1: hint is not one line"
-  echo "$OUT" | grep -q "needs the \"$2\" extra" || fail "$1: no install hint for $2"
+  [ "$(wc -l <<<"$OUT")" = 1 ] || fail "$1: hint is not one line"
+  grep -q "needs the \"$2\" extra" <<<"$OUT" || fail "$1: no install hint for $2"
 }
 
 serve_and_run_key() {
@@ -84,6 +84,7 @@ Result(**run_key("dataset_overview", {"source": {"kind": "csv", "path": "data.cs
     bare | pdf) hint dtk-api api; hint dtk-mcp agent ;;
     api) run 0 "$BIN/dtk-api" --help; hint dtk-mcp agent ;;
     agent | agent-sdk) run 0 "$BIN/dtk-api" --help; run 0 "$BIN/dtk-mcp" --help ;;
+    *) fail "no smoke checks for extra $extra: add them" ;;
   esac
   case "$extra" in
     api | agent | agent-sdk) serve_and_run_key ;;
