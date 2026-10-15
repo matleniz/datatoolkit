@@ -402,6 +402,8 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
         # A BOM is never content (utf-8 / utf-16 codecs without -sig keep it).
         text = raw.decode(encoding).removeprefix("\ufeff")
         del raw
+        if not text or text.isspace():
+            raise SourceError("file is empty")
         text, sep, skipped = _trim_and_sniff(text, spec)
         text = _check_mixed_sep(text, sep, spec, skipped)
         decimal = spec.decimal
