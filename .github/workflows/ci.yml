@@ -29,3 +29,17 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run pytest -q
+
+  # Fresh venv per extra, no dev group: catches a first-time install that
+  # crashes (datatoolkit-issues#242). The script is also runnable locally.
+  install-smoke:
+    name: install smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: scripts/smoke_install.sh

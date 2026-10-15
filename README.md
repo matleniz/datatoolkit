@@ -23,6 +23,9 @@ From a clone, `uv sync --extra api` (or `--extra agent`) does the same; it
 needs a checkout and is a contributor command. Without the extra, `dtk-api` /
 `dtk-mcp` print the install command above and exit 1.
 
+Contributors: `scripts/smoke_install.sh [extra ...]` re-runs CI's fresh-venv install
+smoke (bare package, then each extra) from the checkout, in a temp `DTK_HOME`.
+
 Command-line doors: `dtk-api` (HTTP) and `dtk-mcp` (MCP over stdio) only. The
 engine has no `dtk` CLI and no `python -m dtk_engine`; to run a key from a
 script use the Python door below, or `curl` against `dtk-api`.
