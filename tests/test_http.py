@@ -499,3 +499,88 @@ def test_main_rejects_out_of_range_port(capsys):
         assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "--port: must be between 1 and 65535" in err
+
+
+# -- request bodies in OpenAPI (datatoolkit-issues#229): documented, behaviour unchanged --
+
+
+def test_openapi_lists_request_schemas(client):
+    spec = client.get("/openapi.json").json()
+    paths = spec["paths"]
+
+    def ref(path, method):
+        body = paths[path][method]["requestBody"]["content"]["application/json"]["schema"]
+        return body["$ref"].rsplit("/", 1)[1]
+
+    assert ref("/api/workspaces/{name}", "put") == "WorkspaceBody"
+    assert ref("/api/keys/{key_id}/run", "post") == "RunKeyBody"
+    assert ref("/api/workspaces/{name}/export", "post") == "ExportBody"
+    assert ref("/api/workspaces/{name}/rename", "post") == "NewNameBody"
+    assert ref("/api/workspaces/{name}/documents", "post") == "AddDocumentBody"
+    assert ref("/api/workspace/preview-step", "post") == "PreviewStepBody"
+    schemas = spec["components"]["schemas"]
+    assert "datasets" in schemas["WorkspaceBody"]["properties"]
+    assert "name" not in schemas["WorkspaceBody"]["required"]
+    assert schemas["ExportBody"]["required"] == ["out_dir"]
+    assert schemas["RunKeyBody"]["required"] == ["params"]
+
+    def refs(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "$ref":
+                    yield value
+                else:
+                    yield from refs(value)
+        elif isinstance(node, list):
+            for item in node:
+                yield from refs(item)
+
+    for target in refs(spec):
+        assert target.rsplit("/", 1)[1] in schemas  # no dangling $ref
+
+
+def test_workspace_put_payloads_unchanged(client):
+    ws = _workspace()
+    del ws["name"]  # the name comes from the path
+    r = client.put("/api/workspaces/mine", json=ws)
+    assert r.status_code == 200 and r.json()["name"] == "mine"
+    # the path name wins over a body name
+    r = client.put("/api/workspaces/other", json={**ws, "name": "ignored"})
+    assert r.status_code == 200 and r.json()["name"] == "other"
+    # unknown top-level field: rejected by the strict Workspace model
+    r = client.put("/api/workspaces/bad", json={**ws, "source": {}, "target": "churn"})
+    assert r.status_code == 422
+    assert r.json()["type"] == "KeyParamsError"
+    assert "source" in r.json()["message"] and "datasets" not in r.json()["message"]
+    r = client.put("/api/workspaces/bad", json={"source": {}})
+    assert r.status_code == 422 and "datasets" in r.json()["message"]
+    # not an object / not JSON
+    r = client.put("/api/workspaces/bad", json=[1])
+    assert r.status_code == 422
+    assert r.json() == {
+        "type": "KeyParamsError", "message": "workspace body must be a JSON object",
+    }
+    r = client.put("/api/workspaces/bad", content=b"{", headers={"content-type": "application/json"})
+    assert r.status_code == 422
+    assert r.json()["message"].startswith("request body is not valid JSON")
+
+
+def test_other_bodies_unchanged(client, tmp_path):
+    r = client.post("/api/keys/dataset_overview/run", json={"params": {}, "extra": 1})
+    assert r.status_code == 200
+    r = client.post("/api/keys/dataset_overview/run", json={"flat": 1})
+    assert r.status_code == 422
+    assert r.json() == {"type": "KeyParamsError", "message": "body must be {params: ...}"}
+    assert client.put("/api/workspaces/w", json=_workspace()).status_code == 200
+    r = client.post("/api/workspaces/w/rename", json={"new_name": "w2", "extra": 1})
+    assert r.status_code == 200 and r.json()["name"] == "w2"
+    r = client.post("/api/workspaces/w2/rename", json={})
+    assert r.status_code == 422
+    assert r.json() == {"type": "KeyParamsError", "message": "body must be {new_name: ...}"}
+    r = client.post("/api/workspaces/w2/export", json={})
+    assert r.status_code == 422
+    assert r.json() == {"type": "KeyParamsError", "message": "body must include out_dir"}
+    r = client.post("/api/workspaces/w2/export", json={"out_dir": str(tmp_path / "out"), "x": 1})
+    assert r.status_code == 200
+    r = client.post("/api/workspace/align", json={"workspace": _workspace(), "extra": 1})
+    assert r.status_code == 200

@@ -53,7 +53,11 @@ from dtk_engine.ui_bridge import (
     host_name,
     write_runtime,
 )
-from dtk_engine.workspace import WorkspaceCorruptError, WorkspaceNotFoundError
+from dtk_engine.workspace import (
+    Workspace,
+    WorkspaceCorruptError,
+    WorkspaceNotFoundError,
+)
 
 
 def _cors_origins() -> list[str]:
@@ -117,6 +121,111 @@ async def _body(request: Request, *required: str, message: str = "") -> dict:
     return body
 
 
+# -- request bodies, for OpenAPI only --
+# Handlers still read the raw JSON through ``_body`` (same accepted payloads,
+# same 422 shapes); these models only feed ``openapi_extra`` so /openapi.json
+# and /docs list the request schemas (datatoolkit-issues#229).
+
+
+class _Doc(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class RunKeyBody(_Doc):
+    params: dict[str, Any]
+
+
+class NewNameBody(_Doc):
+    new_name: str
+
+
+class ExportBody(_Doc):
+    out_dir: str
+    overwrite: bool = False
+    formats: list[str] | None = None
+
+
+class AddDocumentBody(_Doc):
+    path: str
+    name: str | None = None
+    note: str | None = None
+
+
+class DescribeDocumentBody(_Doc):
+    path: str
+    name: str | None = None
+
+
+class SourceColumnsBody(_Doc):
+    spec: dict[str, Any]
+
+
+class WorkspaceRefBody(_Doc):
+    workspace: dict[str, Any]
+    role: str = "train"
+
+
+class PreviewBody(WorkspaceRefBody):
+    head_rows: int = 5
+
+
+class RowsBody(WorkspaceRefBody):
+    version: int | None = None
+    offset: int = 0
+    limit: int = 500
+    columns: list[str] | None = None
+    filter: Any = None
+    sort: Any = None
+
+
+class ProfilesBody(WorkspaceRefBody):
+    version: int | None = None
+    columns: list[str] | None = None
+
+
+class PreviewStepBody(WorkspaceRefBody):
+    step: dict[str, Any]
+
+
+class ColumnNotesBody(WorkspaceRefBody):
+    version: int | None = None
+
+
+class AlignBody(_Doc):
+    workspace: dict[str, Any]
+
+
+_REF = "#/components/schemas/{model}"
+_DOC_MODELS: dict[str, type[BaseModel]] = {}
+
+
+def _json_body(model: type[BaseModel] | str) -> dict:
+    """``openapi_extra`` documenting ``model`` as the route's JSON request body.
+
+    A string names ``WorkspaceBody``, the ``Workspace`` schema (see ``_add_body_schemas``).
+    """
+    name = model if isinstance(model, str) else model.__name__
+    if not isinstance(model, str):
+        _DOC_MODELS[name] = model
+    return {"requestBody": {"required": True, "content": {"application/json": {
+        "schema": {"$ref": _REF.format(model=name)}}}}}
+
+
+def _add_body_schemas(openapi: dict) -> dict:
+    """Register the documented request schemas in ``components.schemas``."""
+    schemas = openapi.setdefault("components", {}).setdefault("schemas", {})
+    for name, model in _DOC_MODELS.items():
+        schema = model.model_json_schema(ref_template=_REF)
+        schemas.update(schema.pop("$defs", {}))
+        schemas[name] = schema
+    # PUT /workspaces/{name}: ``name`` comes from the path, so the body omits it.
+    ws = Workspace.model_json_schema(ref_template=_REF)
+    schemas.update(ws.pop("$defs", {}))
+    ws["required"] = [key for key in ws.get("required", []) if key != "name"]
+    schemas["WorkspaceBody"] = {**ws, "title": "WorkspaceBody"}
+    return openapi
+
+
 # Read-only compute endpoints run the (sync, CPU-bound) engine call in the
 # threadpool: on the event loop, one slow key (feature_selection: tens of
 # seconds) would stall every other request, previews included (MAT-212).
@@ -136,7 +245,7 @@ def get_key_schema(key_id: str) -> dict:
     return contract.key_schema(key_id)
 
 
-@keys_router.post("/keys/{key_id}/run")
+@keys_router.post("/keys/{key_id}/run", openapi_extra=_json_body(RunKeyBody))
 async def post_run_key(key_id: str, request: Request) -> dict:
     body = await _body(request, "params", message="body must be {params: ...}")
     return await run_in_threadpool(contract.run_key, key_id, body["params"])
@@ -168,7 +277,7 @@ def get_one_workspace(name: str) -> dict:
     return contract.get_workspace(name)
 
 
-@workspaces_router.put("/workspaces/{name}")
+@workspaces_router.put("/workspaces/{name}", openapi_extra=_json_body("WorkspaceBody"))
 async def put_workspace(name: str, request: Request) -> dict:
     body = await _body(request, message="workspace body must be a JSON object")
     return contract.save_workspace({**body, "name": name})
@@ -180,19 +289,19 @@ def delete_one_workspace(name: str) -> Response:
     return Response(status_code=204)
 
 
-@workspaces_router.post("/workspaces/{name}/rename")
+@workspaces_router.post("/workspaces/{name}/rename", openapi_extra=_json_body(NewNameBody))
 async def post_rename(name: str, request: Request) -> dict:
     body = await _body(request, "new_name", message="body must be {new_name: ...}")
     return contract.rename_workspace(name, body["new_name"])
 
 
-@workspaces_router.post("/workspaces/{name}/duplicate")
+@workspaces_router.post("/workspaces/{name}/duplicate", openapi_extra=_json_body(NewNameBody))
 async def post_duplicate(name: str, request: Request) -> dict:
     body = await _body(request, "new_name", message="body must be {new_name: ...}")
     return contract.duplicate_workspace(name, body["new_name"])
 
 
-@workspaces_router.post("/workspaces/{name}/export")
+@workspaces_router.post("/workspaces/{name}/export", openapi_extra=_json_body(ExportBody))
 async def post_export(name: str, request: Request) -> dict:
     body = await _body(request, "out_dir")
     return contract.export_workspace(
@@ -211,7 +320,7 @@ def get_documents(name: str) -> list[dict]:
     return contract.list_documents(name)
 
 
-@workspaces_router.post("/workspaces/{name}/documents")
+@workspaces_router.post("/workspaces/{name}/documents", openapi_extra=_json_body(AddDocumentBody))
 async def post_document(name: str, request: Request) -> dict:
     body = await _body(request, "path", message="body must be {path, name?, note?}")
     return await run_in_threadpool(
@@ -239,19 +348,19 @@ def get_document_file(name: str, doc_id: str) -> FileResponse:
     )
 
 
-@uploads_router.post("/documents/describe")
+@uploads_router.post("/documents/describe", openapi_extra=_json_body(DescribeDocumentBody))
 async def post_describe_document(request: Request) -> dict:
     body = await _body(request, "path", message="body must be {path, name?}")
     return await run_in_threadpool(contract.describe_document, body["path"], body.get("name"))
 
 
-@studio_router.post("/source/columns")
+@studio_router.post("/source/columns", openapi_extra=_json_body(SourceColumnsBody))
 async def post_source_columns(request: Request) -> list[dict]:
     body = await _body(request, "spec", message="body must be {spec: ...}")
     return await run_in_threadpool(contract.source_columns, body["spec"])
 
 
-@studio_router.post("/workspace/preview")
+@studio_router.post("/workspace/preview", openapi_extra=_json_body(PreviewBody))
 async def post_preview(request: Request) -> dict:
     body = await _body(request, "workspace")
     return await run_in_threadpool(
@@ -260,7 +369,7 @@ async def post_preview(request: Request) -> dict:
     )
 
 
-@studio_router.post("/workspace/rows")
+@studio_router.post("/workspace/rows", openapi_extra=_json_body(RowsBody))
 async def post_rows(request: Request) -> dict:
     body = await _body(request, "workspace")
     return await run_in_threadpool(
@@ -271,7 +380,7 @@ async def post_rows(request: Request) -> dict:
     )
 
 
-@studio_router.post("/workspace/profiles")
+@studio_router.post("/workspace/profiles", openapi_extra=_json_body(ProfilesBody))
 async def post_profiles(request: Request) -> dict:
     body = await _body(request, "workspace")
     return await run_in_threadpool(
@@ -280,7 +389,7 @@ async def post_profiles(request: Request) -> dict:
     )
 
 
-@studio_router.post("/workspace/preview-step")
+@studio_router.post("/workspace/preview-step", openapi_extra=_json_body(PreviewStepBody))
 async def post_preview_step(request: Request) -> dict:
     body = await _body(request, "workspace", "step")
     return await run_in_threadpool(
@@ -288,7 +397,7 @@ async def post_preview_step(request: Request) -> dict:
     )
 
 
-@studio_router.post("/workspace/column-notes")
+@studio_router.post("/workspace/column-notes", openapi_extra=_json_body(ColumnNotesBody))
 async def post_column_notes(request: Request) -> dict:
     body = await _body(request, "workspace")
     return await run_in_threadpool(
@@ -296,7 +405,7 @@ async def post_column_notes(request: Request) -> dict:
     )
 
 
-@studio_router.post("/workspace/align")
+@studio_router.post("/workspace/align", openapi_extra=_json_body(AlignBody))
 async def post_align(request: Request) -> dict:
     body = await _body(request, "workspace")
     return await run_in_threadpool(contract.align_report, body["workspace"])
@@ -719,6 +828,8 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
 
     application = FastAPI(title="dtk-api", docs_url=None, redoc_url=None, lifespan=lifespan)
     application.state.ui_bridge = bridge
+    base_openapi = application.openapi
+    application.openapi = lambda: _add_body_schemas(base_openapi())
     application.state.ui_ping_interval = ui_ping_interval
     if Terminals is not None:
         application.state.terminals = Terminals()
