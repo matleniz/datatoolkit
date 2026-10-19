@@ -46,6 +46,26 @@ _STEP = {
     },
     "required": ["op"],
 }
+GROUP_NAME_MAX = 80  # engine ``workspace.models.GROUP_NAME_MAX``
+GROUP_INTENT_MAX = 400  # engine ``workspace.models.GROUP_INTENT_MAX``
+_GROUP = {
+    "type": "object",
+    "description": (
+        "Optional: name the whole proposal. All the steps it adds land in one "
+        "group (origin auto, produced_by agent). Give the why, in the user's words, "
+        "as `intent`; Studio falls back to the proposal's note."
+    ),
+    "properties": {
+        "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": GROUP_NAME_MAX,
+            "description": 'Short verb phrase naming the intention ("Impute ledd").',
+        },
+        "intent": {"type": "string", "maxLength": GROUP_INTENT_MAX},
+    },
+    "required": ["name"],
+}
 _STEP_ID = {"type": "string", "description": "Step id (stable across edits)."}
 _INDEX = {"type": "integer", "minimum": 0, "description": "Legacy: step position."}
 # Studio's dock windows (web ``TOOL_IDS``).
@@ -159,6 +179,10 @@ _PROPOSE_STEPS = CommandSpec(
         "changed. `add` appends; the ack's `added_ids` are the new steps' ids. A "
         "step may carry an optional `note` (a finding or the reason for the step): "
         "it becomes the step's note, so no set_note is needed afterwards. "
+        "An optional `group: {name, intent}` puts all the steps this proposal adds "
+        "in one named group (name = a verb and a column, never engine vocabulary; "
+        "intent = why, <= 400 characters); without it "
+        "each step gets its own group. "
         "Destructive ops (remove, drop_columns, filter_rows, drop_low_variance, "
         "drop_correlated) wait for the user's review and return `pending: \"review\"`: "
         "poll get_command_status with the returned id. workspace and base_identity "
@@ -186,6 +210,7 @@ _PROPOSE_STEPS = CommandSpec(
                     },
                 },
             },
+            "group": _GROUP,
             "workspace": _STR,
             "base_identity": _STR,
         },
