@@ -147,6 +147,18 @@ async def _body(request: Request, *required: str, message: str = "") -> dict:
     return body
 
 
+def _int_field(body: dict, name: str, default: int) -> int:
+    """``int(body[name])`` (``default`` when absent); a value int() rejects is a ``KeyParamsError``."""
+    value = body.get(name, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        shown = repr(value)
+        if len(shown) > 40:
+            shown = shown[:37] + "..."
+        raise KeyParamsError(f"{name}: must be an integer, got {shown}") from None
+
+
 # -- request bodies, for OpenAPI only --
 # Handlers still read the raw JSON through ``_body`` (same accepted payloads,
 # same 422 shapes); these models only feed ``openapi_extra`` so /openapi.json
@@ -160,14 +172,12 @@ class _Doc(BaseModel):
 
 
 # The handler wraps these in ``int()``: numeric strings and floats pass
-# (truncated); null, objects and arrays are a 500; so is a non-numeric string
-# (known defect, tracked separately).
+# (truncated); null, objects, arrays and a non-numeric string are a 422.
 _CoercedInt = Annotated[
     int | float | str | bool,
     Field(description=(
         "Read with int() by the handler: a numeric string (\"5\") or a float is accepted. "
-        "A non-numeric string, null or an array makes the handler fail with a 500 "
-        "(known defect, tracked separately)."
+        "A non-numeric string, null or an array is rejected with a 422."
     )),
 ]
 # ``bool(...)`` of the raw value.
@@ -414,7 +424,7 @@ async def post_preview(request: Request) -> dict:
     body = await _body(request, "workspace")
     return await run_in_threadpool(
         contract.preview_workspace, body["workspace"], body.get("role", "train"),
-        head_rows=int(body.get("head_rows", 5)),
+        head_rows=_int_field(body, "head_rows", 5),
     )
 
 
@@ -423,8 +433,8 @@ async def post_rows(request: Request) -> dict:
     body = await _body(request, "workspace")
     return await run_in_threadpool(
         contract.workspace_rows, body["workspace"], body.get("role", "train"),
-        version=body.get("version"), offset=int(body.get("offset", 0)),
-        limit=int(body.get("limit", 500)), columns=body.get("columns"),
+        version=body.get("version"), offset=_int_field(body, "offset", 0),
+        limit=_int_field(body, "limit", 500), columns=body.get("columns"),
         filter=body.get("filter"), sort=body.get("sort"),
     )
 
