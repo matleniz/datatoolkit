@@ -289,14 +289,50 @@ def test_first_export_failure_removes_created_dir(copied_source, tmp_path, monke
     assert not (tmp_path / "a").exists()
 
 
-def test_stale_staging_is_cleaned(copied_source, tmp_path):
+def test_stale_staging_is_cleaned_only_when_ours_and_dead(copied_source, tmp_path):
+    import os
+    import subprocess
+    import sys
+
     out = tmp_path / "out"
     export("stage", out)
-    stale = out / ".export-staging-dead"
-    (stale / "processed").mkdir(parents=True)
-    (stale / "processed" / "x").write_text("x")
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    mine = {"dead": dead.pid, "live": os.getpid()}
+    for name, pid in mine.items():
+        d = out / f".export-staging-{name}"
+        d.mkdir()
+        (d / ".dtk-staging").write_text(str(pid))
+    (out / ".export-staging-foreign").mkdir()  # no marker: not ours
     export("stage", out, overwrite=True)
-    assert _no_staging(out)
+    left = sorted(p.name for p in out.glob(".export-*"))
+    assert left == [".export-staging-foreign", ".export-staging-live"]
+
+
+def test_double_failure_keeps_previous_export_aside(copied_source, tmp_path, monkeypatch):
+    from dtk_engine.workspace import export as mod
+
+    out = tmp_path / "out"
+    export("stage", out, formats=["parquet", "csv", "py"])
+    before = _tree(out)
+    real, calls = mod.os.replace, []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        n = len(calls)
+        if n == 6 or n == 8:  # an install move, then the restore of the 1st entry
+            raise OSError("disk gone")
+        return real(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", flaky)
+    with pytest.raises(OSError, match="previous export kept in") as err:
+        export("stage", out, overwrite=True, formats=["parquet", "csv", "py"])
+    monkeypatch.undo()
+    assert isinstance(err.value.__cause__, OSError)
+    (aside,) = out.glob(".export-old-*")
+    assert str(aside) in str(err.value)
+    kept = {str(p.relative_to(aside)): p.read_bytes() for p in aside.rglob("*") if p.is_file()}
+    assert kept and all(before[k] == v for k, v in kept.items())
 
 
 def test_stale_aside_is_restored_when_no_manifest(copied_source, tmp_path):

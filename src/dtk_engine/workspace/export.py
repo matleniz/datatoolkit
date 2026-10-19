@@ -31,6 +31,7 @@ import json
 import os
 import platform
 import shutil
+import sys
 import tempfile
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -59,6 +60,12 @@ INLINE_STATE_BYTES = 64 * 1024
 _CHUNK = 1 << 20
 STAGING_PREFIX = ".export-staging-"
 ASIDE_PREFIX = ".export-old-"
+STAGING_MARKER = ".dtk-staging"  # holds the pid of the exporting process
+STAGING_MAX_AGE = 3600  # seconds before a staging dir of a live pid counts as stale
+
+
+class ExportRestoreError(OSError):
+    """The swap failed and the previous export could not be fully put back."""
 
 
 def _sha256_file(path: Path, digest=None) -> str:
@@ -323,19 +330,49 @@ def _swap(new: Path, aside: Path, out: Path, owned: list[Path]) -> None:
     except BaseException:
         for _, dest in installed:
             dest.unlink(missing_ok=True)
+        failed = []
         for path, backup in moved:
-            os.replace(backup, path)
+            try:
+                os.replace(backup, path)
+            except OSError as exc:
+                failed.append(exc)
+        if failed:
+            raise ExportRestoreError(
+                f"export failed ({sys.exc_info()[1]!r}) and the previous export could not be "
+                f"fully restored ({failed[0]}); previous export kept in {aside}"
+            ) from sys.exc_info()[1]
         raise
+
+
+def _staging_is_stale(staging: Path) -> bool:
+    """Only a staging dir carrying our marker, of a dead pid or older than the max age."""
+    marker = staging / STAGING_MARKER
+    try:
+        pid = int(marker.read_text(encoding="utf-8"))
+        age = datetime.now(UTC).timestamp() - marker.stat().st_mtime
+    except (OSError, ValueError):
+        return False  # not ours (or unreadable): never delete
+    if age > STAGING_MAX_AGE:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:  # EPERM: the process exists
+        return False
+    return False
 
 
 def _recover_stale(out: Path) -> None:
     """Leftovers of a crashed export: staging dirs are dropped; an aside dir holds the
     only copy of a previous export, so it is moved back when ``out`` has no manifest and
-    otherwise left untouched."""
+    otherwise left untouched. Concurrent exports to one ``out_dir`` stay unsupported, but
+    a live one's staging dir (marker with a live pid, recent) is never removed."""
     if not out.is_dir():
         return
     for stale in out.glob(STAGING_PREFIX + "*"):
-        shutil.rmtree(stale, ignore_errors=True)
+        if _staging_is_stale(stale):
+            shutil.rmtree(stale, ignore_errors=True)
     if (out / MANIFEST).exists():
         return
     for aside in out.glob(ASIDE_PREFIX + "*"):
@@ -387,17 +424,25 @@ def export_workspace(
     created = next((p for p in [*out.parents[::-1], out] if not p.exists()), None)
     out.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=out))
+    (staging / STAGING_MARKER).write_text(str(os.getpid()), encoding="utf-8")
+    new = staging / "new"
+    new.mkdir()
     aside = Path(tempfile.mkdtemp(prefix=ASIDE_PREFIX, dir=out))
+    keep_aside = False
     try:
-        manifest = _build_export(ws, staging, formats, sources, merges, inline_state_bytes)
-        _swap(staging, aside, out, owned or [])
+        manifest = _build_export(ws, new, formats, sources, merges, inline_state_bytes)
+        _swap(new, aside, out, owned or [])
+    except ExportRestoreError:
+        keep_aside = True  # the only copy of the previous export
+        raise
     except BaseException:
         if created is not None:
             shutil.rmtree(created, ignore_errors=True)
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-        shutil.rmtree(aside, ignore_errors=True)
+        if not keep_aside:
+            shutil.rmtree(aside, ignore_errors=True)
     return manifest
 
 
