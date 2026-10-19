@@ -16,7 +16,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path, PurePath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 # FastAPI is an optional dependency; keep the import inside this module so
 # ``import dtk_engine`` still works without the ``api`` extra.
@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.requests import HTTPConnection
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
@@ -46,6 +46,7 @@ from dtk_engine.errors import (
     message_from_validation_details,
     validation_error_details,
 )
+from dtk_engine.sources import SourceSpec
 from dtk_engine.ui_bridge import (
     UiBridge,
     allowed_hosts,
@@ -54,6 +55,7 @@ from dtk_engine.ui_bridge import (
     write_runtime,
 )
 from dtk_engine.workspace import (
+    Step,
     Workspace,
     WorkspaceCorruptError,
     WorkspaceNotFoundError,
@@ -126,11 +128,24 @@ async def _body(request: Request, *required: str, message: str = "") -> dict:
 # -- request bodies, for OpenAPI only --
 # Handlers still read the raw JSON through ``_body`` (same accepted payloads,
 # same 422 shapes); these models only feed ``openapi_extra`` so /openapi.json
-# and /docs list the request schemas (datatoolkit-issues#229).
+# and /docs list the request schemas (datatoolkit-issues#229). They describe
+# what the handlers accept TODAY, quirks included (datatoolkit-issues#251):
+# tests/test_http_schemas.py checks each schema against its handler.
 
 
 class _Doc(BaseModel):
     model_config = ConfigDict(extra="allow")
+
+
+# The handler wraps these in ``int()``: numeric strings and floats pass
+# (truncated); null, objects and arrays are a 500; so is a non-numeric string.
+_CoercedInt = Annotated[
+    int | float | str | bool,
+    Field(description="Read with int() by the handler: a numeric string (\"5\") or a float is accepted."),
+]
+# ``bool(...)`` of the raw value.
+_Truthy = Annotated[Any, Field(description="Any JSON value; the handler reads its truthiness.")]
+_Role = Literal["train", "test"]
 
 
 class RunKeyBody(_Doc):
@@ -143,7 +158,7 @@ class NewNameBody(_Doc):
 
 class ExportBody(_Doc):
     out_dir: str
-    overwrite: bool = False
+    overwrite: _Truthy = False
     formats: list[str] | None = None
 
 
@@ -159,42 +174,42 @@ class DescribeDocumentBody(_Doc):
 
 
 class SourceColumnsBody(_Doc):
-    spec: dict[str, Any]
+    spec: SourceSpec
 
 
 class WorkspaceRefBody(_Doc):
-    workspace: dict[str, Any]
-    role: str = "train"
+    workspace: Workspace
+    role: _Role = "train"
 
 
 class PreviewBody(WorkspaceRefBody):
-    head_rows: int = 5
+    head_rows: _CoercedInt = 5
 
 
 class RowsBody(WorkspaceRefBody):
-    version: int | None = None
-    offset: int = 0
-    limit: int = 500
+    version: Annotated[int, Field(ge=0)] | None = None
+    offset: _CoercedInt = 0
+    limit: _CoercedInt = 500
     columns: list[str] | None = None
     filter: Any = None
     sort: Any = None
 
 
 class ProfilesBody(WorkspaceRefBody):
-    version: int | None = None
+    version: Annotated[int, Field(ge=0)] | None = None
     columns: list[str] | None = None
 
 
 class PreviewStepBody(WorkspaceRefBody):
-    step: dict[str, Any]
+    step: Step
 
 
 class ColumnNotesBody(WorkspaceRefBody):
-    version: int | None = None
+    version: Annotated[int, Field(ge=0)] | None = None
 
 
 class AlignBody(_Doc):
-    workspace: dict[str, Any]
+    workspace: Workspace
 
 
 _REF = "#/components/schemas/{model}"
@@ -220,10 +235,15 @@ def _add_body_schemas(openapi: dict) -> dict:
         schema = model.model_json_schema(ref_template=_REF)
         schemas.update(schema.pop("$defs", {}))
         schemas[name] = schema
-    # PUT /workspaces/{name}: ``name`` comes from the path, so the body omits it.
+    # PUT /workspaces/{name}: the path name overwrites whatever the body holds
+    # (any JSON value, never validated), so the body schema keeps no constraint on it.
     ws = Workspace.model_json_schema(ref_template=_REF)
     schemas.update(ws.pop("$defs", {}))
     ws["required"] = [key for key in ws.get("required", []) if key != "name"]
+    ws["properties"]["name"] = {
+        "title": "Name",
+        "description": "Ignored: the name in the path is used, whatever this holds.",
+    }
     schemas["WorkspaceBody"] = {**ws, "title": "WorkspaceBody"}
     return openapi
 
