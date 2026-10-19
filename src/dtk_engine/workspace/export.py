@@ -19,9 +19,9 @@ pyarrow / python versions. Raw inputs are only
 read: an output path that is a source path is refused. Overwrite only deletes
 relative paths under processed/, states/ or code/ listed by a manifest of ours.
 
-The export is built in a ``.export-staging-*`` directory next to ``out_dir`` and
-moved in only once every format is written: a failing export (replay or write
-time) leaves ``out_dir``, a previous export included, untouched.
+The export is built in a ``.export-staging-*`` directory inside ``out_dir`` and
+moved in (the previous one set aside in ``.export-old-*`` meanwhile) only once
+every format is written: a failing export (replay or write time) leaves ``out_dir``, a previous export included, untouched.
 """
 
 from __future__ import annotations
@@ -57,6 +57,8 @@ FORMATS = ("parquet", "csv", "ipynb", "py")
 # impute_iterative keep the whole train matrix in their state).
 INLINE_STATE_BYTES = 64 * 1024
 _CHUNK = 1 << 20
+STAGING_PREFIX = ".export-staging-"
+ASIDE_PREFIX = ".export-old-"
 
 
 def _sha256_file(path: Path, digest=None) -> str:
@@ -293,43 +295,52 @@ def _owned_paths(out_dir: Path) -> list[Path]:
     return owned
 
 
-def _swap(new: Path, old: Path, out: Path, owned: list[Path]) -> None:
-    """Move the previous owned files to ``old``, then the staged ones into ``out``
-    (manifest last); on any error put the previous export back. Foreign files untouched."""
+def _move_files(src: Path, dst: Path, files: list[Path] | None = None) -> list[tuple[Path, Path]]:
+    """``os.replace`` each file under ``src`` (or the listed ones) to the same relative
+    path under ``dst``; returns the (from, to) pairs done."""
+    done: list[tuple[Path, Path]] = []
+    for f in files if files is not None else sorted(x for x in src.rglob("*") if x.is_file()):
+        dest = dst / f.relative_to(src)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(f, dest)
+        done.append((f, dest))
+    return done
+
+
+def _swap(new: Path, aside: Path, out: Path, owned: list[Path]) -> None:
+    """Move the previous owned files to ``aside``, then the staged ones into ``out``
+    (manifest last); on any error put the previous export back and drop the new files.
+    Foreign files are never touched."""
+    previous = [p for p in [*owned, out / MANIFEST] if p.exists()]
     moved: list[tuple[Path, Path]] = []
-    installed: list[Path] = []
+    installed: list[tuple[Path, Path]] = []
+    staged = sorted((f for f in new.rglob("*") if f.is_file()), key=lambda f: f.name == MANIFEST)
     try:
-        for path in [*owned, out / MANIFEST]:
-            if path.exists():
-                backup = old / path.relative_to(out)
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(path, backup)
-                moved.append((path, backup))
-        files = sorted(
-            (f for f in new.rglob("*") if f.is_file()), key=lambda f: f.name == MANIFEST
-        )
-        for f in files:
-            dest = out / f.relative_to(new)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(f, dest)
-            installed.append(dest)
+        for path in previous:
+            moved += _move_files(out, aside, [path])
+        for f in staged:
+            installed += _move_files(new, out, [f])
     except BaseException:
-        for dest in installed:
+        for _, dest in installed:
             dest.unlink(missing_ok=True)
         for path, backup in moved:
             os.replace(backup, path)
         raise
 
 
-def _staging_dir(out: Path) -> Path:
-    """Next to ``out`` (same filesystem); inside it if its parent is not writable."""
-    try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        return Path(tempfile.mkdtemp(prefix=".export-staging-", dir=out.parent))
-    except OSError:
-        if not out.is_dir():
-            raise
-        return Path(tempfile.mkdtemp(prefix=".export-staging-", dir=out))
+def _recover_stale(out: Path) -> None:
+    """Leftovers of a crashed export: staging dirs are dropped; an aside dir holds the
+    only copy of a previous export, so it is moved back when ``out`` has no manifest and
+    otherwise left untouched."""
+    if not out.is_dir():
+        return
+    for stale in out.glob(STAGING_PREFIX + "*"):
+        shutil.rmtree(stale, ignore_errors=True)
+    if (out / MANIFEST).exists():
+        return
+    for aside in out.glob(ASIDE_PREFIX + "*"):
+        _move_files(aside, out)
+        shutil.rmtree(aside, ignore_errors=True)
 
 
 def export_workspace(
@@ -364,6 +375,7 @@ def export_workspace(
                 f"export to {out} would overwrite the raw input {src}; "
                 "choose another directory"
             )
+    _recover_stale(out)
     owned = None
     if (out / MANIFEST).exists():
         if not overwrite:
@@ -372,14 +384,20 @@ def export_workspace(
             )
         owned = _owned_paths(out)  # validated before anything is built
 
-    staging = _staging_dir(out)
+    created = next((p for p in [*out.parents[::-1], out] if not p.exists()), None)
+    out.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=out))
+    aside = Path(tempfile.mkdtemp(prefix=ASIDE_PREFIX, dir=out))
     try:
-        new = staging / "new"
-        new.mkdir()
-        manifest = _build_export(ws, new, formats, sources, merges, inline_state_bytes)
-        _swap(new, staging / "old", out, owned or [])
+        manifest = _build_export(ws, staging, formats, sources, merges, inline_state_bytes)
+        _swap(staging, aside, out, owned or [])
+    except BaseException:
+        if created is not None:
+            shutil.rmtree(created, ignore_errors=True)
+        raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(aside, ignore_errors=True)
     return manifest
 
 

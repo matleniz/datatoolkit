@@ -196,7 +196,7 @@ def copied_source(tmp_path, monkeypatch):
 
 
 def _no_staging(parent: Path) -> bool:
-    return not list(parent.glob(".export-staging-*"))
+    return not list(parent.rglob(".export-*"))
 
 
 def test_overwrite_failing_replay_keeps_previous(copied_source, tmp_path):
@@ -209,7 +209,7 @@ def test_overwrite_failing_replay_keeps_previous(copied_source, tmp_path):
         export("stage", out, overwrite=True, formats=["parquet", "csv", "py"])
     assert not isinstance(err.value, AssertionError)
     assert _tree(out) == before
-    assert _no_staging(tmp_path)
+    assert _no_staging(out)
 
 
 def test_overwrite_failing_write_keeps_previous(copied_source, tmp_path, monkeypatch):
@@ -224,7 +224,7 @@ def test_overwrite_failing_write_keeps_previous(copied_source, tmp_path, monkeyp
     with pytest.raises(Exception, match="cannot write train.parquet"):
         export("stage", out, overwrite=True, formats=["csv", "parquet"])
     assert _tree(out) == before
-    assert _no_staging(tmp_path)
+    assert _no_staging(out)
 
 
 def test_overwrite_success_replaces_owned_keeps_foreign(copied_source, tmp_path):
@@ -240,7 +240,7 @@ def test_overwrite_success_replaces_owned_keeps_foreign(copied_source, tmp_path)
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["outputs"]["train"]["path"] == "processed/train.parquet"
     assert (out / "processed" / "train.parquet").exists()
-    assert _no_staging(tmp_path)
+    assert _no_staging(out)
 
 
 def test_no_overwrite_unchanged_and_clean(copied_source, tmp_path):
@@ -250,10 +250,11 @@ def test_no_overwrite_unchanged_and_clean(copied_source, tmp_path):
     with pytest.raises(KeyParamsError, match="exists .*pass overwrite=True"):
         export("stage", out)
     assert _tree(out) == before
-    assert _no_staging(tmp_path)
+    assert _no_staging(out)
 
 
-def test_overwrite_swap_failure_restores_previous(copied_source, tmp_path, monkeypatch):
+@pytest.mark.parametrize("fail_at", range(1, 9))
+def test_overwrite_swap_failure_restores_previous(copied_source, tmp_path, monkeypatch, fail_at):
     from dtk_engine.workspace import export as mod
 
     out = tmp_path / "out"
@@ -263,7 +264,7 @@ def test_overwrite_swap_failure_restores_previous(copied_source, tmp_path, monke
 
     def flaky(src, dst):
         calls.append(dst)
-        if len(calls) == 6:  # after the backups, during the install
+        if len(calls) == fail_at:  # 4 moves aside, then 4 installs
             raise OSError("disk gone")
         return real(src, dst)
 
@@ -271,6 +272,84 @@ def test_overwrite_swap_failure_restores_previous(copied_source, tmp_path, monke
     with pytest.raises(OSError, match="disk gone"):
         export("stage", out, overwrite=True, formats=["parquet", "csv", "py"])
     monkeypatch.undo()
-    assert len(calls) >= 6
     assert _tree(out) == before
-    assert _no_staging(tmp_path)
+    assert _no_staging(out)
+
+
+def test_first_export_failure_removes_created_dir(copied_source, tmp_path, monkeypatch):
+    from dtk_engine.workspace import export as mod
+
+    def boom(src, dst):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(mod.os, "replace", boom)
+    out = tmp_path / "a" / "b" / "out"
+    with pytest.raises(OSError, match="disk gone"):
+        export("stage", out)
+    assert not (tmp_path / "a").exists()
+
+
+def test_stale_staging_is_cleaned(copied_source, tmp_path):
+    out = tmp_path / "out"
+    export("stage", out)
+    stale = out / ".export-staging-dead"
+    (stale / "processed").mkdir(parents=True)
+    (stale / "processed" / "x").write_text("x")
+    export("stage", out, overwrite=True)
+    assert _no_staging(out)
+
+
+def test_stale_aside_is_restored_when_no_manifest(copied_source, tmp_path):
+    out = tmp_path / "out"
+    export("stage", out)
+    before = _tree(out)
+    aside = out / ".export-old-dead"
+    aside.mkdir()
+    for f in ("manifest.json", "processed/train.parquet"):
+        (aside / f).parent.mkdir(parents=True, exist_ok=True)
+        (out / f).replace(aside / f)
+    with pytest.raises(KeyParamsError, match="pass overwrite=True"):
+        export("stage", out)  # restored, hence seen as an existing export
+    assert _tree(out) == before
+
+
+def test_stale_aside_is_left_when_a_manifest_exists(copied_source, tmp_path):
+    out = tmp_path / "out"
+    export("stage", out)
+    (out / ".export-old-dead").mkdir()
+    (out / ".export-old-dead" / "keep").write_text("k")
+    export("stage", out, overwrite=True)
+    assert (out / ".export-old-dead" / "keep").read_text() == "k"
+
+
+def test_parent_readonly_is_fine(copied_source, tmp_path):
+    parent = tmp_path / "ro"
+    out = parent / "out"
+    out.mkdir(parents=True)
+    parent.chmod(0o555)
+    try:
+        export("stage", out)
+        export("stage", out, overwrite=True)
+        assert (out / "manifest.json").exists()
+    finally:
+        parent.chmod(0o755)
+
+
+def test_symlinked_owned_file_is_not_followed(copied_source, tmp_path):
+    out = tmp_path / "out"
+    export("stage", out)
+    target = tmp_path / "precious.parquet"
+    target.write_text("keep")
+    (out / "processed" / "train.parquet").unlink()
+    (out / "processed" / "train.parquet").symlink_to(target)
+    with pytest.raises(KeyParamsError, match="outside"):
+        export("stage", out, overwrite=True)
+    assert target.read_text() == "keep"
+
+
+def test_relative_out_dir(copied_source, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    export("stage", "rel_out")
+    export("stage", "rel_out", overwrite=True)
+    assert (tmp_path / "rel_out" / "manifest.json").exists()
+    assert _no_staging(tmp_path / "rel_out")
