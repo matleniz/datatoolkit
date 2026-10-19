@@ -171,3 +171,83 @@ def test_unknown_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("DTK_HOME", str(tmp_path))
     with pytest.raises(WorkspaceNotFoundError):
         export_workspace("nope", str(tmp_path))
+
+
+# --- overwrite is staged: a failing export leaves the previous one intact ---
+
+
+def _tree(root: Path) -> dict:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+@pytest.fixture
+def copied_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
+    csv = tmp_path / "train.csv"
+    csv.write_bytes(Path(TRAIN_CSV).read_bytes())
+    save_workspace(
+        {
+            "name": "stage",
+            "datasets": {"train": {"x": {"kind": "csv", "path": str(csv)}, "target_column": "Survived"}},
+            "steps": [{"op": "scale", "target": "train", "params": {"columns": ["Fare"]}}],
+        }
+    )
+    return csv
+
+
+def _no_staging(parent: Path) -> bool:
+    return not list(parent.glob(".export-staging-*"))
+
+
+def test_overwrite_failing_replay_keeps_previous(copied_source, tmp_path):
+    out = tmp_path / "out"
+    export("stage", out, formats=["parquet", "csv", "py"])
+    before = _tree(out)
+    df = pd.read_csv(copied_source).drop(columns=["Fare"])
+    df.to_csv(copied_source, index=False)
+    with pytest.raises(Exception) as err:
+        export("stage", out, overwrite=True, formats=["parquet", "csv", "py"])
+    assert not isinstance(err.value, AssertionError)
+    assert _tree(out) == before
+    assert _no_staging(tmp_path)
+
+
+def test_overwrite_failing_write_keeps_previous(copied_source, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    export("stage", out, formats=["parquet", "csv", "py"])
+    before = _tree(out)
+
+    def boom(self, *a, **k):
+        raise ValueError("duplicate column names")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", boom)
+    with pytest.raises(Exception, match="cannot write train.parquet"):
+        export("stage", out, overwrite=True, formats=["csv", "parquet"])
+    assert _tree(out) == before
+    assert _no_staging(tmp_path)
+
+
+def test_overwrite_success_replaces_owned_keeps_foreign(copied_source, tmp_path):
+    out = tmp_path / "out"
+    export("stage", out, formats=["parquet", "csv", "py"])
+    (out / "notes.txt").write_text("mine")
+    (out / "processed" / "mine.txt").write_text("mine too")
+    export("stage", out, overwrite=True, formats=["parquet"])
+    assert (out / "notes.txt").read_text() == "mine"
+    assert (out / "processed" / "mine.txt").read_text() == "mine too"
+    assert not (out / "code" / "pipeline.py").exists()
+    assert not (out / "processed" / "train.csv").exists()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["outputs"]["train"]["path"] == "processed/train.parquet"
+    assert (out / "processed" / "train.parquet").exists()
+    assert _no_staging(tmp_path)
+
+
+def test_no_overwrite_unchanged_and_clean(copied_source, tmp_path):
+    out = tmp_path / "out"
+    export("stage", out)
+    before = _tree(out)
+    with pytest.raises(KeyParamsError, match="exists .*pass overwrite=True"):
+        export("stage", out)
+    assert _tree(out) == before
+    assert _no_staging(tmp_path)

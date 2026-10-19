@@ -17,14 +17,21 @@ the step groups, every step (with its ``group_id``) with its fitted state
 (inline, or a side file with its sha256) and the engine / pandas / sklearn /
 pyarrow / python versions. Raw inputs are only
 read: an output path that is a source path is refused. Overwrite only deletes
-relative paths under processed/ or states/ listed by a manifest of ours.
+relative paths under processed/, states/ or code/ listed by a manifest of ours.
+
+The export is built in a ``.export-staging-*`` directory next to ``out_dir`` and
+moved in only once every format is written: a failing export (replay or write
+time) leaves ``out_dir``, a previous export included, untouched.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
+import shutil
+import tempfile
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -286,12 +293,22 @@ def _owned_paths(out_dir: Path) -> list[Path]:
     return owned
 
 
-def _remove_previous(out_dir: Path) -> None:
+def _remove_previous(out_dir: Path, owned: list[Path]) -> None:
     """Delete the files a previous export listed (and nothing else)."""
-    owned = _owned_paths(out_dir)  # all validated before the first unlink
     for path in owned:
         path.unlink(missing_ok=True)
     (out_dir / MANIFEST).unlink()
+
+
+def _install(staging: Path, out: Path) -> None:
+    """Move the staged files into ``out`` (manifest last), foreign files untouched."""
+    files = sorted(
+        (f for f in staging.rglob("*") if f.is_file()), key=lambda f: f.name == MANIFEST
+    )
+    for f in files:
+        dest = out / f.relative_to(staging)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(f, dest)
 
 
 def export_workspace(
@@ -306,7 +323,8 @@ def export_workspace(
     """Export the workspace's processed train / test and its manifest; returns it.
 
     An existing export in ``out_dir`` (a ``manifest.json``) is refused unless
-    ``overwrite``, which first removes the files that export listed.
+    ``overwrite``, which replaces the files that export listed once the new one
+    is fully written.
     """
     formats = _check_formats(formats)
     store = store if store is not None else JsonWorkspaceStore()
@@ -325,13 +343,30 @@ def export_workspace(
                 f"export to {out} would overwrite the raw input {src}; "
                 "choose another directory"
             )
+    owned = None
     if (out / MANIFEST).exists():
         if not overwrite:
             raise KeyParamsError(
                 f"{out / MANIFEST} exists (a previous export); pass overwrite=True"
             )
-        _remove_previous(out)
+        owned = _owned_paths(out)  # validated before anything is built
 
+    out.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".export-staging-", dir=out.parent))
+    try:
+        manifest = _build_export(ws, staging, formats, sources, merges, inline_state_bytes)
+        if owned is not None:
+            _remove_previous(out, owned)
+        _install(staging, out)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return manifest
+
+
+def _build_export(
+    ws: Workspace, out: Path, formats: list[str], sources: list[dict], merges: list[dict],
+    inline_state_bytes: int,
+) -> dict:
     train = raw_workspace_frame(ws, "train", labeled=True)
     test = None
     if ws.datasets.test is not None:
@@ -362,9 +397,7 @@ def export_workspace(
         ],
         "outputs": outputs,
     }
-    tmp = out / (MANIFEST + ".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    tmp.replace(out / MANIFEST)
+    (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
 
