@@ -47,13 +47,20 @@ class KeyParamsError(ValueError):
 
     Optional ``details`` carries structured pydantic issues
     (``[{loc, msg, type}, ...]``) so HTTP can expose them without the dump.
+    Optional ``detail`` is a machine-readable cause (``{rule, group_id,
+    step_id}`` for a step-group invariant), exposed as-is under ``detail``.
     """
 
     def __init__(
-        self, message: str, *, details: list[dict[str, Any]] | None = None
+        self,
+        message: str,
+        *,
+        details: list[dict[str, Any]] | None = None,
+        detail: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.details = details
+        self.detail = detail
 
 
 class SourceError(ValueError):

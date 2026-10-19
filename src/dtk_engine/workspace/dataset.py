@@ -24,7 +24,7 @@ from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.ops.join import LabelJoinError, join_labels, label_columns, merge_table
 from dtk_engine.sources.registry import load, reader
 from dtk_engine.sources.spec import DatasetSource
-from dtk_engine.workspace.models import Step, Workspace
+from dtk_engine.workspace.models import GroupInvariantError, Step, Workspace
 from dtk_engine.workspace.replay import (
     needs_train,
     replay,
@@ -133,6 +133,15 @@ def workspace_frame(
     return cached_frame(ws, "replay", role, steps, labeled, compute)
 
 
+def _invariant_detail(exc: ValidationError) -> dict | None:
+    """``{rule, group_id, step_id}`` of the first step-group invariant in ``exc``."""
+    for err in exc.errors():
+        cause = (err.get("ctx") or {}).get("error")
+        if isinstance(cause, GroupInvariantError):
+            return cause.as_detail()
+    return None
+
+
 def parse_workspace(ws: dict) -> Workspace:
     """Workspace model + every step's op and params (nothing is read).
 
@@ -142,7 +151,7 @@ def parse_workspace(ws: dict) -> Workspace:
     try:
         parsed = Workspace.model_validate(ws)
     except ValidationError as exc:
-        raise KeyParamsError(str(exc)) from exc
+        raise KeyParamsError(str(exc), detail=_invariant_detail(exc)) from exc
     validate_steps(parsed.steps)
     return parsed
 

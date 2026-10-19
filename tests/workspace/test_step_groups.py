@@ -177,3 +177,56 @@ def test_http_round_trip_and_422():
 
     schema = client.get("/openapi.json").json()
     assert "groups" in json.dumps(schema)
+
+
+@pytest.mark.parametrize(
+    ("groups", "rule", "group_id", "step_id", "needle"),
+    [
+        ([_g("g1", "s1"), _g("g1", "s2")], "duplicate_group_id", "g1", None, "duplicate group id 'g1'"),
+        ([_g("g1", "s1", "s2"), _g("g2", "s2", "s3")], "step_shared", "g2", "s2",
+         "step 's2' is in groups 'g1' and 'g2'"),
+        ([_g("g1", "s1", "nope")], "unknown_step", "g1", "nope", "group 'g1' names unknown step id 'nope'"),
+        ([_g("g9", "nope")], "unknown_step", "g9", "nope", "group 'g9' names unknown step id 'nope'"),
+        ([_g("g1", "s1", "s3")], "not_contiguous", "g1", "s3", "group 'g1' is not a contiguous slice"),
+        ([_g("g1", "s2", "s1")], "not_contiguous", "g1", "s1", "group 'g1' is not a contiguous slice"),
+        ([_g("g1", "s2", "s3"), _g("g2", "s1")], "out_of_order", "g1", "s1", "is out of step order"),
+        ([{**_g("g1", "s1"), "name": "a\nb"}], "invalid_name", "g1", None, "group name must be one line"),
+    ],
+)
+def test_http_422_names_the_violated_rule(groups, rule, group_id, step_id, needle):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    from dtk_engine.http import create_app
+
+    client = TestClient(create_app())
+    r = client.put("/api/workspaces/demo", json=_ws(groups=groups))
+    assert r.status_code == 422
+    body = r.json()
+    assert body["detail"] == {"rule": rule, "group_id": group_id, "step_id": step_id}
+    assert needle in body["message"]
+    assert body["type"] == "KeyParamsError"
+    assert body["details"]
+
+
+def test_http_unrelated_422_has_no_detail():
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    from dtk_engine.http import create_app
+
+    client = TestClient(create_app())
+    r = client.put("/api/workspaces/demo", json={**_ws(), "bogus": 1})
+    assert r.status_code == 422
+    assert "detail" not in r.json()
+
+
+def test_library_path_unchanged():
+    from dtk_engine.errors import KeyParamsError
+
+    with pytest.raises(KeyParamsError, match="duplicate group id 'g1'") as err:
+        contract.save_workspace(_ws(groups=[_g("g1", "s1"), _g("g1", "s2")]))
+    assert isinstance(err.value, ValueError)
+    assert err.value.detail["rule"] == "duplicate_group_id"

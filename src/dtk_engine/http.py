@@ -96,18 +96,20 @@ def _error_body(exc: BaseException) -> dict:
     When the failure is a pydantic ``ValidationError`` (as ``exc.details`` or
     ``exc.__cause__``), ``message`` is the concise joined inner issues — never
     the full pydantic dump — and ``details`` is ``[{loc, msg, type}, ...]``.
+    A ``detail`` attribute (step-group invariant: ``{rule, group_id, step_id}``)
+    is added as ``detail``.
     """
     details = getattr(exc, "details", None)
     cause = exc.__cause__
     if details is None and isinstance(cause, ValidationError):
         details = validation_error_details(cause)
+    body = {"type": type(exc).__name__, "message": str(exc)}
     if details is not None:
-        return {
-            "type": type(exc).__name__,
-            "message": message_from_validation_details(details),
-            "details": details,
-        }
-    return {"type": type(exc).__name__, "message": str(exc)}
+        body["message"] = message_from_validation_details(details)
+        body["details"] = details
+    if getattr(exc, "detail", None) is not None:
+        body["detail"] = exc.detail
+    return body
 
 
 async def _body(request: Request, *required: str, message: str = "") -> dict:
