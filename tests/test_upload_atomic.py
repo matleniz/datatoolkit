@@ -65,7 +65,7 @@ def test_concurrent_puts_end_with_complete_file(tmp_path):
         try:
             barrier.wait()
             paths.append(http._save_upload("t.csv", DATA, tmp_path))
-        except Exception as e:  # pragma: no cover
+        except OSError as e:  # pragma: no cover
             errors.append(e)
 
     threads = [threading.Thread(target=run) for _ in range(8)]
