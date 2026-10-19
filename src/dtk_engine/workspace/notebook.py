@@ -89,8 +89,13 @@ def _group_sections(ws: Workspace) -> list[tuple[Group, str]]:
     return out
 
 
+def _name(group: Group) -> str:
+    """The group name on one line: a newline would end a ``#`` comment in the script."""
+    return " ".join(group.name.split())
+
+
 def _group_title(group: Group) -> str:
-    lines = [f"## {group.name}"]
+    lines = [f"## {_name(group)}"]
     if group.intent:
         lines.append(group.intent)
     lines.append(f"Steps: {_ids(group.step_ids)}")
@@ -158,7 +163,7 @@ def script_text(ws: Workspace, exported_at: str) -> str:
 
     parts = [comment(_intro(ws, exported_at)), _load_code(ws)]
     for group, code in _group_sections(ws):
-        header = [f"# --- {group.name} ---"]
+        header = [f"# --- {_name(group)} ---"]
         if group.intent:
             header.append(comment(group.intent))
         parts.append("\n".join([*header, code]))

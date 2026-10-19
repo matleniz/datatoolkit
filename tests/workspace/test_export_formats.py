@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -233,3 +234,15 @@ def test_manifest_maps_steps_to_groups(tmp_path):
     }
     on_disk = json.loads((out / "manifest.json").read_text())
     assert on_disk["groups"] == manifest["groups"]
+
+
+def test_multiline_group_name_cannot_inject_code(tmp_path):
+    evil = "Fares\nimport os; os.system('echo pwned')"
+    groups = [{**GROUPS[0], "name": evil}, *GROUPS[1:]]
+    _, out = _export_grouped(tmp_path, groups)
+    script = (out / "code" / "pipeline.py").read_text()
+    ast.parse(script)
+    assert "# --- Fares import os; os.system('echo pwned') ---" in script
+    assert not any(line.startswith("import os") for line in script.splitlines())
+    nb = json.loads((out / "code" / "pipeline.ipynb").read_text())
+    assert "".join(nb["cells"][2]["source"]).splitlines()[0] == "## Fares import os; os.system('echo pwned')"
