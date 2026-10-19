@@ -236,13 +236,48 @@ def test_manifest_maps_steps_to_groups(tmp_path):
     assert on_disk["groups"] == manifest["groups"]
 
 
-def test_multiline_group_name_cannot_inject_code(tmp_path):
-    evil = "Fares\nimport os; os.system('echo pwned')"
-    groups = [{**GROUPS[0], "name": evil}, *GROUPS[1:]]
-    _, out = _export_grouped(tmp_path, groups)
+PAYLOADS = [
+    "x\nimport os; os.system('echo pwned')",
+    "x\rimport os",
+    "x\u2028import os",
+    "x\u2029import os",
+    "x\r\nimport os",
+]
+
+
+def _statements(script: str) -> list[str]:
+    return [type(node).__name__ for node in ast.parse(script).body]
+
+
+@pytest.mark.parametrize("payload", PAYLOADS)
+def test_free_text_cannot_inject_code(tmp_path, payload):
+    clean_groups = [dict(g) for g in GROUPS]
+    evil_groups = [dict(g) for g in GROUPS]
+    evil_groups[0]["intent"] = payload
+    ws = _grouped_ws(evil_groups)
+    ws["steps"][1]["note"] = payload
+    ws["notes"] = {"workspace": payload, "columns": {"Pclass": payload}}
+    contract.save_workspace(ws)
+    out = tmp_path / "evil"
+    contract.export_workspace("grp", str(out), formats=["parquet", "ipynb", "py"])
     script = (out / "code" / "pipeline.py").read_text()
-    ast.parse(script)
-    assert "# --- Fares import os; os.system('echo pwned') ---" in script
-    assert not any(line.startswith("import os") for line in script.splitlines())
+
+    contract.save_workspace(_grouped_ws(clean_groups))
+    clean = tmp_path / "clean"
+    contract.export_workspace("grp", str(clean), formats=["py"])
+    assert _statements(script) == _statements((clean / "code" / "pipeline.py").read_text())
+    assert not any(isinstance(n, ast.Import) and n.names[0].name == "os" for n in ast.walk(ast.parse(script)))
+
     nb = json.loads((out / "code" / "pipeline.ipynb").read_text())
-    assert "".join(nb["cells"][2]["source"]).splitlines()[0] == "## Fares import os; os.system('echo pwned')"
+    for cell in nb["cells"]:
+        if cell["cell_type"] == "code":
+            tree = ast.parse("".join(cell["source"]))
+            assert not any(isinstance(n, ast.Import) and n.names[0].name == "os" for n in ast.walk(tree))
+    _same(_run_cells(nb)["train"], _parquet(out, "train"))
+
+
+@pytest.mark.parametrize("payload", PAYLOADS)
+def test_group_name_must_be_one_line(payload):
+    groups = [{**GROUPS[0], "name": payload}, *GROUPS[1:]]
+    with pytest.raises(Exception, match="one line"):
+        contract.save_workspace(_grouped_ws(groups))

@@ -51,7 +51,7 @@ def _intro(ws: Workspace, exported_at: str) -> str:
     if ws.notes.columns:
         lines += ["", "| column | note |", "|---|---|"]
         lines += [
-            f"| `{c}` | {t.replace(chr(10), ' ').replace('|', '/')} |"
+            f"| `{c}` | {_one_line(t).replace('|', '/')} |"
             for c, t in ws.notes.columns.items()
         ]
     return "\n".join(lines)
@@ -59,7 +59,7 @@ def _intro(ws: Workspace, exported_at: str) -> str:
 
 def _step_block(step: Step, code: str) -> str:
     """One step's code under its ``# s12 · op target`` comment (note kept as comments)."""
-    head = [f"# {step.id} · {step.op} {step.target}"]
+    head = [f"# {step.id} · {_one_line(step.op)} {step.target}"]
     head += [f"# {line}".rstrip() for line in (step.note or "").splitlines()]
     return "\n".join([*head, code])
 
@@ -89,9 +89,13 @@ def _group_sections(ws: Workspace) -> list[tuple[Group, str]]:
     return out
 
 
+def _one_line(text: str) -> str:
+    """Whitespace (any line break included) collapsed: a newline would end a ``#`` comment."""
+    return " ".join(text.split())
+
+
 def _name(group: Group) -> str:
-    """The group name on one line: a newline would end a ``#`` comment in the script."""
-    return " ".join(group.name.split())
+    return _one_line(group.name)
 
 
 def _group_title(group: Group) -> str:

@@ -14,7 +14,8 @@ replaying the pipeline through the notebook door (``workspace.notebook``).
 
 The manifest records the sources (path, size, sha256, mtime), the export time,
 the step groups, every step (with its ``group_id``) with its fitted state
-(inline, or a side file with its sha256) and the engine / pandas / sklearn / pyarrow / python versions. Raw inputs are only
+(inline, or a side file with its sha256) and the engine / pandas / sklearn /
+pyarrow / python versions. Raw inputs are only
 read: an output path that is a source path is refused. Overwrite only deletes
 relative paths under processed/ or states/ listed by a manifest of ours.
 """
