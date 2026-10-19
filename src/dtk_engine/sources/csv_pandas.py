@@ -438,6 +438,10 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
         raise
     except FileNotFoundError:
         raise SourceError(f"csv source not found: {spec.path}") from None
+    except MemoryError as exc:
+        raise SourceError(
+            f"cannot read csv {spec.path}: file too large to load in memory"
+        ) from exc
     # ParserError, EmptyDataError and UnicodeDecodeError are ValueErrors;
     # LookupError = unknown encoding; csv.Error = sniffing failed (sep="auto").
     except (OSError, ValueError, LookupError, csv.Error) as exc:

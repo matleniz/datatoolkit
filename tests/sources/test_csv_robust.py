@@ -134,3 +134,18 @@ def test_inspect_clean_file_reports_no_mixed_separators(tmp_path):
     path.write_text("a,b\n1,2\n")
     m = run(Params(path=str(path))).metrics
     assert m["mixed_separators"] == "none" and "junk_lines" not in m
+
+
+def test_memory_error_becomes_source_error(tmp_path, monkeypatch):
+    from dtk_engine.errors import SourceError
+
+    path = tmp_path / "big.csv"
+    path.write_text("a,b\n1,2\n")
+
+    def boom(*a, **k):
+        raise MemoryError
+
+    monkeypatch.setattr(pd, "read_csv", boom)
+    with pytest.raises(SourceError, match="big.csv.*too large to load in memory") as err:
+        read_csv(CsvSource(path=str(path)))
+    assert isinstance(err.value.__cause__, MemoryError)
