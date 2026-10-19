@@ -625,3 +625,20 @@ def test_non_utf8_workspace_file_is_corrupt(client, home):
         assert r.status_code == 500 and r.json()["type"] == "WorkspaceCorruptError"
     assert client.delete("/api/workspaces/bad").status_code == 204
     assert [x["name"] for x in client.get("/api/workspaces").json()] == ["ok"]
+
+
+def test_bom_workspace_file_loads_and_lists_as_normal(client, home):
+    assert client.put("/api/workspaces/b", json=_workspace("b")).status_code == 200
+    plain = client.get("/api/workspaces/b").json()
+    path = home / "workspaces" / "b.json"
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    r = client.get("/api/workspaces/b")
+    assert r.status_code == 200 and r.json() == plain
+    for url in ("/api/workspaces", "/api/workspaces/summaries"):
+        rows = {x["name"]: x for x in client.get(url).json()}
+        assert "corrupt" not in rows["b"]
+    from dtk_engine.contract import workspace_steps
+
+    assert workspace_steps("b") == []
+    assert client.put("/api/workspaces/b", json=plain).status_code == 200
+    assert not path.read_bytes().startswith(b"\xef\xbb\xbf")

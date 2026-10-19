@@ -279,7 +279,7 @@ def _stored_field(name: str, field: str, adapter: TypeAdapter, fill) -> list[dic
     the rest or loading its sources: the cheap reads behind the agent."""
     path = JsonWorkspaceStore().path_of(name)
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         raise WorkspaceNotFoundError(name) from None
     except UnicodeDecodeError:
