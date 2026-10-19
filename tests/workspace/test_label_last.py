@@ -92,18 +92,13 @@ def _run_exports(out, tmp_path):
     ]
 
 
-@pytest.mark.parametrize("label_last", [True, False])
-def test_exported_code_matches_parquet(tmp_path, label_last):
-    ws = _ws(label_last)
-    ws["steps"] = [
-        FORMULA,
-        {"op": "formula", "target": "both", "params": {"name": "fare_3", "expr": "Fare * 3"}},
-    ]
+def _check_exports(ws, tmp_path, expect_last):
     save_workspace(ws)
     out = tmp_path / "out"
-    export_workspace("ll", out, formats=["parquet", "py", "ipynb"])
+    export_workspace(ws["name"], out, formats=["parquet", "py", "ipynb"])
     expected = {r: pd.read_parquet(out / "processed" / f"{r}.parquet") for r in ("train", "test")}
-    assert (expected["train"].columns[-1] == "Survived") is label_last
+    if expect_last:
+        assert expected["train"].columns[-1] == expect_last
     for train, test in _run_exports(out, tmp_path):
         pd.testing.assert_frame_equal(
             train.reset_index(drop=True), expected["train"], check_dtype=False
@@ -111,3 +106,63 @@ def test_exported_code_matches_parquet(tmp_path, label_last):
         pd.testing.assert_frame_equal(
             test.reset_index(drop=True), expected["test"], check_dtype=False
         )
+    return expected
+
+
+@pytest.mark.parametrize("label_last", [True, False])
+def test_exported_code_matches_parquet(tmp_path, label_last):
+    ws = _ws(label_last)
+    ws["steps"] = [
+        FORMULA,
+        {"op": "formula", "target": "both", "params": {"name": "fare_3", "expr": "Fare * 3"}},
+    ]
+    expected = _check_exports(ws, tmp_path, None)
+    assert (expected["train"].columns[-1] == "Survived") is label_last
+
+
+def _y_ws(tmp_path, mode):
+    train = pd.read_csv(TRAIN_CSV).drop_duplicates("PassengerId")  # unique join key
+    x_path, y_path = tmp_path / "x.csv", tmp_path / "y.csv"
+    train.drop(columns="Survived").to_csv(x_path, index=False)
+    y = train[["PassengerId", "Survived"]]
+    y.to_csv(y_path, index=False)
+    label = {"mode": "key", "key": "PassengerId"} if mode == "key" else {"mode": "order"}
+    return {
+        "name": "yws",
+        "label_last": True,
+        "label": label,
+        "datasets": {
+            "train": {"x": {"kind": "csv", "path": str(x_path)},
+                      "y": {"kind": "csv", "path": str(y_path)}},
+            "test": {"x": {"kind": "csv", "path": str(TEST_CSV)}},
+        },
+        "steps": [FORMULA],
+    }
+
+
+@pytest.mark.parametrize("mode", ["order", "key"])
+def test_y_file_label_modes(tmp_path, mode):
+    ws = _y_ws(tmp_path, mode)
+    if mode == "order":  # order mode: y is the bare label column
+        pd.read_csv(tmp_path / "y.csv")[["Survived"]].to_csv(tmp_path / "y.csv", index=False)
+    expected = _check_exports(ws, tmp_path, "Survived")
+    assert list(expected["train"].columns[-2:]) == ["fare_pp", "Survived"]
+
+
+def test_zero_steps_and_groups(tmp_path):
+    ws = _ws(True)
+    ws["steps"] = []  # no step runs, so the replay moves nothing: script == parquet
+    _check_exports(ws, tmp_path, None)
+    ws = _ws(True)
+    ws["name"] = "llg"
+    ws["steps"] = [
+        {**FORMULA, "id": "s0"},
+        {"id": "s1", "op": "formula", "target": "both",
+         "params": {"name": "fare_3", "expr": "Fare * 3"}},
+    ]
+    ws["groups"] = [
+        {"id": "g1", "name": "one", "step_ids": ["s0"]},
+        {"id": "g2", "name": "two", "step_ids": ["s1"]},
+    ]
+    expected = _check_exports(ws, tmp_path / "g", "Survived")
+    assert list(expected["train"].columns[-3:]) == ["fare_pp", "fare_3", "Survived"]

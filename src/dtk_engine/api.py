@@ -14,6 +14,8 @@
     api.correlations(train, method="spearman")
     api.chart(train, chart="scatter", x="Age", y="Fare", trendline=True)
     api.export_workspace("titanic", "out/")  # parquet + manifest.json
+    api.workspace_frames(sources)            # (train, test) before any step; what an exported script loads
+    api.keep_label_last(train, "Survived")   # label moved to the end (exported scripts, label_last)
 
 Same code as the keys (``keys/*`` build their Result from the same functions);
 nothing here is reachable from the JSON contract.
@@ -63,6 +65,7 @@ __all__ = [
     "duplicates",
     "export_workspace",
     "inconsistencies",
+    "keep_label_last",
     "label_join_preview",
     "list_transforms",
     "load",
@@ -73,6 +76,7 @@ __all__ = [
     "select_features",
     "target_analysis",
     "transform",
+    "workspace_frames",
 ]
 
 # File suffix -> source kind for `load(path)`; other options need a full spec.
