@@ -293,22 +293,43 @@ def _owned_paths(out_dir: Path) -> list[Path]:
     return owned
 
 
-def _remove_previous(out_dir: Path, owned: list[Path]) -> None:
-    """Delete the files a previous export listed (and nothing else)."""
-    for path in owned:
-        path.unlink(missing_ok=True)
-    (out_dir / MANIFEST).unlink()
+def _swap(new: Path, old: Path, out: Path, owned: list[Path]) -> None:
+    """Move the previous owned files to ``old``, then the staged ones into ``out``
+    (manifest last); on any error put the previous export back. Foreign files untouched."""
+    moved: list[tuple[Path, Path]] = []
+    installed: list[Path] = []
+    try:
+        for path in [*owned, out / MANIFEST]:
+            if path.exists():
+                backup = old / path.relative_to(out)
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(path, backup)
+                moved.append((path, backup))
+        files = sorted(
+            (f for f in new.rglob("*") if f.is_file()), key=lambda f: f.name == MANIFEST
+        )
+        for f in files:
+            dest = out / f.relative_to(new)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(f, dest)
+            installed.append(dest)
+    except BaseException:
+        for dest in installed:
+            dest.unlink(missing_ok=True)
+        for path, backup in moved:
+            os.replace(backup, path)
+        raise
 
 
-def _install(staging: Path, out: Path) -> None:
-    """Move the staged files into ``out`` (manifest last), foreign files untouched."""
-    files = sorted(
-        (f for f in staging.rglob("*") if f.is_file()), key=lambda f: f.name == MANIFEST
-    )
-    for f in files:
-        dest = out / f.relative_to(staging)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(f, dest)
+def _staging_dir(out: Path) -> Path:
+    """Next to ``out`` (same filesystem); inside it if its parent is not writable."""
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=".export-staging-", dir=out.parent))
+    except OSError:
+        if not out.is_dir():
+            raise
+        return Path(tempfile.mkdtemp(prefix=".export-staging-", dir=out))
 
 
 def export_workspace(
@@ -351,13 +372,12 @@ def export_workspace(
             )
         owned = _owned_paths(out)  # validated before anything is built
 
-    out.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".export-staging-", dir=out.parent))
+    staging = _staging_dir(out)
     try:
-        manifest = _build_export(ws, staging, formats, sources, merges, inline_state_bytes)
-        if owned is not None:
-            _remove_previous(out, owned)
-        _install(staging, out)
+        new = staging / "new"
+        new.mkdir()
+        manifest = _build_export(ws, new, formats, sources, merges, inline_state_bytes)
+        _swap(new, staging / "old", out, owned or [])
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return manifest

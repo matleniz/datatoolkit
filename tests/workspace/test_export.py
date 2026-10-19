@@ -251,3 +251,26 @@ def test_no_overwrite_unchanged_and_clean(copied_source, tmp_path):
         export("stage", out)
     assert _tree(out) == before
     assert _no_staging(tmp_path)
+
+
+def test_overwrite_swap_failure_restores_previous(copied_source, tmp_path, monkeypatch):
+    from dtk_engine.workspace import export as mod
+
+    out = tmp_path / "out"
+    export("stage", out, formats=["parquet", "csv", "py"])
+    before = _tree(out)
+    real, calls = mod.os.replace, []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == 6:  # after the backups, during the install
+            raise OSError("disk gone")
+        return real(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", flaky)
+    with pytest.raises(OSError, match="disk gone"):
+        export("stage", out, overwrite=True, formats=["parquet", "csv", "py"])
+    monkeypatch.undo()
+    assert len(calls) >= 6
+    assert _tree(out) == before
+    assert _no_staging(tmp_path)
