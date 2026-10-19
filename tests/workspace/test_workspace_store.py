@@ -290,3 +290,46 @@ def test_store_non_utf8_file_is_corrupt(tmp_path, raw):
         store.duplicate("bad", "other")
     store.delete("bad")
     assert store.list() == []
+
+
+BOM = b"\xef\xbb\xbf"
+
+
+def _write_bom(tmp_path, name="demo", suffix=b""):
+    store = JsonWorkspaceStore(tmp_path)
+    store.save(_ws(name))
+    path = tmp_path / f"{name}.json"
+    path.write_bytes(BOM + path.read_bytes() + suffix)
+    return store, path
+
+
+def test_store_get_bom_file_loads_like_plain(tmp_path):
+    store, path = _write_bom(tmp_path)
+    assert store.get("demo") == _ws()
+    assert path.read_bytes().startswith(BOM)
+
+
+def test_store_save_after_loading_bom_file_normalises(tmp_path):
+    store, path = _write_bom(tmp_path)
+    store.save(store.get("demo"))
+    assert not path.read_bytes().startswith(BOM)
+    assert store.get("demo") == _ws()
+
+
+def test_store_save_writes_no_bom(tmp_path):
+    JsonWorkspaceStore(tmp_path).save(_ws())
+    assert not (tmp_path / "demo.json").read_bytes().startswith(BOM)
+
+
+def test_store_bom_with_truncated_json_is_corrupt(tmp_path):
+    store, path = _write_bom(tmp_path)
+    path.write_bytes(path.read_bytes()[:-10])
+    with pytest.raises(WorkspaceCorruptError):
+        store.get("demo")
+
+
+def test_store_bom_in_the_middle_is_corrupt(tmp_path):
+    store = JsonWorkspaceStore(tmp_path)
+    (tmp_path / "demo.json").write_bytes(b'{"name": ' + BOM + b'"demo"}')
+    with pytest.raises(WorkspaceCorruptError):
+        store.get("demo")

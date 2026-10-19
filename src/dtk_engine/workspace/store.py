@@ -128,7 +128,7 @@ class JsonWorkspaceStore:
     def get(self, name: str) -> Workspace:
         path = self._path(name)
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = path.read_text(encoding="utf-8-sig")
         except FileNotFoundError:
             raise WorkspaceNotFoundError(name) from None
         except UnicodeDecodeError:
