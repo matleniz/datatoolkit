@@ -131,6 +131,10 @@ class JsonWorkspaceStore:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             raise WorkspaceNotFoundError(name) from None
+        except UnicodeDecodeError:
+            raise WorkspaceCorruptError(
+                f"workspace {name!r} is corrupt: its file is not valid UTF-8"
+            ) from None
         try:
             return Workspace.model_validate_json(raw)
         except ValidationError:

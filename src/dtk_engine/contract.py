@@ -282,6 +282,8 @@ def _stored_field(name: str, field: str, adapter: TypeAdapter, fill) -> list[dic
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise WorkspaceNotFoundError(name) from None
+    except UnicodeDecodeError:
+        raise WorkspaceCorruptError(f"workspace {name!r} is corrupt: its file is not valid UTF-8") from None
     try:
         items = fill(adapter.validate_python(raw.get(field) or []))
     except (ValidationError, ValueError) as exc:
