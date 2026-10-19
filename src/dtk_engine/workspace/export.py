@@ -17,14 +17,22 @@ the step groups, every step (with its ``group_id``) with its fitted state
 (inline, or a side file with its sha256) and the engine / pandas / sklearn /
 pyarrow / python versions. Raw inputs are only
 read: an output path that is a source path is refused. Overwrite only deletes
-relative paths under processed/ or states/ listed by a manifest of ours.
+relative paths under processed/, states/ or code/ listed by a manifest of ours.
+
+The export is built in a ``.export-staging-*`` directory inside ``out_dir`` and
+moved in (the previous one set aside in ``.export-old-*`` meanwhile) only once
+every format is written: a failing export (replay or write time) leaves ``out_dir``, a previous export included, untouched.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
+import shutil
+import sys
+import tempfile
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -50,6 +58,14 @@ FORMATS = ("parquet", "csv", "ipynb", "py")
 # impute_iterative keep the whole train matrix in their state).
 INLINE_STATE_BYTES = 64 * 1024
 _CHUNK = 1 << 20
+STAGING_PREFIX = ".export-staging-"
+ASIDE_PREFIX = ".export-old-"
+STAGING_MARKER = ".dtk-staging"  # holds the pid of the exporting process
+STAGING_MAX_AGE = 3600  # seconds before a staging dir of a live pid counts as stale
+
+
+class ExportRestoreError(OSError):
+    """The swap failed and the previous export could not be fully put back."""
 
 
 def _sha256_file(path: Path, digest=None) -> str:
@@ -286,12 +302,82 @@ def _owned_paths(out_dir: Path) -> list[Path]:
     return owned
 
 
-def _remove_previous(out_dir: Path) -> None:
-    """Delete the files a previous export listed (and nothing else)."""
-    owned = _owned_paths(out_dir)  # all validated before the first unlink
-    for path in owned:
-        path.unlink(missing_ok=True)
-    (out_dir / MANIFEST).unlink()
+def _move_files(src: Path, dst: Path, files: list[Path] | None = None) -> list[tuple[Path, Path]]:
+    """``os.replace`` each file under ``src`` (or the listed ones) to the same relative
+    path under ``dst``; returns the (from, to) pairs done."""
+    done: list[tuple[Path, Path]] = []
+    for f in files if files is not None else sorted(x for x in src.rglob("*") if x.is_file()):
+        dest = dst / f.relative_to(src)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(f, dest)
+        done.append((f, dest))
+    return done
+
+
+def _swap(new: Path, aside: Path, out: Path, owned: list[Path]) -> None:
+    """Move the previous owned files to ``aside``, then the staged ones into ``out``
+    (manifest last); on any error put the previous export back and drop the new files.
+    Foreign files are never touched."""
+    previous = [p for p in [*owned, out / MANIFEST] if p.exists()]
+    moved: list[tuple[Path, Path]] = []
+    installed: list[tuple[Path, Path]] = []
+    staged = sorted((f for f in new.rglob("*") if f.is_file()), key=lambda f: f.name == MANIFEST)
+    try:
+        for path in previous:
+            moved += _move_files(out, aside, [path])
+        for f in staged:
+            installed += _move_files(new, out, [f])
+    except BaseException:
+        for _, dest in installed:
+            dest.unlink(missing_ok=True)
+        failed = []
+        for path, backup in moved:
+            try:
+                os.replace(backup, path)
+            except OSError as exc:
+                failed.append(exc)
+        if failed:
+            raise ExportRestoreError(
+                f"export failed ({sys.exc_info()[1]!r}) and the previous export could not be "
+                f"fully restored ({failed[0]}); previous export kept in {aside}"
+            ) from sys.exc_info()[1]
+        raise
+
+
+def _staging_is_stale(staging: Path) -> bool:
+    """Only a staging dir carrying our marker, of a dead pid or older than the max age."""
+    marker = staging / STAGING_MARKER
+    try:
+        pid = int(marker.read_text(encoding="utf-8"))
+        age = datetime.now(UTC).timestamp() - marker.stat().st_mtime
+    except (OSError, ValueError):
+        return False  # not ours (or unreadable): never delete
+    if age > STAGING_MAX_AGE:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:  # EPERM: the process exists
+        return False
+    return False
+
+
+def _recover_stale(out: Path) -> None:
+    """Leftovers of a crashed export: staging dirs are dropped; an aside dir holds the
+    only copy of a previous export, so it is moved back when ``out`` has no manifest and
+    otherwise left untouched. Concurrent exports to one ``out_dir`` stay unsupported, but
+    a live one's staging dir (marker with a live pid, recent) is never removed."""
+    if not out.is_dir():
+        return
+    for stale in out.glob(STAGING_PREFIX + "*"):
+        if _staging_is_stale(stale):
+            shutil.rmtree(stale, ignore_errors=True)
+    if (out / MANIFEST).exists():
+        return
+    for aside in out.glob(ASIDE_PREFIX + "*"):
+        _move_files(aside, out)
+        shutil.rmtree(aside, ignore_errors=True)
 
 
 def export_workspace(
@@ -306,7 +392,8 @@ def export_workspace(
     """Export the workspace's processed train / test and its manifest; returns it.
 
     An existing export in ``out_dir`` (a ``manifest.json``) is refused unless
-    ``overwrite``, which first removes the files that export listed.
+    ``overwrite``, which replaces the files that export listed once the new one
+    is fully written.
     """
     formats = _check_formats(formats)
     store = store if store is not None else JsonWorkspaceStore()
@@ -325,13 +412,44 @@ def export_workspace(
                 f"export to {out} would overwrite the raw input {src}; "
                 "choose another directory"
             )
+    _recover_stale(out)
+    owned = None
     if (out / MANIFEST).exists():
         if not overwrite:
             raise KeyParamsError(
                 f"{out / MANIFEST} exists (a previous export); pass overwrite=True"
             )
-        _remove_previous(out)
+        owned = _owned_paths(out)  # validated before anything is built
 
+    created = next((p for p in [*out.parents[::-1], out] if not p.exists()), None)
+    out.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=out))
+    (staging / STAGING_MARKER).write_text(str(os.getpid()), encoding="utf-8")
+    new = staging / "new"
+    new.mkdir()
+    aside = Path(tempfile.mkdtemp(prefix=ASIDE_PREFIX, dir=out))
+    keep_aside = False
+    try:
+        manifest = _build_export(ws, new, formats, sources, merges, inline_state_bytes)
+        _swap(new, aside, out, owned or [])
+    except ExportRestoreError:
+        keep_aside = True  # the only copy of the previous export
+        raise
+    except BaseException:
+        if created is not None:
+            shutil.rmtree(created, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        if not keep_aside:
+            shutil.rmtree(aside, ignore_errors=True)
+    return manifest
+
+
+def _build_export(
+    ws: Workspace, out: Path, formats: list[str], sources: list[dict], merges: list[dict],
+    inline_state_bytes: int,
+) -> dict:
     train = raw_workspace_frame(ws, "train", labeled=True)
     test = None
     if ws.datasets.test is not None:
@@ -362,9 +480,7 @@ def export_workspace(
         ],
         "outputs": outputs,
     }
-    tmp = out / (MANIFEST + ".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    tmp.replace(out / MANIFEST)
+    (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
 
