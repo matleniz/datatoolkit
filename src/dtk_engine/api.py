@@ -14,6 +14,8 @@
     api.correlations(train, method="spearman")
     api.chart(train, chart="scatter", x="Age", y="Fare", trendline=True)
     api.export_workspace("titanic", "out/")  # parquet + manifest.json
+    api.workspace_frames(sources)            # (train, test) before any step; what an exported script loads
+    api.keep_label_last(train, "Survived")   # label moved to the end (exported scripts, label_last)
 
 Same code as the keys (``keys/*`` build their Result from the same functions);
 nothing here is reachable from the JSON contract.
@@ -52,6 +54,7 @@ from dtk_engine.workspace.dataset import preview as preview_workspace
 from dtk_engine.workspace.dataset import raw_workspace_frame
 from dtk_engine.workspace.export import export_workspace as _export_workspace
 from dtk_engine.workspace.models import Workspace
+from dtk_engine.workspace.replay import _label_last
 
 __all__ = [
     "advise",
@@ -62,6 +65,7 @@ __all__ = [
     "duplicates",
     "export_workspace",
     "inconsistencies",
+    "keep_label_last",
     "label_join_preview",
     "list_transforms",
     "load",
@@ -72,6 +76,7 @@ __all__ = [
     "select_features",
     "target_analysis",
     "transform",
+    "workspace_frames",
 ]
 
 # File suffix -> source kind for `load(path)`; other options need a full spec.
@@ -316,6 +321,12 @@ def export_workspace(
     return _export_workspace(
         name, out_dir, overwrite=overwrite, store=store, formats=formats
     )
+
+
+def keep_label_last(frame: pd.DataFrame | None, label: str) -> pd.DataFrame | None:
+    """``frame`` with the ``label`` column moved to the end, as the replay does
+    after each step of a ``label_last`` workspace (None and an absent label pass)."""
+    return _label_last(frame, label)
 
 
 def workspace_frames(sources: dict) -> tuple[pd.DataFrame, pd.DataFrame | None]:
