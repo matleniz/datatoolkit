@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -98,6 +99,16 @@ class Group(_Strict):
     produced_by: str | None = Field(
         default=None, description='Informational label, e.g. "agent", "ui:add_column"'
     )
+
+    @field_validator("name")
+    @classmethod
+    def _one_line_name(cls, name: str) -> str:
+        if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in name):
+            raise ValueError(
+                "group name must be one line: no newline or control character "
+                f"(got {name!r})"
+            )
+        return name
 
 
 class MergeSpec(_Strict):

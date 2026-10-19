@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import pprint
 
-from dtk_engine.workspace.models import Step, Workspace
+from dtk_engine.workspace.models import Group, Step, Workspace
 
 _SIDES = {
     "both": ("train = step.fit_transform(train)", "test = step.transform(test)"),
@@ -51,32 +51,86 @@ def _intro(ws: Workspace, exported_at: str) -> str:
     if ws.notes.columns:
         lines += ["", "| column | note |", "|---|---|"]
         lines += [
-            f"| `{c}` | {t.replace(chr(10), ' ').replace('|', '/')} |"
+            f"| `{c}` | {_one_line(t).replace('|', '/')} |"
             for c, t in ws.notes.columns.items()
         ]
     return "\n".join(lines)
 
 
-def cells(ws: Workspace, exported_at: str) -> list[tuple[str, str]]:
-    """``[(kind, text)]`` with kind ``markdown`` | ``code``, in order."""
+def _step_block(step: Step, code: str) -> str:
+    """One step's code under its ``# s12 · op target`` comment (note kept as comments)."""
+    head = [f"# {step.id} · {_one_line(step.op)} {step.target}"]
+    head += [f"# {line}".rstrip() for line in (step.note or "").splitlines()]
+    return "\n".join([*head, code])
+
+
+def _ids(step_ids: list[str]) -> str:
+    return ", ".join(step_ids) if len(step_ids) <= 3 else f"{step_ids[0]} … {step_ids[-1]}"
+
+
+def _group_sections(ws: Workspace) -> list[tuple[Group, str]]:
+    """``[(group, code)]`` in order; the code of a group holds its steps in order.
+
+    A group whose steps all have no code (test-only steps without a test set,
+    skipped by replay too) is left out.
+    """
     has_test = ws.datasets.test is not None
-    load = [
-        "from dtk_engine import DtkTransformer",
-        "from dtk_engine.api import workspace_frames",
-        "",
-        f"SOURCES = {_literal(_sources(ws))}",
-        "train, test = workspace_frames(SOURCES)",
-    ]
-    out = [("markdown", _intro(ws, exported_at)), ("code", "\n".join(load))]
-    for step in ws.steps:
-        code = _step_code(step, has_test)
-        if code is None:
-            continue
-        title = f"**{step.id} · {step.op}** ({step.target})"
-        out.append(("markdown", f"{title}\n\n{step.note}" if step.note else title))
+    by_id = {s.id: s for s in ws.steps}
+    out = []
+    for group in ws.groups:
+        blocks = []
+        for sid in group.step_ids:
+            step = by_id[sid]
+            code = _step_code(step, has_test)
+            if code is not None:
+                blocks.append(_step_block(step, code))
+        if blocks:
+            out.append((group, "\n\n".join(blocks)))
+    return out
+
+
+def _one_line(text: str) -> str:
+    """Whitespace (any line break included) collapsed: a newline would end a ``#`` comment."""
+    return " ".join(text.split())
+
+
+def _name(group: Group) -> str:
+    return _one_line(group.name)
+
+
+def _group_title(group: Group) -> str:
+    lines = [f"## {_name(group)}"]
+    if group.intent:
+        lines.append(group.intent)
+    lines.append(f"Steps: {_ids(group.step_ids)}")
+    return "\n".join(lines)
+
+
+def _load_code(ws: Workspace) -> str:
+    return "\n".join(
+        [
+            "from dtk_engine import DtkTransformer",
+            "from dtk_engine.api import workspace_frames",
+            "",
+            f"SOURCES = {_literal(_sources(ws))}",
+            "train, test = workspace_frames(SOURCES)",
+        ]
+    )
+
+
+_SHAPES = "train.shape, (test.shape if test is not None else None)"
+
+
+def cells(ws: Workspace, exported_at: str) -> list[tuple[str, str]]:
+    """``[(kind, text)]`` with kind ``markdown`` | ``code``, in order.
+
+    Intro and loading cells, then a markdown + code pair per step group.
+    """
+    out = [("markdown", _intro(ws, exported_at)), ("code", _load_code(ws))]
+    for group, code in _group_sections(ws):
+        out.append(("markdown", _group_title(group)))
         out.append(("code", code))
-    shapes = "train.shape, (test.shape if test is not None else None)"
-    out.append(("code", shapes))
+    out.append(("code", _SHAPES))
     return out
 
 
@@ -106,12 +160,16 @@ def notebook_json(ws: Workspace, exported_at: str) -> str:
 
 
 def script_text(ws: Workspace, exported_at: str) -> str:
-    """The same code as a plain script; markdown becomes ``#`` comments."""
-    parts = []
-    for kind, text in cells(ws, exported_at):
-        if kind == "markdown":
-            parts.append("\n".join(f"# {line}".rstrip() for line in text.splitlines()))
-        else:
-            parts.append(text)
-    parts[-1] = f"print({parts[-1]})"
+    """The same code as a plain script; notes and group headers become ``#`` comments."""
+
+    def comment(text: str) -> str:
+        return "\n".join(f"# {line}".rstrip() for line in text.splitlines())
+
+    parts = [comment(_intro(ws, exported_at)), _load_code(ws)]
+    for group, code in _group_sections(ws):
+        header = [f"# --- {_name(group)} ---"]
+        if group.intent:
+            header.append(comment(group.intent))
+        parts.append("\n".join([*header, code]))
+    parts.append(f"print({_SHAPES})")
     return "\n\n".join(parts) + "\n"

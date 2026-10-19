@@ -176,6 +176,28 @@ def test_workspace_export(client, tmp_path):
     assert json.dumps(manifest)
 
 
+def test_workspace_export_code_formats_by_group(client, tmp_path):
+    steps = [
+        {"id": "s0", "op": "drop_columns", "target": "both", "params": {"columns": ["Cabin"]}},
+        {"id": "s1", "op": "drop_columns", "target": "both", "params": {"columns": ["Name"]}},
+    ]
+    ids = ["s0", "s1"]
+    ws = _workspace(steps=steps)
+    ws["groups"] = [{"id": "g1", "name": "All of it", "intent": "why", "step_ids": ids}]
+    assert client.put("/api/workspaces/w", json=ws).status_code == 200
+    out = tmp_path / "export"
+    r = client.post(
+        "/api/workspaces/w/export", json={"out_dir": str(out), "formats": ["ipynb", "py"]}
+    )
+    assert r.status_code == 200
+    manifest = r.json()
+    assert [g["id"] for g in manifest["groups"]] == ["g1"]
+    assert {s["group_id"] for s in manifest["steps"]} == {"g1"}
+    nb = json.loads((out / "code" / "pipeline.ipynb").read_text())
+    assert "".join(nb["cells"][2]["source"]).startswith("## All of it\nwhy")
+    assert "# --- All of it ---" in (out / "code" / "pipeline.py").read_text()
+
+
 def test_source_columns(client):
     r = client.post(
         "/api/source/columns",

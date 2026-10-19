@@ -13,8 +13,9 @@
 replaying the pipeline through the notebook door (``workspace.notebook``).
 
 The manifest records the sources (path, size, sha256, mtime), the export time,
-every step with its fitted state (inline, or a side file with its sha256) and
-the engine / pandas / sklearn / pyarrow / python versions. Raw inputs are only
+the step groups, every step (with its ``group_id``) with its fitted state
+(inline, or a side file with its sha256) and the engine / pandas / sklearn /
+pyarrow / python versions. Raw inputs are only
 read: an output path that is a source path is refused. Overwrite only deletes
 relative paths under processed/ or states/ listed by a manifest of ours.
 """
@@ -214,9 +215,26 @@ def _write_outputs(
     return outputs
 
 
-def _step_entry(i: int, step, fitted: dict, out_dir: Path, inline_limit: int) -> dict:
+def _groups(ws: Workspace) -> list[dict]:
+    """Groups with their step positions, so a reader can map steps to groups."""
+    pos = {s.id: i for i, s in enumerate(ws.steps)}
+    return [
+        {
+            "id": g.id,
+            "name": g.name,
+            "intent": g.intent,
+            "steps": [pos[sid] for sid in g.step_ids],
+        }
+        for g in ws.groups
+    ]
+
+
+def _step_entry(
+    i: int, step, fitted: dict, out_dir: Path, inline_limit: int, group_id: str
+) -> dict:
     entry = {
         "index": i,
+        "group_id": group_id,
         "op": step.op,
         "target": step.target,
         "params": step.params,
@@ -324,6 +342,7 @@ def export_workspace(
     frames = {"train": train} if test is None else {"train": train, "test": test}
     outputs = _write_outputs(ws, out, frames, formats, exported_at)
 
+    group_of = {sid: g.id for g in ws.groups for sid in g.step_ids}
     manifest = {
         "generator": GENERATOR,
         "manifest_version": MANIFEST_VERSION,
@@ -336,8 +355,9 @@ def export_workspace(
         "merges": merges,
         "variables": [v.model_dump(mode="json") for v in ws.variables],
         "documents": _documents(ws),
+        "groups": _groups(ws),
         "steps": [
-            _step_entry(i, step, f, out, inline_state_bytes)
+            _step_entry(i, step, f, out, inline_state_bytes, group_of[step.id])
             for i, (step, f) in enumerate(zip(ws.steps, fitted, strict=True))
         ],
         "outputs": outputs,
