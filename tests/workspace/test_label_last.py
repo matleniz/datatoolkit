@@ -63,3 +63,51 @@ def test_export_honours_label_last(tmp_path):
     train = pd.read_parquet(out / "processed" / "train.parquet")
     assert train.columns[-1] == "Survived"
     assert "fare_pp" in train.columns
+
+
+def _run_exports(out, tmp_path):
+    """Frames from the exported script (run standalone) and notebook (exec'd)."""
+    import json
+    import subprocess
+    import sys
+
+    script = (out / "code" / "pipeline.py").read_text()
+    check = tmp_path / "check.py"
+    check.write_text(
+        script.replace("print(train.shape", "(train.shape")
+        + f"\ntrain.to_parquet({str(tmp_path / 'tr.parquet')!r})\n"
+        + f"test.to_parquet({str(tmp_path / 'te.parquet')!r})\n"
+    )
+    done = subprocess.run(
+        [sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    ns: dict = {}
+    for cell in json.loads((out / "code" / "pipeline.ipynb").read_text())["cells"]:
+        if cell["cell_type"] == "code":
+            exec("".join(cell["source"]), ns)  # noqa: S102 - our own generated code
+    return [
+        (pd.read_parquet(tmp_path / "tr.parquet"), pd.read_parquet(tmp_path / "te.parquet")),
+        (ns["train"], ns["test"]),
+    ]
+
+
+@pytest.mark.parametrize("label_last", [True, False])
+def test_exported_code_matches_parquet(tmp_path, label_last):
+    ws = _ws(label_last)
+    ws["steps"] = [
+        FORMULA,
+        {"op": "formula", "target": "both", "params": {"name": "fare_3", "expr": "Fare * 3"}},
+    ]
+    save_workspace(ws)
+    out = tmp_path / "out"
+    export_workspace("ll", out, formats=["parquet", "py", "ipynb"])
+    expected = {r: pd.read_parquet(out / "processed" / f"{r}.parquet") for r in ("train", "test")}
+    assert (expected["train"].columns[-1] == "Survived") is label_last
+    for train, test in _run_exports(out, tmp_path):
+        pd.testing.assert_frame_equal(
+            train.reset_index(drop=True), expected["train"], check_dtype=False
+        )
+        pd.testing.assert_frame_equal(
+            test.reset_index(drop=True), expected["test"], check_dtype=False
+        )

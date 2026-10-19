@@ -52,6 +52,7 @@ from dtk_engine.workspace.dataset import preview as preview_workspace
 from dtk_engine.workspace.dataset import raw_workspace_frame
 from dtk_engine.workspace.export import export_workspace as _export_workspace
 from dtk_engine.workspace.models import Workspace
+from dtk_engine.workspace.replay import _label_last
 
 __all__ = [
     "advise",
@@ -316,6 +317,12 @@ def export_workspace(
     return _export_workspace(
         name, out_dir, overwrite=overwrite, store=store, formats=formats
     )
+
+
+def keep_label_last(frame: pd.DataFrame | None, label: str) -> pd.DataFrame | None:
+    """``frame`` with the ``label`` column moved to the end, as the replay does
+    after each step of a ``label_last`` workspace (None and an absent label pass)."""
+    return _label_last(frame, label)
 
 
 def workspace_frames(sources: dict) -> tuple[pd.DataFrame, pd.DataFrame | None]:

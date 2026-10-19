@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import pprint
 
+from dtk_engine.workspace.dataset import replay_label
 from dtk_engine.workspace.models import Group, Step, Workspace
 
 _SIDES = {
@@ -34,14 +35,18 @@ def _sources(ws: Workspace) -> dict:
     }
 
 
-def _step_code(step: Step, has_test: bool) -> str | None:
+def _step_code(step: Step, has_test: bool, label: str | None = None) -> str | None:
     fit_train, fit_test = _SIDES[step.target]
     if not has_test:
         fit_test = None
     if fit_train is None and fit_test is None:
         return None  # a test-only step without a test set: replay skips it too
     make = f"step = DtkTransformer({step.op!r}, **{_literal(step.params)})"
-    return "\n".join([make, *(line for line in (fit_train, fit_test) if line)])
+    lines = [make, *(line for line in (fit_train, fit_test) if line)]
+    if label is not None:  # the replay moves the label back to the end after each step
+        lines.append("train = keep_label_last(train, LABEL)")
+        lines.append("test = keep_label_last(test, LABEL)")
+    return "\n".join(lines)
 
 
 def _intro(ws: Workspace, exported_at: str) -> str:
@@ -75,13 +80,14 @@ def _group_sections(ws: Workspace) -> list[tuple[Group, str]]:
     skipped by replay too) is left out.
     """
     has_test = ws.datasets.test is not None
+    label = replay_label(ws)
     by_id = {s.id: s for s in ws.steps}
     out = []
     for group in ws.groups:
         blocks = []
         for sid in group.step_ids:
             step = by_id[sid]
-            code = _step_code(step, has_test)
+            code = _step_code(step, has_test, label)
             if code is not None:
                 blocks.append(_step_block(step, code))
         if blocks:
@@ -107,12 +113,15 @@ def _group_title(group: Group) -> str:
 
 
 def _load_code(ws: Workspace) -> str:
+    label = replay_label(ws)
     return "\n".join(
         [
             "from dtk_engine import DtkTransformer",
-            "from dtk_engine.api import workspace_frames",
+            "from dtk_engine.api import workspace_frames"
+            + (", keep_label_last" if label is not None else ""),
             "",
             f"SOURCES = {_literal(_sources(ws))}",
+            *([f"LABEL = {label!r}"] if label is not None else []),
             "train, test = workspace_frames(SOURCES)",
         ]
     )
