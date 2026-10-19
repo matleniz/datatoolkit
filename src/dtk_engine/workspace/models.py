@@ -5,7 +5,14 @@ from __future__ import annotations
 import unicodedata
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from dtk_engine.sources.spec import FileSourceSpec
 
@@ -26,6 +33,31 @@ MEMORY_ENTRY_MAX = 500  # characters per memory entry
 MEMORY_ENTRIES_MAX = 100
 MEMORY_CHARS_MAX = 8000  # all entries' text (~2k tokens: injected in a first turn)
 VariableStat = Literal["mean", "median", "std", "min", "max", "q25", "q75", "count"]
+
+
+class GroupInvariantError(ValueError):
+    """A step-group invariant is broken (datatoolkit-issues#249).
+
+    ``rule`` is one of ``duplicate_group_id``, ``step_shared``, ``unknown_step``,
+    ``not_contiguous``, ``out_of_order``, ``invalid_name``; ``group_id`` and
+    ``step_id`` name the offender (``None`` when the rule has no such id).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        rule: str,
+        group_id: str | None = None,
+        step_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.rule = rule
+        self.group_id = group_id
+        self.step_id = step_id
+
+    def as_detail(self) -> dict[str, str | None]:
+        return {"rule": self.rule, "group_id": self.group_id, "step_id": self.step_id}
 
 
 class _Strict(BaseModel):
@@ -102,11 +134,13 @@ class Group(_Strict):
 
     @field_validator("name")
     @classmethod
-    def _one_line_name(cls, name: str) -> str:
+    def _one_line_name(cls, name: str, info: ValidationInfo) -> str:
         if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in name):
-            raise ValueError(
+            raise GroupInvariantError(
                 "group name must be one line: no newline or control character "
-                f"(got {name!r})"
+                f"(got {name!r})",
+                rule="invalid_name",
+                group_id=info.data.get("id"),
             )
         return name
 
@@ -332,11 +366,19 @@ def _check_group_slice(group: Group, pos: dict[str, int], at: int) -> None:
     """``group`` must be the steps ``at``, ``at + 1``... in order (else ValueError)."""
     for offset, sid in enumerate(group.step_ids):
         if sid not in pos:
-            raise ValueError(f"group {group.id!r} names unknown step id {sid!r}")
+            raise GroupInvariantError(
+                f"group {group.id!r} names unknown step id {sid!r}",
+                rule="unknown_step",
+                group_id=group.id,
+                step_id=sid,
+            )
         if pos[sid] != at + offset:
-            raise ValueError(
+            raise GroupInvariantError(
                 f"group {group.id!r} is not a contiguous slice in step order: "
-                f"step {sid!r} is at position {pos[sid] + 1}, expected {at + offset + 1}"
+                f"step {sid!r} is at position {pos[sid] + 1}, expected {at + offset + 1}",
+                rule="not_contiguous",
+                group_id=group.id,
+                step_id=sid,
             )
 
 
@@ -346,13 +388,18 @@ def _check_partition(groups: list[Group]) -> dict[str, str]:
     seen: dict[str, str] = {}
     for g in groups:
         if g.id in ids:
-            raise ValueError(f"duplicate group id {g.id!r}")
+            raise GroupInvariantError(
+                f"duplicate group id {g.id!r}", rule="duplicate_group_id", group_id=g.id
+            )
         ids.add(g.id)
         for sid in g.step_ids:
             if sid in seen:
-                raise ValueError(
+                raise GroupInvariantError(
                     f"step {sid!r} is in groups {seen[sid]!r} and {g.id!r}: "
-                    "a step belongs to exactly one group"
+                    "a step belongs to exactly one group",
+                    rule="step_shared",
+                    group_id=g.id,
+                    step_id=sid,
                 )
             seen[sid] = g.id
     return seen
@@ -374,21 +421,32 @@ def normalise_groups(steps: list[Step], groups: list[Group]) -> list[Group]:
     def wrap_until(end: int, nxt: str) -> None:
         for step in steps[len(_flat(out)) : end]:
             if seen.get(step.id) == nxt:
-                raise ValueError(
+                raise GroupInvariantError(
                     f"group {nxt!r} is not a contiguous slice in step order: "
-                    f"step {step.id!r} must come after the group's first step"
+                    f"step {step.id!r} must come after the group's first step",
+                    rule="not_contiguous",
+                    group_id=nxt,
+                    step_id=step.id,
                 )
             if step.id in seen:
-                raise ValueError(
+                raise GroupInvariantError(
                     f"group {nxt!r} is out of step order: step {step.id!r} "
-                    f"(group {seen[step.id]!r}) comes before it"
+                    f"(group {seen[step.id]!r}) comes before it",
+                    rule="out_of_order",
+                    group_id=None if nxt == "(end)" else nxt,
+                    step_id=step.id,
                 )
             out.append(_wrap(step, taken))
 
     for g in groups:
         first = g.step_ids[0]
         if first not in pos:
-            raise ValueError(f"group {g.id!r} names unknown step id {first!r}")
+            raise GroupInvariantError(
+                f"group {g.id!r} names unknown step id {first!r}",
+                rule="unknown_step",
+                group_id=g.id,
+                step_id=first,
+            )
         wrap_until(pos[first], g.id)
         _check_group_slice(g, pos, pos[first])
         out.append(g)
