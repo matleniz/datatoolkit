@@ -606,3 +606,22 @@ def test_other_bodies_unchanged(client, tmp_path):
     assert r.status_code == 200
     r = client.post("/api/workspace/align", json={"workspace": _workspace(), "extra": 1})
     assert r.status_code == 200
+
+
+def test_non_utf8_workspace_file_is_corrupt(client, home):
+    assert client.put("/api/workspaces/ok", json=_workspace("ok")).status_code == 200
+    (home / "workspaces" / "bad.json").write_bytes(b"caf\xe9 \xff")
+    r = client.get("/api/workspaces/bad")
+    assert r.status_code == 500
+    body = r.json()
+    assert body["type"] == "WorkspaceCorruptError"
+    assert "not valid UTF-8" in body["message"] and str(home) not in body["message"]
+    for url in ("/api/workspaces", "/api/workspaces/summaries"):
+        rows = {x["name"]: x for x in client.get(url).json()}
+        assert rows["bad"] == {"name": "bad", "corrupt": True, "error": "WorkspaceCorruptError"}
+        assert "corrupt" not in rows["ok"]
+    for sub in ("rename", "duplicate"):
+        r = client.post(f"/api/workspaces/bad/{sub}", json={"new_name": "z"})
+        assert r.status_code == 500 and r.json()["type"] == "WorkspaceCorruptError"
+    assert client.delete("/api/workspaces/bad").status_code == 204
+    assert [x["name"] for x in client.get("/api/workspaces").json()] == ["ok"]

@@ -500,3 +500,11 @@ def test_version_message_only_for_int_version(tmp_path, monkeypatch):
     with pytest.raises(WorkspaceCorruptError, match="corrupt") as info:
         get_workspace("x")
     assert "unsupported" not in str(info.value)
+
+
+def test_cheap_workspace_reads_non_utf8_file_is_corrupt(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    (tmp_path / "workspaces").mkdir()
+    (tmp_path / "workspaces" / "bad.json").write_bytes(b"caf\xe9")
+    with pytest.raises(WorkspaceCorruptError, match="not valid UTF-8"):
+        contract.workspace_steps("bad")

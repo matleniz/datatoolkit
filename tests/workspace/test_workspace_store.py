@@ -275,3 +275,18 @@ def test_delete_under_concurrent_put_is_exclusive(tmp_path):
     else:
         with pytest.raises(WorkspaceNotFoundError):
             store.get("w")
+
+
+@pytest.mark.parametrize("raw", [b"caf\xe9 \xff", b'{"name": "bad", "x": "caf\xc3', b"\xff\xfe\x00{"])
+def test_store_non_utf8_file_is_corrupt(tmp_path, raw):
+    store = JsonWorkspaceStore(tmp_path)
+    (tmp_path / "bad.json").write_bytes(raw)
+    with pytest.raises(WorkspaceCorruptError, match="not valid UTF-8") as info:
+        store.get("bad")
+    assert "bad" in str(info.value) and str(tmp_path) not in str(info.value)
+    with pytest.raises(WorkspaceCorruptError):
+        store.rename("bad", "other")
+    with pytest.raises(WorkspaceCorruptError):
+        store.duplicate("bad", "other")
+    store.delete("bad")
+    assert store.list() == []
