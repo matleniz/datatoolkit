@@ -7,7 +7,7 @@ import pytest
 
 from dtk_engine import api, export_workspace, save_workspace
 from dtk_engine.demo_data import TEST_CSV, TRAIN_CSV
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, SourceError
 from dtk_engine.sources import load
 from dtk_engine.sources.spec import DatasetSource
 from dtk_engine.workspace import WorkspaceNotFoundError
@@ -389,3 +389,64 @@ def test_relative_out_dir(copied_source, tmp_path, monkeypatch):
     export("stage", "rel_out", overwrite=True)
     assert (tmp_path / "rel_out" / "manifest.json").exists()
     assert _no_staging(tmp_path / "rel_out")
+
+
+# --- duplicate column names: parquet says so, the other formats are unchanged ---
+
+DUP_STEPS = [{"op": "rename", "target": "both", "params": {"mapping": {"Fare": "Age"}}}]
+
+
+@pytest.fixture
+def dup_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
+    csv = tmp_path / "train.csv"
+    csv.write_bytes(Path(TRAIN_CSV).read_bytes())
+    save_workspace(
+        {
+            "name": "dup",
+            "datasets": {"train": {"x": {"kind": "csv", "path": str(csv)}}},
+            "steps": [],
+        }
+    )
+    return csv
+
+
+def _with_dup_step(csv):
+    save_workspace(
+        {
+            "name": "dup",
+            "datasets": {"train": {"x": {"kind": "csv", "path": str(csv)}}},
+            "steps": DUP_STEPS,
+        }
+    )
+
+
+def test_parquet_duplicate_columns_message(dup_source, tmp_path):
+    _with_dup_step(dup_source)
+    with pytest.raises(SourceError) as err:
+        export("dup", tmp_path / "out", formats=["parquet"])
+    msg = str(err.value)
+    assert "duplicate column names ['Age']" in msg
+    assert "train" in msg and "rename" in msg
+    assert "cast" not in msg
+
+
+def test_other_formats_unchanged_with_duplicate_columns(dup_source, tmp_path):
+    _with_dup_step(dup_source)
+    out = tmp_path / "out"
+    export("dup", out, formats=["csv", "py", "ipynb"])
+    header = (out / "processed" / "train.csv").read_text().splitlines()[0]
+    assert header.split(",").count("Age") == 2
+    assert (out / "code" / "pipeline.py").exists()
+    assert (out / "code" / "pipeline.ipynb").exists()
+
+
+def test_duplicate_columns_overwrite_keeps_previous(dup_source, tmp_path):
+    out = tmp_path / "out"
+    export("dup", out, formats=["parquet", "csv"])
+    before = _tree(out)
+    _with_dup_step(dup_source)
+    with pytest.raises(SourceError, match="duplicate column names"):
+        export("dup", out, overwrite=True, formats=["parquet", "csv"])
+    assert _tree(out) == before
+    assert _no_staging(out)

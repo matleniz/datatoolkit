@@ -1,27 +1,31 @@
-"""Workspace export: processed parquet + a provenance manifest.
+"""Workspace export: processed data + code + a provenance manifest.
 
 ``export_workspace(name, out_dir)`` writes, under ``out_dir``::
 
     processed/train.parquet     train after every train / both step (labels joined)
     processed/test.parquet      test after every test / both step (if a test set)
+    processed/{train,test}.csv  same frames as csv (format ``csv``)
     states/step_<i>_<op>.json   fitted states too big to inline (e.g. impute_knn)
+    code/pipeline.ipynb         the pipeline as a notebook (format ``ipynb``)
+    code/pipeline.py            the pipeline as a script (format ``py``)
     manifest.json               written last: its presence marks a complete export
 
 ``formats`` picks the data / code outputs (default parquet only):
-``parquet`` (above), ``csv`` (``processed/{train,test}.csv``), ``ipynb``
-(``code/pipeline.ipynb``) and ``py`` (``code/pipeline.py``), the last two
-replaying the pipeline through the notebook door (``workspace.notebook``).
+``parquet``, ``csv``, ``ipynb`` and ``py``, the last two replaying the
+pipeline through the notebook door (``workspace.notebook``). Parquet refuses
+duplicate column names (csv writes them as they are).
 
 The manifest records the sources (path, size, sha256, mtime), the export time,
 the step groups, every step (with its ``group_id``) with its fitted state
 (inline, or a side file with its sha256) and the engine / pandas / sklearn /
-pyarrow / python versions. Raw inputs are only
-read: an output path that is a source path is refused. Overwrite only deletes
-relative paths under processed/, states/ or code/ listed by a manifest of ours.
+pyarrow / python versions. Raw inputs are only read: an output path that is a
+source path is refused. Overwrite only deletes relative paths under
+processed/, states/ or code/ listed by a manifest of ours.
 
 The export is built in a ``.export-staging-*`` directory inside ``out_dir`` and
 moved in (the previous one set aside in ``.export-old-*`` meanwhile) only once
-every format is written: a failing export (replay or write time) leaves ``out_dir``, a previous export included, untouched.
+every format is written: a failing export (replay or write time) leaves
+``out_dir``, a previous export included, untouched.
 """
 
 from __future__ import annotations
@@ -58,6 +62,7 @@ FORMATS = ("parquet", "csv", "ipynb", "py")
 # impute_iterative keep the whole train matrix in their state).
 INLINE_STATE_BYTES = 64 * 1024
 _CHUNK = 1 << 20
+MAX_LISTED_COLUMNS = 10
 STAGING_PREFIX = ".export-staging-"
 ASIDE_PREFIX = ".export-old-"
 STAGING_MARKER = ".dtk-staging"  # holds the pid of the exporting process
@@ -172,6 +177,14 @@ def versions() -> dict:
 def _write_parquet(df: pd.DataFrame, path: Path) -> dict:
     # Parquet needs string column names; the index is not kept (row order is).
     df = df.rename(columns=str)
+    dups = list(dict.fromkeys(df.columns[df.columns.duplicated()]))
+    if dups:
+        shown = dups[:MAX_LISTED_COLUMNS]
+        more = f" (and {len(dups) - len(shown)} more)" if len(dups) > len(shown) else ""
+        raise SourceError(
+            f"cannot write parquet: duplicate column names {shown}{more} in "
+            f"{path.stem} (rename them with a rename step)"
+        )
     try:
         df.to_parquet(path, index=False)
     except (ValueError, TypeError, ImportError) as exc:
