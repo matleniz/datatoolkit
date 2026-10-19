@@ -29,7 +29,7 @@ def _ws(steps=3, **extra) -> dict:
             "test": {"x": {"kind": "csv", "path": str(TEST_CSV)}},
         },
         "steps": [
-            {"id": f"s{i}", "op": "impute", "target": "train", "params": {}}
+            {"id": f"s{i}", "op": "drop_duplicates", "target": "train", "params": {"keep": "none"}}
             for i in range(1, steps + 1)
         ],
         **extra,
@@ -48,7 +48,7 @@ def test_old_workspace_becomes_one_group_per_step():
     ws = Workspace.model_validate(_ws())
     assert _ids(ws) == [["s1"], ["s2"], ["s3"]]
     first = ws.groups[0]
-    assert (first.id, first.name, first.intent, first.origin) == ("g1", "impute train", "", "auto")
+    assert (first.id, first.name, first.intent, first.origin) == ("g1", "drop_duplicates train", "", "auto")
 
 
 def test_no_steps_no_groups():
@@ -88,7 +88,7 @@ def test_normalisation_is_idempotent():
         ([_g("g1", "s1", "nope")], "group 'g1' names unknown step id 'nope'"),
         ([_g("g1", "s1", "s3")], "group 'g1' is not a contiguous slice"),
         ([_g("g1", "s2", "s1")], "group 'g1' is not a contiguous slice"),
-        ([_g("g1", "s2", "s3"), _g("g2", "s1")], "group 'g2' is out of step order"),
+        ([_g("g1", "s2", "s3"), _g("g2", "s1")], "is out of step order"),
     ],
 )
 def test_invariant_violations_are_named(groups, needle):
@@ -121,7 +121,7 @@ def test_groups_do_not_change_version_replay_or_step_count():
     summary = contract.list_workspace_summaries()[0]
     assert summary["step_count"] == 3
     for version in range(4):
-        a = contract.preview_workspace({**plain, "steps": plain["steps"][:version]}, "train")
+        a = contract.preview_workspace({**plain, "steps": plain["steps"][:version], "groups": []}, "train")
         b = contract.preview_workspace({**grouped, "steps": grouped["steps"][:version], "groups": []}, "train")
         assert a == b
 

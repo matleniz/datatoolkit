@@ -362,6 +362,11 @@ def normalise_groups(steps: list[Step], groups: list[Group]) -> list[Group]:
 
     def wrap_until(end: int, nxt: str) -> None:
         for step in steps[len(_flat(out)) : end]:
+            if seen.get(step.id) == nxt:
+                raise ValueError(
+                    f"group {nxt!r} is not a contiguous slice in step order: "
+                    f"step {step.id!r} must come after the group's first step"
+                )
             if step.id in seen:
                 raise ValueError(
                     f"group {nxt!r} is out of step order: step {step.id!r} "
