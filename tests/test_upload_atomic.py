@@ -75,3 +75,12 @@ def test_concurrent_puts_end_with_complete_file(tmp_path):
     assert len(set(paths)) == 1
     assert paths[0].read_bytes() == DATA
     assert _files(tmp_path) == [paths[0]]
+
+
+def test_file_mode_follows_umask(tmp_path):
+    old = os.umask(0o022)
+    try:
+        p = http._save_upload("t.csv", DATA, tmp_path)
+    finally:
+        os.umask(old)
+    assert p.stat().st_mode & 0o777 == 0o644

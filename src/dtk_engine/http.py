@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import secrets
-import tempfile
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path, PurePath
@@ -103,7 +102,9 @@ def _holds(path: Path, data: bytes) -> bool:
 
 def _write_atomic(path: Path, data: bytes) -> None:
     """Write via a unique temp file in the same directory, then ``os.replace``."""
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    # os.open (not mkstemp, which forces 0600) so the umask yields the usual 0644.
+    tmp = str(path.parent / f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
