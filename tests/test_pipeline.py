@@ -155,3 +155,26 @@ def test_set_params_op_change_drops_old_op_params():
         "columns": ["a"],
         "missing_ok": True,
     }
+
+
+def test_param_named_op_and_name_round_trip():
+    """derive's params ``op`` and ``name`` clash with nothing (#253)."""
+    t = DtkTransformer("derive", a="x", b="y", op="product", name="xy")
+    assert t.op == "derive" and t.params["op"] == "product" and t.params["name"] == "xy"
+    assert t.get_params() == {
+        "op": "derive", "a": "x", "b": "y", "param_op": "product", "name": "xy",
+    }
+    c = clone(t)
+    assert c.op == "derive" and c.params == t.params and c.get_params() == t.get_params()
+    c.set_params(param_op="difference", name="d")
+    assert c.params["op"] == "difference" and c.params["name"] == "d" and c.op == "derive"
+    assert t.params["op"] == "product"  # the original is untouched
+    c.set_params(op="scale")  # a plain ``op`` is still the transform identity
+    assert c.op == "scale"
+
+
+def test_pipeline_with_derive_fits_and_clones():
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0], "y": [4.0, 5.0, 6.0]})
+    pipe = Pipeline([("d", DtkTransformer("derive", a="x", b="y", op="product", name="xy"))])
+    out = clone(pipe).fit_transform(df)
+    assert out["xy"].tolist() == [4.0, 10.0, 18.0]

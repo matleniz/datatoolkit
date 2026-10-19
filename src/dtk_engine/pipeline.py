@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.pipeline import Pipeline
 from sklearn.utils.validation import check_is_fitted
 
@@ -28,6 +28,9 @@ def _as_frame(X) -> pd.DataFrame:
     X = np.asarray(X)
     return pd.DataFrame(X, columns=[f"x{i}" for i in range(X.shape[1])])
 
+_ESC = {"op": "param_op"}
+_UNESC = {v: k for k, v in _ESC.items()}
+
 
 class DtkTransformer(TransformerMixin, BaseEstimator):
     """One transform op as an sklearn transformer, e.g.
@@ -38,26 +41,37 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
     Params are validated at ``fit`` (invalid -> KeyParamsError).
     """
 
-    def __init__(self, op: str, **params):
+    # The op identity is positional-only so an op param may itself be called
+    # ``op`` (``derive``): ``DtkTransformer("derive", op="ratio")``.
+    def __init__(self, op: str, /, **params):
         self.op = op
         self.params = params
 
-    # The op's params are the estimator's params, so clone / grid search see them.
+    # The op's params are the estimator's params, so grid search sees them.
+    # ``op`` is the transform's identity; an op param also called ``op`` is
+    # exposed as ``param_op`` (never a plain ``op``, which would shadow it).
     def get_params(self, deep: bool = True) -> dict:
-        return {"op": self.op, **self.params}
+        return {"op": self.op, **{_ESC.get(k, k): v for k, v in self.params.items()}}
 
     def set_params(self, **params) -> DtkTransformer:
         # A new op keeps only the current params it declares (e.g. `columns`);
         # the old op's own params (e.g. `missing_ok`) are dropped.
-        if "op" in params and (op := params.pop("op")) != self.op:
+        new_op = params.pop("op", self.op)
+        params = {_UNESC.get(k, k): v for k, v in params.items()}
+        if new_op != self.op:
             try:
-                fields = get_transform(op).params_model.model_fields
+                fields = get_transform(new_op).params_model.model_fields
             except UnknownTransformError:
                 fields = {}  # unknown op: fails at fit, carry nothing over
-            self.op = op
+            self.op = new_op
             self.params = {k: v for k, v in self.params.items() if k in fields}
         self.params = {**self.params, **params}
         return self
+
+    def __sklearn_clone__(self) -> DtkTransformer:
+        # clone()'s default `type(self)(**get_params())` would hand `op` to the
+        # positional-only argument as a keyword; rebuild it explicitly.
+        return type(self)(self.op, **{k: clone(v, safe=False) for k, v in self.params.items()})
 
     def _fit(self, X, y=None) -> pd.DataFrame:
         X = _as_frame(X)

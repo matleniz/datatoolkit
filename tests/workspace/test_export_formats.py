@@ -281,3 +281,33 @@ def test_group_name_must_be_one_line(payload):
     groups = [{**GROUPS[0], "name": payload}, *GROUPS[1:]]
     with pytest.raises(Exception, match="one line"):
         contract.save_workspace(_grouped_ws(groups))
+
+
+def test_derive_step_exports_and_reproduces_the_parquet(tmp_path):
+    """derive's param ``op`` (and ``name``) must not collide with DtkTransformer's argument (#253)."""
+    contract.save_workspace({
+        "name": "dv",
+        "datasets": {"train": {"x": {"kind": "csv", "path": str(TRAIN_CSV)}}},
+        "steps": [
+            {"op": "derive", "target": "both",
+             "params": {"a": "Fare", "b": "SibSp", "op": "product", "name": "fare_x_sib"}},
+        ],
+    })
+    out = tmp_path / "export"
+    contract.export_workspace("dv", str(out), formats=["parquet", "ipynb", "py"])
+    expected = _parquet(out, "train")
+    assert "fare_x_sib" in expected.columns
+    nb = json.loads((out / "code" / "pipeline.ipynb").read_text())
+    namespace: dict = {}
+    for cell in nb["cells"]:
+        if cell["cell_type"] == "code":
+            exec("".join(cell["source"]), namespace)  # noqa: S102 - our own generated code
+    _same(namespace["train"], expected)
+    check = tmp_path / "check.py"
+    check.write_text(
+        (out / "code" / "pipeline.py").read_text()
+        + f"\ntrain.reset_index(drop=True).to_parquet({str(tmp_path / 'tr.parquet')!r})\n"
+    )
+    done = subprocess.run([sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    _same(pd.read_parquet(tmp_path / "tr.parquet"), expected)
