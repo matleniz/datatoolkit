@@ -80,7 +80,10 @@ def test_notebook_runs_and_reproduces_the_parquet(exported):
     assert all(c["id"] for c in nb["cells"])
     markdown = "".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "markdown")
     assert "Titanic-like demo study." in markdown and "ticket class" in markdown
-    assert "Median age: few missing values." in markdown
+    # a step note is now a comment in the group's code cell (was a markdown cell)
+    code = "".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert " · impute both\n# Median age: few missing values." in code
+    assert "## impute both" in markdown  # no groups -> one singleton section per step
     namespace: dict = {}
     for cell in nb["cells"]:
         if cell["cell_type"] == "code":
@@ -139,3 +142,94 @@ def test_onehot_missing_option_replays_in_script(tmp_path):
     done = subprocess.run([sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False)
     assert done.returncode == 0, done.stderr
     _same(pd.read_parquet(tmp_path / "tr.parquet"), expected)
+
+
+# --- step groups (datatoolkit-issues#249) ---------------------------------
+
+def _grouped_ws(groups: list[dict] | None) -> dict:
+    steps = [{**s, "id": f"s{i}"} for i, s in enumerate(STEPS)]
+    ws = {
+        "name": "grp",
+        "datasets": {
+            "train": {"x": {"kind": "csv", "path": str(TRAIN_CSV)}},
+            "test": {"x": {"kind": "csv", "path": str(TEST_CSV)}},
+        },
+        "steps": steps,
+    }
+    if groups is not None:
+        ws["groups"] = groups
+    return ws
+
+
+GROUPS = [
+    {"id": "g1", "name": "Fare features", "intent": "Fare per person", "step_ids": ["s0", "s1"]},
+    {"id": "g2", "name": "Encode and filter", "step_ids": ["s2", "s3", "s4"]},
+    {"id": "g3", "name": "Rename", "step_ids": ["s5"]},
+]
+
+
+def _export_grouped(tmp_path, groups):
+    contract.save_workspace(_grouped_ws(groups))
+    out = tmp_path / "export"
+    manifest = contract.export_workspace("grp", str(out), formats=["parquet", "ipynb", "py"])
+    return manifest, out
+
+
+def _run_cells(nb: dict) -> dict:
+    namespace: dict = {}
+    for cell in nb["cells"]:
+        if cell["cell_type"] == "code":
+            exec("".join(cell["source"]), namespace)  # noqa: S102 - our own generated code
+    return namespace
+
+
+def test_grouped_notebook_has_one_pair_per_group(tmp_path):
+    manifest, out = _export_grouped(tmp_path, GROUPS)
+    nb = json.loads((out / "code" / "pipeline.ipynb").read_text())
+    kinds = [c["cell_type"] for c in nb["cells"]]
+    # intro, load, 3 x (markdown, code), final shapes
+    assert kinds == ["markdown", "code"] + ["markdown", "code"] * 3 + ["code"]
+    src = ["".join(c["source"]) for c in nb["cells"]]
+    assert src[2].splitlines() == ["## Fare features", "Fare per person", "Steps: s0, s1"]
+    assert src[4].splitlines() == ["## Encode and filter", "Steps: s2, s3, s4"]
+    assert "# s0 · impute both" in src[3] and "# s1 · formula both" in src[3]
+    assert "# Median age: few missing values." in src[3]
+    assert src[3].index("# s0") < src[3].index("# s1")
+    assert src[5].count("DtkTransformer(") == 3
+    _same(_run_cells(nb)["train"], _parquet(out, "train"))
+    assert [g["id"] for g in manifest["groups"]] == ["g1", "g2", "g3"]
+
+
+def test_grouped_script_runs_like_the_replay(tmp_path):
+    _, out = _export_grouped(tmp_path, GROUPS)
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "# --- Fare features ---\n# Fare per person\n# s0 · impute both" in script
+    assert "# --- Rename ---" in script
+    check = tmp_path / "check.py"
+    check.write_text(
+        script.replace("print(train.shape", "(train.shape")
+        + f"\ntrain.reset_index(drop=True).to_parquet({str(tmp_path / 'tr.parquet')!r})\n"
+    )
+    done = subprocess.run([sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    _same(pd.read_parquet(tmp_path / "tr.parquet"), _parquet(out, "train"))
+
+
+def test_workspace_without_groups_exports_one_section_per_step(tmp_path):
+    manifest, out = _export_grouped(tmp_path, None)
+    nb = json.loads((out / "code" / "pipeline.ipynb").read_text())
+    n = len(STEPS)
+    assert len(nb["cells"]) == 2 + 2 * n + 1
+    assert "".join(nb["cells"][2]["source"]).startswith("## impute both\nSteps: s0")
+    assert len(manifest["groups"]) == n
+    _same(_run_cells(nb)["train"], _parquet(out, "train"))
+
+
+def test_manifest_maps_steps_to_groups(tmp_path):
+    manifest, out = _export_grouped(tmp_path, GROUPS)
+    assert [s["group_id"] for s in manifest["steps"]] == ["g1", "g1", "g2", "g2", "g2", "g3"]
+    assert manifest["groups"][1] == {
+        "id": "g2", "name": "Encode and filter", "intent": "", "steps": [2, 3, 4],
+    }
+    on_disk = json.loads((out / "manifest.json").read_text())
+    assert on_disk["groups"] == manifest["groups"]
