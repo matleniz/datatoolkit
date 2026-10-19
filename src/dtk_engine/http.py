@@ -86,10 +86,32 @@ def _save_upload(name: str, data: bytes, root: Path | None = None) -> Path:
     if base in ("", ".", ".."):
         base = "upload"
     path = (root or upload_dir()) / digest / base
-    if not path.exists():
+    if not _holds(path, data):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        _write_atomic(path, data)
     return path.resolve()
+
+
+def _holds(path: Path, data: bytes) -> bool:
+    """True when ``path`` already holds exactly ``data`` (a partial file does not)."""
+    try:
+        return path.stat().st_size == len(data) and path.read_bytes() == data
+    except OSError:
+        return False
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Write via a unique temp file in the same directory, then ``os.replace``."""
+    # os.open (not mkstemp, which forces 0600) so the umask yields the usual 0644.
+    tmp = str(path.parent / f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def _error_body(exc: BaseException) -> dict:
