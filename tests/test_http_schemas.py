@@ -9,6 +9,7 @@ only asserted to fail (status >= 400), the exact error is not part of the promis
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -135,11 +136,10 @@ CASES = {
         ("head_rows as a string", _ws_ref(head_rows="2"), True, 200),
         ("head_rows as a float", _ws_ref(head_rows=2.9), True, 200),
         ("head_rows as a bool", _ws_ref(head_rows=True), True, 200),
-        # KNOWN DEFECT, pinned as is: the schema allows any string, int("abc") is a 500.
-        # When the handler is fixed (422), update this case on purpose.
-        ("head_rows non-numeric string", _ws_ref(head_rows="abc"), True, 500),
-        ("head_rows null", _ws_ref(head_rows=None), False, None),
-        ("head_rows array", _ws_ref(head_rows=[2]), False, None),
+        # The schema allows any string; int("abc") is rejected by the handler (422).
+        ("head_rows non-numeric string", _ws_ref(head_rows="abc"), True, 422),
+        ("head_rows null", _ws_ref(head_rows=None), False, 422),
+        ("head_rows array", _ws_ref(head_rows=[2]), False, 422),
         ("role unknown", _ws_ref(role="val"), False, 422),
         ("role null", _ws_ref(role=None), False, 422),
         ("workspace missing", {}, False, None),
@@ -151,8 +151,13 @@ CASES = {
         ("defaults", _ws_ref(), True, 200),
         ("offset and limit as strings", _ws_ref(offset="1", limit="3"), True, 200),
         ("offset and limit as floats", _ws_ref(offset=1.0, limit=3.0), True, 200),
-        ("limit null", _ws_ref(limit=None), False, None),
-        ("offset object", _ws_ref(offset={}), False, None),
+        ("offset non-numeric string", _ws_ref(offset="abc"), True, 422),
+        ("offset null", _ws_ref(offset=None), False, 422),
+        ("offset array", _ws_ref(offset=[]), False, 422),
+        ("offset object", _ws_ref(offset={}), False, 422),
+        ("limit non-numeric string", _ws_ref(limit="abc"), True, 422),
+        ("limit null", _ws_ref(limit=None), False, 422),
+        ("limit array", _ws_ref(limit=[]), False, 422),
         ("version int", _ws_ref(version=0), True, 200),
         ("version null", _ws_ref(version=None), True, 200),
         ("version as a string", _ws_ref(version="0"), False, 422),
@@ -239,3 +244,32 @@ def test_schema_matches_handler(client, ctx, route, label, body, schema_ok, stat
         assert r.status_code >= 400, r.text
     else:
         assert r.status_code == status, r.text
+
+
+@pytest.mark.parametrize(
+    ("path", "field"),
+    [
+        ("/api/workspace/preview", "head_rows"),
+        ("/api/workspace/rows", "offset"),
+        ("/api/workspace/rows", "limit"),
+    ],
+)
+@pytest.mark.parametrize("value", ["abc", None, [], {}, "nan", "inf", "1e999", "x" * 500])
+def test_integer_field_not_convertible_is_a_422_naming_the_field(client, path, field, value):
+    r = client.post(path, json=_ws_ref(**{field: value})(None))
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["type"] == "KeyParamsError"
+    assert body["message"].startswith(f"{field}: must be an integer, got ")
+    assert len(body["message"]) < 100
+
+
+def test_integer_field_json_infinity_is_a_422(client):
+    # httpx refuses to encode inf; the server's json parser accepts a bare 1e999 (= inf).
+    ws = json.dumps(_ws())
+    r = client.post(
+        "/api/workspace/preview", content=f'{{"workspace": {ws}, "head_rows": 1e999}}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["message"] == "head_rows: must be an integer, got inf"
