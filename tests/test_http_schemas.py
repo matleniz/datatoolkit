@@ -135,6 +135,9 @@ CASES = {
         ("head_rows as a string", _ws_ref(head_rows="2"), True, 200),
         ("head_rows as a float", _ws_ref(head_rows=2.9), True, 200),
         ("head_rows as a bool", _ws_ref(head_rows=True), True, 200),
+        # KNOWN DEFECT, pinned as is: the schema allows any string, int("abc") is a 500.
+        # When the handler is fixed (422), update this case on purpose.
+        ("head_rows non-numeric string", _ws_ref(head_rows="abc"), True, 500),
         ("head_rows null", _ws_ref(head_rows=None), False, None),
         ("head_rows array", _ws_ref(head_rows=[2]), False, None),
         ("role unknown", _ws_ref(role="val"), False, 422),

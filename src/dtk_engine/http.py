@@ -138,10 +138,15 @@ class _Doc(BaseModel):
 
 
 # The handler wraps these in ``int()``: numeric strings and floats pass
-# (truncated); null, objects and arrays are a 500; so is a non-numeric string.
+# (truncated); null, objects and arrays are a 500; so is a non-numeric string
+# (known defect, tracked separately).
 _CoercedInt = Annotated[
     int | float | str | bool,
-    Field(description="Read with int() by the handler: a numeric string (\"5\") or a float is accepted."),
+    Field(description=(
+        "Read with int() by the handler: a numeric string (\"5\") or a float is accepted. "
+        "A non-numeric string, null or an array makes the handler fail with a 500 "
+        "(known defect, tracked separately)."
+    )),
 ]
 # ``bool(...)`` of the raw value.
 _Truthy = Annotated[Any, Field(description="Any JSON value; the handler reads its truthiness.")]

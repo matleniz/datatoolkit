@@ -237,7 +237,7 @@ Run your own agent CLI next to Studio, wired to the `dtk` server only:
 ```bash
 uv sync --extra agent
 uv run dtk-api                                          # keep it running, open Studio
-uv run dtk-mcp config claude-code --write <dir>   # then run the printed command
+uv run dtk-mcp config claude-code --write <dir>         # then run the printed command
 uv run dtk-mcp doctor                                   # engine up? token valid? Studio? CLIs?
 ```
 
