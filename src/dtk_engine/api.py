@@ -28,7 +28,12 @@ from pathlib import Path
 import pandas as pd
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from dtk_engine.errors import KeyParamsError, SourceError, valid_names_hint
+from dtk_engine.errors import (
+    KeyParamsError,
+    SourceError,
+    key_params_from_validation,
+    valid_names_hint,
+)
 from dtk_engine.keys.chart import chart_result
 from dtk_engine.keys.column_distribution import distribution_result
 from dtk_engine.keys.correlations import correlations_result
@@ -51,7 +56,7 @@ from dtk_engine.sources import load as load_spec
 from dtk_engine.transform_registry import get_transform
 from dtk_engine.transform_registry import transform_catalog as list_transforms
 from dtk_engine.workspace.dataset import preview as preview_workspace
-from dtk_engine.workspace.dataset import raw_workspace_frame
+from dtk_engine.workspace.dataset import raw_workspace_frame, workspace_validation_error
 from dtk_engine.workspace.export import export_workspace as _export_workspace
 from dtk_engine.workspace.models import Workspace
 from dtk_engine.workspace.replay import _label_last
@@ -114,7 +119,7 @@ def load(source: str | Path | dict | BaseModel) -> pd.DataFrame:
         try:
             source = _SPEC.validate_python(source)
         except ValidationError as exc:
-            raise KeyParamsError(str(exc)) from exc
+            raise key_params_from_validation(exc) from exc
     return load_spec(source)
 
 
@@ -336,7 +341,7 @@ def workspace_frames(sources: dict) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     try:
         ws = Workspace.model_validate({"name": "notebook", **sources})
     except ValidationError as exc:
-        raise KeyParamsError(f"invalid workspace sources: {exc}") from exc
+        raise workspace_validation_error(exc, "invalid workspace sources: ") from exc
     train = raw_workspace_frame(ws, "train", labeled=True)
     test = raw_workspace_frame(ws, "test", labeled=True) if ws.datasets.test else None
     return train, test

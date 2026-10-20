@@ -121,11 +121,15 @@ def message_from_validation_details(details: list[dict[str, Any]]) -> str:
 
 
 def key_params_from_validation(
-    exc: ValidationError, *, prefix: str | None = None
+    exc: ValidationError,
+    *,
+    prefix: str | None = None,
+    detail: dict[str, Any] | None = None,
 ) -> KeyParamsError:
-    """Wrap a pydantic ``ValidationError`` as a concise ``KeyParamsError``."""
+    """Wrap a pydantic ``ValidationError`` as a concise ``KeyParamsError``
+    (``detail``: the machine-readable cause, passed through)."""
     details = validation_error_details(exc)
     message = message_from_validation_details(details)
     if prefix:
         message = f"{prefix}{message}"
-    return KeyParamsError(message, details=details)
+    return KeyParamsError(message, details=details, detail=detail)

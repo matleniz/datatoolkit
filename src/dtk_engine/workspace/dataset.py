@@ -20,7 +20,7 @@ import pandas as pd
 from pydantic import ValidationError
 
 from dtk_engine.cache import LRU, digest, stamps
-from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.errors import KeyParamsError, SourceError, key_params_from_validation
 from dtk_engine.ops.join import LabelJoinError, join_labels, label_columns, merge_table
 from dtk_engine.sources.registry import load, reader
 from dtk_engine.sources.spec import DatasetSource
@@ -142,6 +142,12 @@ def _invariant_detail(exc: ValidationError) -> dict | None:
     return None
 
 
+def workspace_validation_error(exc: ValidationError, prefix: str | None = None) -> KeyParamsError:
+    """Concise ``KeyParamsError`` for a failed ``Workspace`` validation: message +
+    ``details``, and the group-invariant ``detail`` (#165) when there is one."""
+    return key_params_from_validation(exc, prefix=prefix, detail=_invariant_detail(exc))
+
+
 def parse_workspace(ws: dict) -> Workspace:
     """Workspace model + every step's op and params (nothing is read).
 
@@ -151,7 +157,7 @@ def parse_workspace(ws: dict) -> Workspace:
     try:
         parsed = Workspace.model_validate(ws)
     except ValidationError as exc:
-        raise KeyParamsError(str(exc), detail=_invariant_detail(exc)) from exc
+        raise workspace_validation_error(exc) from exc
     validate_steps(parsed.steps)
     return parsed
 
