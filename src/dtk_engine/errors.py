@@ -42,6 +42,18 @@ def valid_names_hint(
     return f"{lead} {label}: {shown}"
 
 
+class StaleWriteError(Exception):
+    """A workspace write carries a sequence older than one already accepted
+    (datatoolkit-issues#263). ``detail`` is ``{rule: "stale_write", last_seq}``."""
+
+    def __init__(self, name: str, seq: int, last_seq: int) -> None:
+        super().__init__(
+            f"stale write to workspace {name!r}: sequence {seq} is older than "
+            f"the last accepted one ({last_seq}); nothing written"
+        )
+        self.detail = {"rule": "stale_write", "last_seq": last_seq}
+
+
 class KeyParamsError(ValueError):
     """The params passed to a key failed validation.
 

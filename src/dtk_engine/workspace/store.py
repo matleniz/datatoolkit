@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from dtk_engine.errors import KeyParamsError
+from dtk_engine.errors import KeyParamsError, StaleWriteError
 from dtk_engine.workspace.models import NAME_PATTERN, Workspace
 
 if sys.platform == "win32":
@@ -42,6 +43,13 @@ else:
 
     def _unlock(fh) -> None:
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+WRITE_SEQ_MAX = 2**63 - 1
+_WRITE_SEQ_NAMES = 512  # bound of the per-process table (LRU on names)
+# Highest write sequence accepted per (store root, workspace name), in memory
+# only; read and written under the store lock (datatoolkit-issues#263).
+_write_seq: OrderedDict[tuple[str, str], int] = OrderedDict()
 
 
 class WorkspaceNotFoundError(KeyError):
@@ -149,9 +157,26 @@ class JsonWorkspaceStore:
         )
         tmp.replace(path)
 
-    def save(self, workspace: Workspace) -> None:
+    def save(self, workspace: Workspace, write_seq: int | None = None) -> None:
+        """Store ``workspace``. With ``write_seq``, an older sequence than the
+        last accepted one for this name raises ``StaleWriteError`` (nothing
+        written); check and write share one critical section. Without it the
+        write is unguarded and leaves the stored sequence alone."""
         with self._exclusive():
+            if write_seq is not None:
+                last = _write_seq.get(self._seq_key(workspace.name))
+                if last is not None and write_seq < last:
+                    raise StaleWriteError(workspace.name, write_seq, last)
             self._save_unlocked(workspace)
+            if write_seq is not None:
+                key = self._seq_key(workspace.name)
+                _write_seq[key] = write_seq
+                _write_seq.move_to_end(key)
+                while len(_write_seq) > _WRITE_SEQ_NAMES:
+                    _write_seq.popitem(last=False)
+
+    def _seq_key(self, name: str) -> tuple[str, str]:
+        return (str(self.root), name)
 
     def update(self, name: str, change: Callable[[Workspace], Workspace]) -> Workspace:
         """Read, ``change`` and save ``name`` under the store lock (a concurrent
@@ -167,6 +192,7 @@ class JsonWorkspaceStore:
                 self._path(name).unlink()
             except FileNotFoundError:
                 raise WorkspaceNotFoundError(name) from None
+            _write_seq.pop(self._seq_key(name), None)
 
     def rename(self, name: str, new_name: str) -> Workspace:
         """Move ``name`` to ``new_name`` (same content, updated ``name`` field).
@@ -187,6 +213,8 @@ class JsonWorkspaceStore:
             renamed = ws.model_copy(update={"name": new_name})
             self._save_unlocked(renamed)
             self._path(name).unlink()
+            _write_seq.pop(self._seq_key(name), None)
+            _write_seq.pop(self._seq_key(new_name), None)
             return renamed
 
     def duplicate(self, name: str, new_name: str) -> Workspace:

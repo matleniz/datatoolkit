@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -41,6 +42,7 @@ from dtk_engine.agent.commands import command_schemas
 from dtk_engine.errors import (
     KeyParamsError,
     SourceError,
+    StaleWriteError,
     UnknownKeyError,
     UnknownTransformError,
     message_from_validation_details,
@@ -60,6 +62,7 @@ from dtk_engine.workspace import (
     WorkspaceCorruptError,
     WorkspaceNotFoundError,
 )
+from dtk_engine.workspace.store import WRITE_SEQ_MAX
 
 
 def _cors_origins() -> list[str]:
@@ -331,6 +334,35 @@ def get_workspace_summaries() -> list[dict]:
     return contract.list_workspace_summaries()
 
 
+WRITE_SEQ_HEADER = "X-Dtk-Write-Seq"
+
+
+def _write_seq(request: Request) -> int | None:
+    """The ``X-Dtk-Write-Seq`` header as an int (None when absent); a repeated
+    or malformed value, or one above 2**63-1, is a ``KeyParamsError``.
+
+    Only ``PUT /workspaces/{name}`` is guarded; the other routes that write a
+    workspace (rename, duplicate, delete, step/document edits) bypass it. The
+    table is per process: it assumes a single ``dtk-api``."""
+    values = request.headers.getlist(WRITE_SEQ_HEADER)
+    if not values:
+        return None
+    raw = values[0]
+    # Leading zeros are accepted; the digit count is capped before int(), which
+    # raises ValueError (a 500) on thousands of digits.
+    digits = raw.lstrip("0") or "0"
+    if (
+        len(values) > 1
+        or not re.fullmatch(r"[0-9]+", raw)
+        or len(digits) > 19
+        or int(digits) > WRITE_SEQ_MAX
+    ):
+        raise KeyParamsError(
+            f"{WRITE_SEQ_HEADER}: must be one integer between 0 and {WRITE_SEQ_MAX}"
+        )
+    return int(digits)
+
+
 @workspaces_router.get("/workspaces/{name}")
 def get_one_workspace(name: str) -> dict:
     return contract.get_workspace(name)
@@ -338,8 +370,9 @@ def get_one_workspace(name: str) -> dict:
 
 @workspaces_router.put("/workspaces/{name}", openapi_extra=_json_body("WorkspaceBody"))
 async def put_workspace(name: str, request: Request) -> dict:
+    seq = _write_seq(request)
     body = await _body(request, message="workspace body must be a JSON object")
-    return contract.save_workspace({**body, "name": name})
+    return contract.save_workspace({**body, "name": name}, seq)
 
 
 @workspaces_router.delete("/workspaces/{name}", status_code=204)
@@ -841,6 +874,7 @@ async def delete_agent_attachment(att_id: str, session: str, request: Request):
 _ERROR_STATUS: dict[type[Exception], int] = {
     **dict.fromkeys((UnknownKeyError, UnknownTransformError, WorkspaceNotFoundError), 404),
     **dict.fromkeys((KeyParamsError, SourceError), 422),
+    StaleWriteError: 409,
     WorkspaceCorruptError: 500,
     Exception: 500,
 }
