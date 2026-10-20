@@ -26,6 +26,8 @@ def _numeric(**skews):
 def _alerts(profile=None, numeric=None, n_rows=100, n_dups=0):
     profile = _profile(a={}) if profile is None else profile
     numeric = _numeric() if numeric is None else numeric
+    if "n_missing" not in profile:
+        profile = profile.assign(n_missing=(profile["pct_missing"] * n_rows / 100).round())
     return A.dataset_alerts(profile, numeric, n_rows, n_dups)
 
 
@@ -49,7 +51,7 @@ def test_no_alert_on_clean_input():
     ],
 )
 def test_missing_thresholds(pct, expected):
-    found = _find(_alerts(_profile(a={"pct_missing": pct})), "missing")
+    found = _find(_alerts(_profile(a={"pct_missing": pct}), n_rows=10000), "missing")
     assert [f["severity"] for f in found] == ([expected] if expected else [])
 
 
@@ -71,7 +73,7 @@ def test_constant_column():
 )
 def test_constant_with_missing_is_a_presence_flag(pct, expected):
     prof = _profile(a={"semantic_type": "constant", "n_unique": 1, "pct_missing": pct})
-    found = _find(_alerts(prof), "constant")
+    found = _find(_alerts(prof, n_rows=10000), "constant")
     assert [f["severity"] for f in found] == [expected]
     if expected == "info":
         assert "presence flag" in found[0]["message"]
@@ -201,3 +203,50 @@ def test_single_plain_column_has_no_delimiter_alert():
 
 def test_multi_column_names_with_delimiter_stay_silent():
     assert not _find(_alerts(_profile(**{"a;b": {}, "c|d": {}})), "delimiter")
+
+
+@pytest.mark.parametrize("n_rows", [0, 1])
+def test_tiny_frame_has_no_constant_or_other_misfire(n_rows):
+    profile = _profile(a={"semantic_type": "constant", "n_unique": min(n_rows, 1)})
+    assert _alerts(profile, n_rows=n_rows).empty
+
+
+def test_real_frames_with_zero_and_one_row_raise_no_alert():
+    for df in (pd.DataFrame({"a": [], "b": []}), pd.DataFrame({"a": [1], "b": ["x"]})):
+        res = overview_result(df).model_dump()
+        table = next(t for t in res["tables"] if t["title"] == "alerts")
+        assert table["records"] == []
+
+
+def test_one_row_entirely_missing_is_still_empty():
+    profile = _profile(a={"pct_missing": 100.0, "semantic_type": "constant"})
+    assert [r["check"] for r in _alerts(profile, n_rows=1).to_dict("records")] == ["empty"]
+
+
+def test_almost_empty_column_is_not_empty():
+    profile = _profile(a={"pct_missing": 100.0, "semantic_type": "numeric"})
+    profile["n_missing"] = 99996
+    out = _alerts(profile, n_rows=100000)
+    assert [(r["severity"], r["check"]) for r in out.to_dict("records")] == [
+        ("warning", "missing")
+    ]
+
+
+def test_tiny_missing_share_with_one_value_is_a_presence_flag():
+    profile = _profile(a={"pct_missing": 0.0, "semantic_type": "constant"})
+    profile["n_missing"] = 1
+    out = _alerts(profile, n_rows=100000)
+    assert [(r["severity"], r["check"]) for r in out.to_dict("records")] == [
+        ("info", "constant")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("n_missing", "expected"),
+    [(199, None), (200, "info"), (499, "info"), (500, "warning"), (999, "warning")],
+)
+def test_missing_boundaries_use_exact_share(n_missing, expected):
+    profile = _profile(a={"pct_missing": 0.0})
+    profile["n_missing"] = n_missing
+    found = _find(_alerts(profile, n_rows=1000), "missing")
+    assert [f["severity"] for f in found] == ([expected] if expected else [])

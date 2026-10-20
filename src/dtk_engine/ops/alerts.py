@@ -24,21 +24,30 @@ HIGH_CARDINALITY_UNIQUE = 50
 DUPLICATE_ROWS_WARNING_PCT = 5.0
 # |skewness| of a numeric column from which an info is raised (a modelling hint only).
 SKEW_INFO = 2.0
+# A column cannot be called constant from fewer rows than this.
+MIN_ROWS_CONSTANT = 2
 # Characters whose presence in the only column's name betrays a wrong ``sep``.
 DELIMITER_CHARS = (";", "\t", "|")
 
 
-def _column_issues(profile: pd.DataFrame) -> Iterator[Issue]:
-    """Empty / mostly missing, constant, high-cardinality and id-like columns."""
+def _column_issues(profile: pd.DataFrame, n_rows: int) -> Iterator[Issue]:
+    """Empty / mostly missing, constant, high-cardinality and id-like columns.
+
+    Thresholds compare the exact share ``n_missing / n_rows``; the rounded
+    ``pct_missing`` is only displayed. Below 2 rows nothing is "constant".
+    """
     for r in profile.itertuples(index=False):
-        if r.pct_missing >= 100:
+        pct = 100 * r.n_missing / n_rows if n_rows else 0.0
+        if n_rows and r.n_missing >= n_rows:
             yield "error", "empty", r.column, "column is entirely missing"
             continue
-        if r.pct_missing >= MISSING_INFO_PCT:
-            sev = "warning" if r.pct_missing >= MISSING_WARNING_PCT else "info"
+        if pct >= MISSING_INFO_PCT:
+            sev = "warning" if pct >= MISSING_WARNING_PCT else "info"
             yield sev, "missing", r.column, f"{r.pct_missing}% missing values"
         if r.semantic_type == "constant":
-            if r.pct_missing > 0:
+            if n_rows < MIN_ROWS_CONSTANT:
+                continue
+            if r.n_missing > 0:
                 msg = "one value besides missing: a presence flag"
                 yield "info", "constant", r.column, msg
             else:
@@ -93,7 +102,7 @@ def dataset_alerts(
         dict(zip(ISSUE_FIELDS, issue, strict=True))
         for issue in chain(
             _delimiter_issues(profile),
-            _column_issues(profile),
+            _column_issues(profile, n_rows),
             _duplicate_issues(n_rows, n_dups),
             _skew_issues(numeric),
         )
