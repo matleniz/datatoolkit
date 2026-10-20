@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.base import clone
+from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import Pipeline
@@ -68,6 +69,38 @@ def test_set_output_pandas_and_numpy_input():
     t = DtkTransformer("drop_columns", columns=["x1"]).set_output(transform="pandas")
     out = t.fit_transform(np.zeros((2, 3)))
     assert isinstance(out, pd.DataFrame) and out.columns.tolist() == ["x0", "x2"]
+
+
+def _cat_frame():
+    return pd.DataFrame({"c": ["a", "b", "a", "b"], "n": [1.0, 2.0, 3.0, 4.0]})
+
+
+def test_set_output_pandas_pipeline_names_from_onehot():
+    pipe = Pipeline([("enc", DtkTransformer("onehot", columns=["c"]))])
+    pipe.set_output(transform="pandas")
+    out = pipe.fit_transform(_cat_frame())
+    assert isinstance(out, pd.DataFrame)
+    assert out.columns.tolist() == pipe[-1].get_feature_names_out().tolist()
+    assert out.columns.tolist() != ["c", "n"]  # the op renamed / added columns
+    assert pipe.transform(_cat_frame()).columns.tolist() == out.columns.tolist()
+    assert pipe.get_feature_names_out().tolist() == out.columns.tolist()
+
+
+def test_set_output_pandas_column_transformer_names():
+    df = _cat_frame().assign(n2=[5.0, 6.0, 7.0, 8.0])
+    ct = ColumnTransformer(
+        [
+            ("cat", DtkTransformer("onehot", columns=["c"]), ["c"]),
+            ("keep", DtkTransformer("drop_columns", columns=["n2"]), ["n", "n2"]),
+        ],
+        remainder="drop",
+    ).set_output(transform="pandas")
+    out = ct.fit_transform(df)
+    assert isinstance(out, pd.DataFrame)
+    cat_names = ct.named_transformers_["cat"].get_feature_names_out().tolist()
+    assert out.columns.tolist() == [f"cat__{n}" for n in cat_names] + ["keep__n"]
+    assert ct.get_feature_names_out().tolist() == out.columns.tolist()
+    assert ct.transform(df).columns.tolist() == out.columns.tolist()
 
 
 def test_invalid_params_at_fit():
