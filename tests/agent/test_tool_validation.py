@@ -44,7 +44,8 @@ def calls(monkeypatch):
         def wrap(spec):
             async def handler(args):
                 seen.append(spec.name)
-                return {}
+                # a conforming frame where the tool declares an output schema
+                return {"identity": None, "data": {}} if spec.output_schema else {}
 
             return replace(spec, handler=handler)
 

@@ -24,6 +24,9 @@ DEFAULT_ROWS = 50
 MAX_ROWS = 500
 # Default; env DTK_AGENT_MAX_CHARS overrides. Dense JSON runs ~3 characters per
 # token: 50k stays well under the 25k-token MCP tool output limit of the CLIs.
+# Caveat: a tool with an outputSchema (run_key) sends the payload twice (text
+# block + structuredContent, ~100k chars); a client that counts both against its
+# limit needs a lower DTK_AGENT_MAX_CHARS.
 MAX_RESPONSE_CHARS = 50_000
 PREVIEW_ITEMS = 20  # changed cells / removed rids / state list items, compact preview
 PREVIEW_DETAIL_ITEMS = 200  # same, ``detail: true``

@@ -45,9 +45,19 @@ def _error_body(exc: BaseException) -> dict:
     return {"type": type(exc).__name__, "message": message, "details": details}
 
 
-def _text_result(payload: Any, *, is_error: bool = False) -> types.CallToolResult:
+def _text_result(
+    payload: Any, *, is_error: bool = False, structured: bool = False
+) -> types.CallToolResult:
+    """The JSON text block (kept for clients that ignore ``structuredContent``);
+    ``structured`` adds the same JSON as ``structured_content``. Never set it on
+    an error: the SDK client skips output-schema validation when ``is_error``,
+    and an error body is not the declared shape."""
     text = json.dumps(payload, default=str)
-    return types.CallToolResult(content=[types.TextContent(text=text)], is_error=is_error)
+    return types.CallToolResult(
+        content=[types.TextContent(text=text)],
+        structured_content=json.loads(text) if structured else None,
+        is_error=is_error,
+    )
 
 
 def _tool(spec: ToolSpec) -> types.Tool:
@@ -55,6 +65,7 @@ def _tool(spec: ToolSpec) -> types.Tool:
         name=spec.name,
         description=spec.description,
         input_schema=strict_schema(spec.input_schema),
+        output_schema=spec.output_schema,
         title=spec.meta.title,
         annotations=types.ToolAnnotations(
             title=spec.meta.title,
@@ -94,7 +105,7 @@ def build_server(port: UiPort, audit: policy.AuditLog) -> Server:
             params.name, args, status="ok", identity=framed.get("identity"),
             duration_ms=_ms(started),
         )
-        return _text_result(framed)
+        return _text_result(framed, structured=spec.output_schema is not None)
 
     async def list_resources(ctx: Any, params: Any) -> types.ListResourcesResult:
         resource = types.Resource(
