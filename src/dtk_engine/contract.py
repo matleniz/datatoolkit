@@ -42,6 +42,7 @@ from .workspace import JsonWorkspaceStore, Workspace
 from .workspace import documents as _documents
 from .workspace import inspect as _inspect
 from .workspace.dataset import (
+    check_merge_keys,
     parse_workspace,
     preview,
     workspace_frame,
@@ -318,6 +319,7 @@ def save_workspace(workspace: dict, write_seq: int | None = None) -> dict:
     accepted one for this name (``StaleWriteError``, datatoolkit-issues#263)."""
     store = JsonWorkspaceStore()
     parsed = parse_workspace(_with_stored_counters(store, workspace))
+    check_merge_keys(parsed)
     _check_new_documents(store, parsed)
     store.save(parsed, write_seq)
     return parsed.model_dump(mode="json")

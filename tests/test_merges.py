@@ -454,23 +454,58 @@ def _merge_ws(source_path: str, key: str = "id") -> dict:
     }
 
 
-def test_workspace_validation_refuses_null_merge_keys(tmp_path):
-    from pydantic import ValidationError
-
+def test_workspace_validation_does_not_read_merge_sources(tmp_path, monkeypatch):
     extra = tmp_path / "extra.csv"
     extra.write_text("id,val\n1,a\n,b\n")
-    with pytest.raises(ValidationError, match=r"key 'id' contains 1 null value\(s\)"):
-        Workspace.model_validate(_merge_ws(str(extra)))
+
+    def boom(*a, **k):
+        raise AssertionError("a merge source was opened")
+
+    monkeypatch.setattr("dtk_engine.sources.registry.load", boom)
+    ws = Workspace.model_validate(_merge_ws(str(extra)))
+    assert ws.merges[0].key == "id"
 
 
-def test_workspace_validation_defers_an_unloadable_merge_source(tmp_path):
+def test_save_refuses_null_merge_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
+    extra = tmp_path / "extra.csv"
+    extra.write_text("id,val\n1,a\n,b\n")
+    with pytest.raises(KeyParamsError, match=r"key 'id' contains 1 null value\(s\)"):
+        save_workspace(_merge_ws(str(extra)))
+
+
+def test_save_defers_an_unloadable_merge_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
     missing = tmp_path / "gone.csv"
-    ws = Workspace.model_validate(_merge_ws(str(missing)))
-    assert ws.merges[0].source.path == str(missing)
-    # a loadable source without the key column is not this validator's business either
+    saved = save_workspace(_merge_ws(str(missing)))
+    assert saved["merges"][0]["source"]["path"] == str(missing)
+    # a loadable source without the key column is left to replay as well
     other = tmp_path / "other.csv"
     other.write_text("a,b\n1,2\n")
-    assert Workspace.model_validate(_merge_ws(str(other))).merges[0].key == "id"
+    assert save_workspace(_merge_ws(str(other)))["merges"][0]["key"] == "id"
+
+
+def test_merge_file_edited_in_place_after_save(workspace_files, tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path / "home"))
+    save_workspace(_make_ws(workspace_files))
+    Path(workspace_files["extra"]).write_text(
+        "id,city,tier\n1,Paris,gold\n1,Lyon,silver\n,Nice,x\n"
+    )
+
+    # Reading the stored workspace never opens the merge file.
+    assert get_workspace("demo_ws")["name"] == "demo_ws"
+    from dtk_engine.contract import list_workspaces
+
+    assert [w["name"] for w in list_workspaces()] == ["demo_ws"]
+    assert not any(w.get("corrupt") for w in list_workspaces())
+
+    # Replay gives the precise reason, not 'corrupt'.
+    ws = Workspace.model_validate(_make_ws(workspace_files))
+    with pytest.raises(KeyParamsError, match=r"merge table key 'id' contains 1 null"):
+        workspace_frame(ws, "train")
+    # Saving it again is refused with the same reason.
+    with pytest.raises(KeyParamsError, match="contains 1 null"):
+        save_workspace(_make_ws(workspace_files))
 
 
 def test_groups_that_are_not_a_list_are_left_to_validation():

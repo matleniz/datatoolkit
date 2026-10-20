@@ -297,31 +297,6 @@ class Workspace(_Strict):
             seen.add(c.name)
         return charts
 
-    @field_validator("merges")
-    @classmethod
-    def _validate_merges(cls, merges: list[MergeSpec]) -> list[MergeSpec]:
-        from dtk_engine.errors import SourceError
-        from dtk_engine.sources.registry import load
-
-        for m in merges:
-            try:
-                df = load(m.source)
-            except (SourceError, FileNotFoundError, OSError):
-                df = None
-            if df is not None and m.key in df.columns:
-                null_keys = int(df[m.key].isna().sum())
-                if null_keys:
-                    raise ValueError(
-                        f"merge source key {m.key!r} contains {null_keys} null value(s)"
-                    )
-                dup_mask = df[m.key].duplicated(keep=False)
-                if dup_mask.any():
-                    dups = df.loc[dup_mask, m.key].dropna().unique().tolist()
-                    raise ValueError(
-                        f"merge source key {m.key!r} has duplicated keys: {dups}"
-                    )
-        return merges
-
 
 def fill_step_ids(steps: list[Step]) -> list[Step]:
     """Give each step without an id ``s<position>`` (1-based; ``-2``, ``-3``...

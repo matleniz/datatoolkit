@@ -139,6 +139,23 @@ def _join_on_key(x: pd.DataFrame, y: pd.DataFrame, key: str) -> pd.DataFrame:
     return out
 
 
+def check_merge_key(merge_df: pd.DataFrame, key: str) -> None:
+    """``key`` of ``merge_df`` must hold unique, non-null values (else MergeJoinError
+    naming the null count / the duplicated keys)."""
+    null_keys = int(merge_df[key].isna().sum())
+    if null_keys:
+        raise MergeJoinError(
+            f"merge table key {key!r} contains {null_keys} null value(s)"
+        )
+
+    dup_mask = merge_df[key].duplicated(keep=False)
+    if dup_mask.any():
+        dup_keys = merge_df.loc[dup_mask, key].dropna().unique().tolist()
+        raise MergeJoinError(
+            f"merge table key {key!r} has {len(dup_keys)} duplicated keys: {dup_keys}"
+        )
+
+
 def merge_table(
     x: pd.DataFrame,
     merge_df: pd.DataFrame,
@@ -165,18 +182,7 @@ def merge_table(
             f"merge on key: column {key!r} not in {' and '.join(missing)}"
         )
 
-    null_keys = int(merge_df[key].isna().sum())
-    if null_keys:
-        raise MergeJoinError(
-            f"merge table key {key!r} contains {null_keys} null value(s)"
-        )
-
-    dup_mask = merge_df[key].duplicated(keep=False)
-    if dup_mask.any():
-        dup_keys = merge_df.loc[dup_mask, key].dropna().unique().tolist()
-        raise MergeJoinError(
-            f"merge table key {key!r} has {len(dup_keys)} duplicated keys: {dup_keys}"
-        )
+    check_merge_key(merge_df, key)
 
     if columns is not None:
         missing_cols = [c for c in columns if c not in merge_df.columns]

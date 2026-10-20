@@ -21,7 +21,13 @@ from pydantic import ValidationError
 
 from dtk_engine.cache import LRU, digest, stamps
 from dtk_engine.errors import KeyParamsError, SourceError, key_params_from_validation
-from dtk_engine.ops.join import LabelJoinError, join_labels, label_columns, merge_table
+from dtk_engine.ops.join import (
+    LabelJoinError,
+    check_merge_key,
+    join_labels,
+    label_columns,
+    merge_table,
+)
 from dtk_engine.sources.registry import load, reader
 from dtk_engine.sources.spec import DatasetSource
 from dtk_engine.workspace.models import GroupInvariantError, Step, Workspace
@@ -160,6 +166,24 @@ def parse_workspace(ws: dict) -> Workspace:
         raise workspace_validation_error(exc) from exc
     validate_steps(parsed.steps)
     return parsed
+
+
+def check_merge_keys(ws: Workspace) -> None:
+    """Every merge source must have a unique, non-null key (MergeJoinError, a
+    KeyParamsError, naming the key and the offending values).
+
+    Reads the merge files, so it runs when a workspace is saved, never when one
+    is read from the store: a merge file edited later is caught at replay
+    (``merge_table``). A source that cannot be loaded, or without the key
+    column, is left to replay.
+    """
+    for m in ws.merges:
+        try:
+            df = load(m.source)
+        except (SourceError, OSError):
+            continue
+        if m.key in df.columns:
+            check_merge_key(df, m.key)
 
 
 def preview(ws: dict, role: str, head_rows: int = 5) -> dict:
