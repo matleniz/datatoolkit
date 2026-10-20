@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
+import logging
+import math
 import os
 import re
 import secrets
@@ -77,6 +80,16 @@ def _cors_origins() -> list[str]:
             origins.append(origin)
     return origins
 
+logger = logging.getLogger(__name__)
+
+
+class UploadStoreError(Exception):
+    """The server failed to write an upload (disk full, permissions); the message has no path."""
+
+
+# The temp name ``.<name>.<16 hex>.tmp`` adds 22 bytes; filesystems cap a name at 255.
+_NAME_MAX_BYTES = 255 - 22
+
 
 def _save_upload(name: str, data: bytes, root: Path | None = None) -> Path:
     """Write an uploaded file under ``root`` and return its absolute path.
@@ -88,11 +101,27 @@ def _save_upload(name: str, data: bytes, root: Path | None = None) -> Path:
     base = PurePath(name.replace("\\", "/")).name
     if base in ("", ".", ".."):
         base = "upload"
+    base = _cap_name(base)
     path = (root or upload_dir()) / digest / base
     if not _holds(path, data):
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_atomic(path, data)
     return path.resolve()
+
+
+def _cap_name(base: str) -> str:
+    """Truncate ``base`` to ``_NAME_MAX_BYTES`` UTF-8 bytes, keeping a short extension.
+
+    Deterministic, so the same long name still lands on the same path.
+    """
+    if len(base.encode("utf-8")) <= _NAME_MAX_BYTES:
+        return base
+    stem, dot, ext = base.rpartition(".")
+    ext = dot + ext
+    if not stem or len(ext.encode("utf-8")) > 16:
+        stem, ext = base, ""
+    room = _NAME_MAX_BYTES - len(ext.encode("utf-8"))
+    return stem.encode("utf-8")[:room].decode("utf-8", errors="ignore") + ext
 
 
 def _holds(path: Path, data: bytes) -> bool:
@@ -113,7 +142,8 @@ def _write_atomic(path: Path, data: bytes) -> None:
             fh.write(data)
         os.replace(tmp, path)
     except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+        with contextlib.suppress(OSError):  # a failed cleanup must not mask the real error
+            Path(tmp).unlink(missing_ok=True)
         raise
 
 
@@ -156,10 +186,27 @@ def _int_field(body: dict, name: str, default: int) -> int:
     try:
         return int(value)
     except (TypeError, ValueError, OverflowError):
-        shown = repr(value)
-        if len(shown) > 40:
-            shown = shown[:37] + "..."
-        raise KeyParamsError(f"{name}: must be an integer, got {shown}") from None
+        raise KeyParamsError(f"{name}: must be an integer, got {_shown(value)}") from None
+
+
+def _shown(value: object) -> str:
+    """Bounded ``repr`` of a rejected value, for error messages."""
+    shown = repr(value)
+    return shown if len(shown) <= 40 else shown[:37] + "..."
+
+
+def _timeout_seconds(raw: object) -> float:
+    """``float(raw)`` clamped to ``[0, _MAX_COMMAND_TIMEOUT]``; nan or a non-number is a ``KeyParamsError``.
+
+    ``inf`` is clamped like any large value; ``nan`` would never be a valid deadline.
+    """
+    try:
+        seconds = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        seconds = math.nan
+    if math.isnan(seconds):
+        raise KeyParamsError(f"timeout: must be a number, got {_shown(raw)}")
+    return min(max(seconds, 0.0), _MAX_COMMAND_TIMEOUT)
 
 
 # -- request bodies, for OpenAPI only --
@@ -506,7 +553,11 @@ async def post_align(request: Request) -> dict:
 @uploads_router.put("/uploads/{filename}")
 async def put_upload(filename: str, request: Request) -> dict:
     data = await request.body()
-    path = _save_upload(filename, data)
+    try:
+        path = _save_upload(filename, data)
+    except OSError:  # its message carries the server path: log it here, never answer it
+        logger.exception("could not store upload %r", filename)
+        raise UploadStoreError("could not store the upload") from None
     return {"path": str(path)}
 
 
@@ -686,15 +737,10 @@ async def post_ui_ack(ack: UiAck, request: Request):
 async def post_ui_command(request: Request) -> dict:
     body = await _body(request, "type", message="body must be {type: ..., ...}")
     session = request.query_params.get("session") or body.pop("session", None)
-    try:
-        timeout = float(request.query_params.get("timeout") or body.pop("timeout", 30.0))
-    except (TypeError, ValueError):
-        raise KeyParamsError("timeout must be a number") from None
+    timeout = _timeout_seconds(request.query_params.get("timeout") or body.pop("timeout", 30.0))
     body.pop("timeout", None)
     body.pop("session", None)
-    return await _bridge(request).send_command(
-        body, session=session, timeout=min(max(timeout, 0.0), _MAX_COMMAND_TIMEOUT)
-    )
+    return await _bridge(request).send_command(body, session=session, timeout=timeout)
 
 
 @ui_router.get("/sessions")
@@ -876,6 +922,7 @@ _ERROR_STATUS: dict[type[Exception], int] = {
     **dict.fromkeys((KeyParamsError, SourceError), 422),
     StaleWriteError: 409,
     WorkspaceCorruptError: 500,
+    UploadStoreError: 500,
     Exception: 500,
 }
 

@@ -218,7 +218,13 @@ def _write_text(text: str, path: Path) -> dict:
 
 
 def _check_formats(formats: list[str] | None) -> list[str]:
-    formats = list(formats) if formats is not None else ["parquet"]
+    if formats is None:
+        formats = ["parquet"]
+    elif not isinstance(formats, (list, tuple)) or not all(isinstance(f, str) for f in formats):
+        shown = repr(formats)
+        shown = shown if len(shown) <= 40 else shown[:37] + "..."
+        raise KeyParamsError(f"formats must be a list of {list(FORMATS)}, got {shown}")
+    formats = list(dict.fromkeys(formats))  # duplicates dropped, first-seen order
     unknown = [f for f in formats if f not in FORMATS]
     if unknown or not formats:
         raise KeyParamsError(f"formats must be a non-empty subset of {list(FORMATS)}, got {formats}")
