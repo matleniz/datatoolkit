@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -78,6 +80,8 @@ def _cors_origins() -> list[str]:
             origins.append(origin)
     return origins
 
+logger = logging.getLogger(__name__)
+
 
 class UploadStoreError(Exception):
     """The server failed to write an upload (disk full, permissions); the message has no path."""
@@ -138,7 +142,8 @@ def _write_atomic(path: Path, data: bytes) -> None:
             fh.write(data)
         os.replace(tmp, path)
     except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+        with contextlib.suppress(OSError):  # a failed cleanup must not mask the real error
+            Path(tmp).unlink(missing_ok=True)
         raise
 
 
@@ -550,9 +555,9 @@ async def put_upload(filename: str, request: Request) -> dict:
     data = await request.body()
     try:
         path = _save_upload(filename, data)
-    except OSError as exc:  # an OSError message carries the server path: do not echo it
-        reason = os.strerror(exc.errno) if exc.errno else "I/O error"
-        raise UploadStoreError(f"could not store the upload: {reason}") from None
+    except OSError:  # its message carries the server path: log it here, never answer it
+        logger.exception("could not store upload %r", filename)
+        raise UploadStoreError("could not store the upload") from None
     return {"path": str(path)}
 
 

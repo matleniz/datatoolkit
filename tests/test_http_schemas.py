@@ -9,6 +9,7 @@ only asserted to fail (status >= 400), the exact error is not part of the promis
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -413,14 +414,48 @@ def test_upload_dotdot_name_falls_back_to_upload(tmp_path):
     assert http._save_upload("", b"x", tmp_path).name == "upload"
 
 
-def test_upload_os_error_never_leaks_the_server_path(client, monkeypatch):
+def _no_leak(r):
+    assert r.status_code == 500, r.text
+    assert r.json() == {"type": "UploadStoreError", "message": "could not store the upload"}
+    for secret in ("/secret", "errno", "notes.txt", "No space"):
+        assert secret not in r.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [OSError(errno.ENOSPC, "No space left", "/secret/path/x"), PermissionError(13, "denied", "/secret/path/x")],
+    ids=["ENOSPC", "PermissionError"],
+)
+def test_upload_write_failure_is_a_generic_500_without_path(client, monkeypatch, tmp_path, error):
     def boom(path, data):
-        raise OSError(28, "No space left on device", str(path))
+        raise error
 
     monkeypatch.setattr("dtk_engine.http._write_atomic", boom)
-    r = client.put("/api/uploads/notes.txt", content=b"abc")
-    assert r.status_code == 500, r.text
-    assert r.json() == {
-        "type": "UploadStoreError", "message": "could not store the upload: No space left on device",
-    }
-    assert "/" not in r.text
+    _no_leak(client.put("/api/uploads/notes.txt", content=b"abc"))
+
+
+@pytest.mark.parametrize("stage", ["replace", "replace+unlink", "mkdir"])
+def test_upload_failure_inside_the_write_leaves_no_temp_and_no_path(client, monkeypatch, tmp_path, stage):
+    def fail(*args, **kwargs):
+        raise OSError(errno.EIO, "I/O error", "/secret/path/x")
+
+    if stage == "mkdir":
+        monkeypatch.setattr(Path, "mkdir", fail)
+    else:
+        monkeypatch.setattr("dtk_engine.http.os.replace", fail)
+    if stage == "replace+unlink":  # the cleanup itself fails too: still the generic error
+        monkeypatch.setattr(Path, "unlink", fail)
+    _no_leak(client.put("/api/uploads/notes.txt", content=b"abc"))
+    if stage == "replace":
+        assert [p for p in (tmp_path / "uploads").rglob("*") if p.is_file()] == []
+
+
+def test_upload_rewrite_of_a_corrupt_file_failing_is_a_generic_500(client, monkeypatch, tmp_path):
+    first = client.put("/api/uploads/notes.txt", content=b"abc")
+    Path(first.json()["path"]).write_bytes(b"xyz")  # same size, other bytes: will be rewritten
+
+    def fail(*args, **kwargs):
+        raise PermissionError(13, "denied", "/secret/path/x")
+
+    monkeypatch.setattr("dtk_engine.http.os.replace", fail)
+    _no_leak(client.put("/api/uploads/notes.txt", content=b"abc"))
