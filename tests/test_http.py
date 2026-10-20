@@ -652,3 +652,55 @@ def test_duplicate_csv_header_422(client, tmp_path):
     body = r.json()
     assert body["type"] == "SourceError"
     assert "duplicate column names ['a']" in body["message"] and "rename" in body["message"]
+
+
+def test_upload_under_cap_ok(client, monkeypatch):
+    monkeypatch.setenv("DTK_MAX_UPLOAD_MB", "1")
+    r = client.put("/api/uploads/small.csv", content=b"a\n1\n")
+    assert r.status_code == 200
+
+
+def test_upload_exact_cap_ok_and_one_over_413(client, home, monkeypatch):
+    monkeypatch.setenv("DTK_MAX_UPLOAD_MB", "1")
+    assert client.put("/api/uploads/exact.bin", content=b"x" * 2**20).status_code == 200
+    r = client.put("/api/uploads/over.bin", content=b"y" * (2**20 + 1))
+    assert r.status_code == 413
+    assert r.json()["type"] == "UploadTooLargeError"
+    assert "1 MiB" in r.json()["message"]
+    assert "DTK_MAX_UPLOAD_MB" in r.json()["message"]
+    assert not list((home / "uploads").rglob("over.bin*"))
+
+
+def test_upload_over_cap_streamed_without_content_length(client, home, monkeypatch):
+    monkeypatch.setenv("DTK_MAX_UPLOAD_MB", "1")
+
+    def body():
+        for _ in range(3):
+            yield b"z" * 2**19
+
+    r = client.put("/api/uploads/chunked.bin", content=body())
+    assert r.status_code == 413
+    assert not (home / "uploads").exists() or not list((home / "uploads").rglob("*.bin*"))
+
+
+def test_upload_default_cap_is_512_mib(client, monkeypatch):
+    monkeypatch.delenv("DTK_MAX_UPLOAD_MB", raising=False)
+    r = client.put("/api/uploads/big.bin", headers={"content-length": str(513 * 2**20)}, content=b"")
+    assert r.status_code == 413
+    assert "512 MiB" in r.json()["message"]
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-5", "nan", "inf"])
+def test_upload_bad_cap_env_is_a_clear_error(client, monkeypatch, bad):
+    monkeypatch.setenv("DTK_MAX_UPLOAD_MB", bad)
+    r = client.put("/api/uploads/a.csv", content=b"a\n")
+    assert r.status_code == 500
+    assert "DTK_MAX_UPLOAD_MB" in r.json()["message"]
+
+
+def test_bad_cap_env_fails_at_startup(home, monkeypatch):
+    from dtk_engine.http import UploadConfigError
+
+    monkeypatch.setenv("DTK_MAX_UPLOAD_MB", "abc")
+    with pytest.raises(UploadConfigError, match="DTK_MAX_UPLOAD_MB"):
+        create_app()

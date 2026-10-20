@@ -87,6 +87,55 @@ class UploadStoreError(Exception):
     """The server failed to write an upload (disk full, permissions); the message has no path."""
 
 
+class UploadTooLargeError(Exception):
+    """The upload body is over the cap; the message names the limit and the variable."""
+
+
+class UploadConfigError(Exception):
+    """``DTK_MAX_UPLOAD_MB`` is not a positive number."""
+
+
+_MAX_UPLOAD_ENV = "DTK_MAX_UPLOAD_MB"
+_DEFAULT_MAX_UPLOAD_MB = 512
+
+
+def _max_upload_mb() -> float:
+    """The upload cap in MiB from ``DTK_MAX_UPLOAD_MB`` (default 512); bad values raise."""
+    raw = os.environ.get(_MAX_UPLOAD_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_MAX_UPLOAD_MB
+    try:
+        mb = float(raw)
+    except ValueError:
+        mb = math.nan
+    if not math.isfinite(mb) or mb <= 0:
+        raise UploadConfigError(f"{_MAX_UPLOAD_ENV} must be a positive number of MiB, got {raw!r}")
+    return mb
+
+
+def _too_large(mb: float) -> UploadTooLargeError:
+    return UploadTooLargeError(
+        f"upload is over the {mb:g} MiB limit; raise it with the {_MAX_UPLOAD_ENV} variable"
+    )
+
+
+async def _read_capped(request: Request) -> bytes:
+    """Read the body, refusing early on ``Content-Length`` and on the real size."""
+    mb = _max_upload_mb()
+    limit = int(mb * 1024 * 1024)
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise _too_large(mb)
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise _too_large(mb)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 # The temp name ``.<name>.<16 hex>.tmp`` adds 22 bytes; filesystems cap a name at 255.
 _NAME_MAX_BYTES = 255 - 22
 
@@ -552,7 +601,7 @@ async def post_align(request: Request) -> dict:
 
 @uploads_router.put("/uploads/{filename}")
 async def put_upload(filename: str, request: Request) -> dict:
-    data = await request.body()
+    data = await _read_capped(request)
     try:
         path = _save_upload(filename, data)
     except OSError:  # its message carries the server path: log it here, never answer it
@@ -921,6 +970,8 @@ _ERROR_STATUS: dict[type[Exception], int] = {
     StaleWriteError: 409,
     WorkspaceCorruptError: 500,  # same as the fallback; documents HTTP-API.md's explicit mention
     UploadStoreError: 500,
+    UploadConfigError: 500,
+    UploadTooLargeError: 413,
     Exception: 500,
 }
 
@@ -937,6 +988,7 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
     per-run token the Studio launcher hands to the front).
     """
 
+    _max_upload_mb()  # a bad DTK_MAX_UPLOAD_MB fails at startup, not on the first upload
     bridge = UiBridge()
     try:  # the optional extra ``agent`` adds ``/mcp`` and the chat hub; without it, neither
         from dtk_engine.agent.packs.chat_packs import hub_from_env
