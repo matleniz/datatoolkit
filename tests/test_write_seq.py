@@ -77,7 +77,7 @@ def test_no_header_never_creates_seq(client):
     assert _put(client, 3, note="b").status_code == 200
 
 
-@pytest.mark.parametrize("value", ["abc", "-1", "", "1.5", "+5", " 5", "5_0", str(2**63), "٥"])
+@pytest.mark.parametrize("value", ["abc", "-1", "", "1.5", "+5", " 5", "5_0", str(2**63), "٥", "1" * 5000])
 def test_invalid_header_422(client, value):
     r = client.put(
         "/api/workspaces/w", json=_workspace("w"), headers={H: value.encode("utf-8")}

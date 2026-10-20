@@ -339,11 +339,17 @@ WRITE_SEQ_HEADER = "X-Dtk-Write-Seq"
 
 def _write_seq(request: Request) -> int | None:
     """The ``X-Dtk-Write-Seq`` header as an int (None when absent); a repeated
-    or malformed value, or one above 2**63-1, is a ``KeyParamsError``."""
+    or malformed value, or one above 2**63-1, is a ``KeyParamsError``.
+
+    Only ``PUT /workspaces/{name}`` is guarded; the other routes that write a
+    workspace (rename, duplicate, delete, step/document edits) bypass it. The
+    table is per process: it assumes a single ``dtk-api``."""
     values = request.headers.getlist(WRITE_SEQ_HEADER)
     if not values:
         return None
-    if len(values) > 1 or not re.fullmatch(r"[0-9]+", values[0]) or int(values[0]) > WRITE_SEQ_MAX:
+    raw = values[0]
+    # Length first: int() on thousands of digits raises ValueError (a 500).
+    if len(values) > 1 or not re.fullmatch(r"[0-9]{1,19}", raw) or int(raw) > WRITE_SEQ_MAX:
         raise KeyParamsError(
             f"{WRITE_SEQ_HEADER}: must be one integer between 0 and {WRITE_SEQ_MAX}"
         )
