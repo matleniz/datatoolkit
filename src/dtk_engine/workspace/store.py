@@ -133,10 +133,15 @@ class JsonWorkspaceStore:
         """Validated path for ``name`` (for mtime / existence checks)."""
         return self._path(name)
 
-    def get(self, name: str) -> Workspace:
-        path = self._path(name)
+    def read_raw(self, name: str) -> dict:
+        """The stored JSON object of ``name`` (UTF-8, BOM tolerated), not
+        validated as a Workspace. Missing -> WorkspaceNotFoundError; invalid
+        UTF-8, invalid JSON or a non-object -> WorkspaceCorruptError."""
+        return self._read(name)[0]
+
+    def _read(self, name: str) -> tuple[dict, str]:
         try:
-            raw = path.read_text(encoding="utf-8-sig")
+            text = self._path(name).read_bytes().decode("utf-8-sig")
         except FileNotFoundError:
             raise WorkspaceNotFoundError(name) from None
         except UnicodeDecodeError:
@@ -144,9 +149,21 @@ class JsonWorkspaceStore:
                 f"workspace {name!r} is corrupt: its file is not valid UTF-8"
             ) from None
         try:
-            return Workspace.model_validate_json(raw)
+            data = json.loads(text)
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            raise WorkspaceCorruptError(
+                f"workspace {name!r} is corrupt: its file is not a valid workspace"
+            )
+        return data, text
+
+    def get(self, name: str) -> Workspace:
+        data, text = self._read(name)
+        try:
+            return Workspace.model_validate(data)
         except ValidationError:
-            raise WorkspaceCorruptError(_corrupt_message(name, raw)) from None
+            raise WorkspaceCorruptError(_corrupt_message(name, text)) from None
 
     def _save_unlocked(self, workspace: Workspace) -> None:
         path = self._path(workspace.name)

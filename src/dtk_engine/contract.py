@@ -16,7 +16,6 @@ Contract surface (fronts call these; inputs/outputs are plain JSON)::
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path, PurePath
 from typing import NoReturn, get_args
@@ -29,6 +28,7 @@ from .errors import (
     KeyParamsError,
     SourceError,
     UnknownTransformError,
+    key_params_from_validation,
     message_from_validation_details,
     valid_names_hint,
     validation_error_details,
@@ -41,7 +41,13 @@ from .transform_registry import get_transform, transform_catalog
 from .workspace import JsonWorkspaceStore, Workspace
 from .workspace import documents as _documents
 from .workspace import inspect as _inspect
-from .workspace.dataset import parse_workspace, preview, workspace_frame, workspace_key
+from .workspace.dataset import (
+    parse_workspace,
+    preview,
+    workspace_frame,
+    workspace_key,
+    workspace_validation_error,
+)
 from .workspace.documents import (  # noqa: F401  (the upload-dir guard, for http and agent)
     NotAnUploadError,
     detect_kind,
@@ -174,7 +180,7 @@ def _raise_params_error(
         raise KeyParamsError(
             message_from_validation_details(details), details=details
         ) from exc
-    raise KeyParamsError(str(exc)) from exc
+    raise key_params_from_validation(exc) from exc
 
 
 def run_key(key_id: str, params: dict) -> dict:
@@ -277,16 +283,12 @@ _MEMORY = TypeAdapter(list[MemoryEntry])
 def _stored_field(name: str, field: str, adapter: TypeAdapter, fill) -> list[dict]:
     """One list field of the stored workspace (ids filled), without validating
     the rest or loading its sources: the cheap reads behind the agent."""
-    path = JsonWorkspaceStore().path_of(name)
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8-sig"))
-    except FileNotFoundError:
-        raise WorkspaceNotFoundError(name) from None
-    except UnicodeDecodeError:
-        raise WorkspaceCorruptError(f"workspace {name!r} is corrupt: its file is not valid UTF-8") from None
+    raw = JsonWorkspaceStore().read_raw(name)
     try:
         items = fill(adapter.validate_python(raw.get(field) or []))
-    except (ValidationError, ValueError) as exc:
+    except ValidationError as exc:
+        raise key_params_from_validation(exc, prefix=f"invalid {field} in workspace {name!r}: ") from exc
+    except ValueError as exc:
         raise KeyParamsError(f"invalid {field} in workspace {name!r}: {exc}") from exc
     return [item.model_dump(mode="json") for item in items]
 
@@ -450,7 +452,7 @@ def _validated(data: dict) -> Workspace:
     try:
         return Workspace.model_validate(data)
     except ValidationError as exc:
-        raise KeyParamsError(str(exc)) from exc
+        raise workspace_validation_error(exc) from exc
 
 
 def _document(workspace: str, doc_id: str) -> dict:

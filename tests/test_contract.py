@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from dtk_engine import (
+    api,
     contract,
     delete_workspace,
     get_workspace,
@@ -508,3 +509,69 @@ def test_cheap_workspace_reads_non_utf8_file_is_corrupt(tmp_path, monkeypatch):
     (tmp_path / "workspaces" / "bad.json").write_bytes(b"caf\xe9")
     with pytest.raises(WorkspaceCorruptError, match="not valid UTF-8"):
         contract.workspace_steps("bad")
+
+
+_BAD_RAW = [b'{"name": "bad", "steps": [', b"[1,2]"]
+
+
+@pytest.mark.parametrize("raw", _BAD_RAW)
+@pytest.mark.parametrize("reader", ["workspace_steps", "workspace_memory", "list_documents", "get_workspace"])
+def test_workspace_readers_truncated_or_non_object_file_is_corrupt(tmp_path, monkeypatch, raw, reader):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    (tmp_path / "workspaces").mkdir()
+    (tmp_path / "workspaces" / "bad.json").write_bytes(raw)
+    with pytest.raises(WorkspaceCorruptError, match="'bad' is corrupt") as info:
+        getattr(contract, reader)("bad")
+    assert str(tmp_path) not in str(info.value)
+
+
+def test_cheap_workspace_reads_accept_a_bom_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    (tmp_path / "workspaces").mkdir()
+    (tmp_path / "workspaces" / "ok.json").write_bytes(b'\xef\xbb\xbf{"name": "ok", "steps": []}')
+    assert contract.workspace_steps("ok") == []
+
+
+def _assert_concise(exc):
+    assert "errors.pydantic.dev" not in str(exc.value)
+    assert "validation error" not in str(exc.value)
+    assert exc.value.details and {"loc", "msg", "type"} <= set(exc.value.details[0])
+
+
+def test_validation_errors_are_concise_with_details(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    with pytest.raises(KeyParamsError) as exc:
+        contract.save_workspace({"name": "x", "datasets": {}})
+    _assert_concise(exc)
+    with pytest.raises(KeyParamsError) as exc:
+        contract._validated({"name": "x", "datasets": {}})
+    _assert_concise(exc)
+    with pytest.raises(KeyParamsError) as exc:
+        api.workspace_frames({"datasets": {}})
+    _assert_concise(exc)
+    with pytest.raises(KeyParamsError) as exc:
+        api.load({"kind": "csv"})
+    _assert_concise(exc)
+
+
+def test_stored_steps_invalid_are_concise(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    (tmp_path / "workspaces").mkdir()
+    (tmp_path / "workspaces" / "w.json").write_text('{"name": "w", "steps": [{"op": 3}]}')
+    with pytest.raises(KeyParamsError) as exc:
+        contract.workspace_steps("w")
+    _assert_concise(exc)
+
+
+def test_group_invariant_keeps_detail_and_message(tmp_path, monkeypatch):
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    ws = {
+        "name": "g",
+        "datasets": {"train": {"x": {"kind": "csv", "path": TRAIN_CSV}}},
+        "groups": [{"id": "g1", "name": "a", "step_ids": ["nope"]}],
+    }
+    with pytest.raises(KeyParamsError) as exc:
+        contract.save_workspace(ws)
+    assert exc.value.detail == {"rule": "unknown_step", "group_id": "g1", "step_id": "nope"}
+    assert "group 'g1' names unknown step id 'nope'" in str(exc.value)
+    assert "errors.pydantic.dev" not in str(exc.value)
