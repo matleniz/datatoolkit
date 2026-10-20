@@ -388,16 +388,28 @@ def duplicate_workspace(name: str, new_name: str) -> dict:
 def export_workspace(
     name: str, out_dir: str, overwrite: bool = False, formats: list[str] | None = None
 ) -> dict:
-    """Write ``out_dir/processed/{train,test}.parquet`` + ``out_dir/manifest.json``
-    (sources hashed, steps with fitted states, versions); returns the manifest.
-    ``formats`` (default ``["parquet"]``) adds / picks ``csv``
-    (``processed/*.csv``), ``ipynb`` and ``py`` (``code/pipeline.*``, a replay
-    of the steps through the notebook door, notes as markdown / comments).
+    """Export the processed train / test and a manifest into ``out_dir``; returns the
+    manifest.
+
+    Writes ``processed/{train,test}.parquet`` (``test`` only when the workspace has
+    one), ``states/`` side files for big fitted states, and ``manifest.json``
+    (sources hashed, steps with fitted states, versions). ``formats`` (default
+    ``["parquet"]``) adds / picks ``csv`` (``processed/*.csv``), ``ipynb`` and
+    ``py`` (``code/pipeline.*``, a replay of the steps through the notebook door,
+    notes as markdown / comments).
+
+    Transactional: everything is built in a staging directory inside ``out_dir``,
+    then swapped in (manifest last). A failure leaves ``out_dir`` as it was; with
+    ``overwrite`` only the files the previous export listed are replaced (foreign
+    files are never touched) and are put back if the swap fails
+    (``ExportRestoreError`` when even that restore fails; the previous export is
+    then kept in an ``.export-old-*`` directory).
 
     Unknown workspace -> WorkspaceNotFoundError; an existing export without
-    ``overwrite`` or an output path that is a raw input -> KeyParamsError; a
-    source or a step failing on the data -> SourceError; an unknown step op ->
-    UnknownTransformError, invalid step params -> KeyParamsError.
+    ``overwrite``, an unreadable / foreign / malformed previous manifest, or an
+    output path that is a raw input -> KeyParamsError; a source or a step failing
+    on the data -> SourceError; an unknown step op -> UnknownTransformError,
+    invalid step params -> KeyParamsError.
     """
     return _export(name, out_dir, overwrite=overwrite, formats=formats)
 

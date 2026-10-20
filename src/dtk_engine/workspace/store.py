@@ -66,7 +66,7 @@ class WorkspaceStore(Protocol):
 
     def get(self, name: str) -> Workspace: ...
 
-    def save(self, workspace: Workspace) -> None: ...
+    def save(self, workspace: Workspace, write_seq: int | None = None) -> None: ...
 
     def delete(self, name: str) -> None: ...
 
@@ -101,9 +101,13 @@ def _corrupt_message(name: str, raw: str) -> str:
 class JsonWorkspaceStore:
     """One ``<name>.json`` per workspace under ``root``.
 
-    Mutations (save / delete / rename / duplicate) take an exclusive lock on
-    ``root/.lock`` (``flock``; ``msvcrt.locking`` on Windows) so a concurrent PUT cannot race a rename or delete and lose
-    an update (MAT-171). Reads stay lock-free: writes are atomic (tmp + replace).
+    Mutations (save / update / delete / rename / duplicate) take an exclusive
+    lock on ``root/.lock`` (``flock``; ``msvcrt.locking`` on Windows) so a
+    concurrent PUT cannot race a rename or delete and lose an update (MAT-171).
+    ``save(workspace, write_seq)`` also rejects a stale sequence number
+    (``StaleWriteError``) inside that lock; ``update(name, change)`` is an
+    atomic read-modify-write. Reads stay lock-free: writes are atomic (tmp +
+    replace).
     """
 
     def __init__(self, root: str | Path | None = None) -> None:
@@ -152,6 +156,10 @@ class JsonWorkspaceStore:
             data = json.loads(text)
         except ValueError:
             data = None
+        except (RecursionError, MemoryError):  # hostile / damaged deep nesting
+            raise WorkspaceCorruptError(
+                f"workspace {name!r} is corrupt: its file is not a valid workspace"
+            ) from None
         if not isinstance(data, dict):
             raise WorkspaceCorruptError(
                 f"workspace {name!r} is corrupt: its file is not a valid workspace"

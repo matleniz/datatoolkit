@@ -333,3 +333,55 @@ def test_store_bom_in_the_middle_is_corrupt(tmp_path):
     (tmp_path / "demo.json").write_bytes(b'{"name": ' + BOM + b'"demo"}')
     with pytest.raises(WorkspaceCorruptError):
         store.get("demo")
+
+
+def test_duplicate_with_invalid_new_name_changes_nothing(tmp_path):
+    store = JsonWorkspaceStore(tmp_path)
+    store.save(_ws("src"))
+    for bad in ("../evil", "has space", ""):
+        with pytest.raises(KeyParamsError, match="invalid workspace name"):
+            store.duplicate("src", bad)
+    assert store.list() == ["src"]
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name != ".lock") == ["src.json"]
+
+
+def test_deeply_nested_file_is_corrupt_not_a_crash(tmp_path):
+    store = JsonWorkspaceStore(tmp_path)
+    store.save(_ws("good"))
+    # Raw bytes, never parsed by the test itself.
+    (tmp_path / "deep.json").write_bytes(b"[" * 100_000)
+    with pytest.raises(WorkspaceCorruptError, match="'deep' is corrupt") as exc:
+        store.get("deep")
+    assert str(tmp_path) not in str(exc.value)
+    with pytest.raises(WorkspaceCorruptError):
+        store.read_raw("deep")
+    assert store.get("good").name == "good"
+
+
+def test_deeply_nested_file_is_a_corrupt_row_in_the_listing(tmp_path, monkeypatch):
+    from dtk_engine import contract
+
+    monkeypatch.setenv("DTK_HOME", str(tmp_path))
+    store = JsonWorkspaceStore()
+    store.save(_ws("good"))
+    (store.root / "deep.json").write_bytes(b"[" * 100_000)
+    for listing in (contract.list_workspaces(), contract.list_workspace_summaries()):
+        rows = {row["name"]: row for row in listing}
+        assert set(rows) == {"deep", "good"}
+        assert rows["deep"]["corrupt"] is True
+        assert str(tmp_path) not in rows["deep"]["error"]
+        assert not rows["good"].get("corrupt")
+
+
+def test_memory_error_while_parsing_is_corrupt(tmp_path, monkeypatch):
+    from dtk_engine.workspace import store as store_mod
+
+    store = JsonWorkspaceStore(tmp_path)
+    (tmp_path / "big.json").write_text("{}")
+
+    def boom(_text):
+        raise MemoryError
+
+    monkeypatch.setattr(store_mod.json, "loads", boom)
+    with pytest.raises(WorkspaceCorruptError, match="'big' is corrupt"):
+        store.get("big")
