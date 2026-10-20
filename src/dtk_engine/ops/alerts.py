@@ -22,9 +22,8 @@ MISSING_WARNING_PCT = 50.0
 HIGH_CARDINALITY_UNIQUE = 50
 # Share of duplicated rows (%): any duplicate is an info, a warning from this share.
 DUPLICATE_ROWS_WARNING_PCT = 5.0
-# |skewness| of a numeric column: an info from SKEW_INFO, a warning from SKEW_WARNING.
+# |skewness| of a numeric column from which an info is raised (a modelling hint only).
 SKEW_INFO = 2.0
-SKEW_WARNING = 3.0
 
 
 def _column_issues(profile: pd.DataFrame) -> Iterator[Issue]:
@@ -37,8 +36,12 @@ def _column_issues(profile: pd.DataFrame) -> Iterator[Issue]:
             sev = "warning" if r.pct_missing >= MISSING_WARNING_PCT else "info"
             yield sev, "missing", r.column, f"{r.pct_missing}% missing values"
         if r.semantic_type == "constant":
-            msg = "single distinct value: carries no information"
-            yield "warning", "constant", r.column, msg
+            if r.pct_missing > 0:
+                msg = "one value besides missing: a presence flag"
+                yield "info", "constant", r.column, msg
+            else:
+                msg = "single distinct value: carries no information"
+                yield "warning", "constant", r.column, msg
         elif r.semantic_type == "id_like":
             msg = "looks like an identifier (almost all values distinct)"
             yield "info", "id_like", r.column, msg
@@ -57,11 +60,10 @@ def _duplicate_issues(n_rows: int, n_dups: int) -> Iterator[Issue]:
 
 
 def _skew_issues(numeric: pd.DataFrame) -> Iterator[Issue]:
-    """Strongly skewed numeric columns: info, warning from SKEW_WARNING."""
+    """Strongly skewed numeric columns: info from SKEW_INFO."""
     for r in numeric.itertuples(index=False):
         if pd.notna(r.skew) and abs(r.skew) >= SKEW_INFO:
-            sev = "warning" if abs(r.skew) >= SKEW_WARNING else "info"
-            yield sev, "skew", r.column, f"strongly skewed (skewness {r.skew:+.2f})"
+            yield "info", "skew", r.column, f"strongly skewed (skewness {r.skew:+.2f})"
 
 
 def dataset_alerts(
