@@ -133,3 +133,15 @@ def key_params_from_validation(
     if prefix:
         message = f"{prefix}{message}"
     return KeyParamsError(message, details=details, detail=detail)
+
+
+MAX_LISTED_COLUMNS = 10
+
+
+def duplicate_columns_message(names: list, where: str) -> str:
+    """``"duplicate column names ['a'] in <where> (rename them ...)"``, shared by
+    the csv reader (refuses at read time) and the parquet export."""
+    names = list(dict.fromkeys(names))
+    shown = names[:MAX_LISTED_COLUMNS]
+    more = f" (and {len(names) - len(shown)} more)" if len(names) > len(shown) else ""
+    return f"duplicate column names {shown}{more} in {where} (rename them to be unique)"

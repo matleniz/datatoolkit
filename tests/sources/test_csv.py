@@ -244,3 +244,57 @@ def test_store_b_title_line_does_not_decide_delimiter():
     assert df.shape == (3, 4)
     assert list(df.columns) == ["id", "product", "price", "qty"]
     assert df["price"].tolist() == [1.5, 0.95, 3.2]
+
+
+def test_duplicate_header_refused_at_read(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("a,b,a,b,c\n1,2,3,4,5\n")
+    with pytest.raises(SourceError) as err:
+        load(CsvSource(path=str(path)))
+    msg = str(err.value)
+    assert "duplicate column names ['a', 'b']" in msg and "rename" in msg
+
+
+def test_duplicate_header_message_is_not_double_prefixed(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("a,a,b\n1,2,3\n")
+    with pytest.raises(SourceError) as err:
+        load(CsvSource(path=str(path)))
+    assert str(err.value) == (
+        f"cannot read csv {path}: duplicate column names ['a'] in {path} "
+        "(rename them to be unique)"
+    )
+
+
+def test_duplicate_header_none_is_accepted(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("x,x\n1,2\n")
+    assert load(CsvSource(path=str(path), header=None)).shape == (2, 2)
+
+
+def test_duplicate_header_below_a_title_line(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("title\nx,x\n1,2\n")
+    with pytest.raises(SourceError, match=r"duplicate column names \['x'\]"):
+        load(CsvSource(path=str(path), skiprows=1))
+
+
+def test_duplicates_outside_usecols_are_accepted(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("a,a,b\n1,2,3\n")
+    assert list(load(CsvSource(path=str(path), usecols=["b"])).columns) == ["b"]
+
+
+def test_empty_header_cells_are_not_duplicates(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("a,,\n1,2,3\n")
+    assert load(CsvSource(path=str(path))).shape == (1, 3)
+
+
+def test_duplicate_message_shared_with_export():
+    from dtk_engine.errors import duplicate_columns_message
+
+    assert duplicate_columns_message(["a", "a", "b"], "t") == (
+        "duplicate column names ['a', 'b'] in t (rename them to be unique)"
+    )
+    assert "(and 5 more)" in duplicate_columns_message([str(i) for i in range(15)], "t")

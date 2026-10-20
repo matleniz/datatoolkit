@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from dtk_engine.errors import SourceError
+from dtk_engine.errors import SourceError, duplicate_columns_message
 from dtk_engine.sources.registry import reader
 from dtk_engine.sources.spec import CsvSource
 
@@ -428,6 +428,7 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
             "usecols": spec.usecols,
             "on_bad_lines": spec.on_bad_lines,
         }
+        _refuse_duplicate_header(text, spec, options)
         df = pd.read_csv(
             io.StringIO(text), dtype=spec.dtype, parse_dates=spec.parse_dates, **options
         )
@@ -446,6 +447,27 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
     # LookupError = unknown encoding; csv.Error = sniffing failed (sep="auto").
     except (OSError, ValueError, LookupError, csv.Error) as exc:
         raise SourceError(f"cannot read csv {spec.path}: {exc}") from exc
+
+
+def _refuse_duplicate_header(text: str, spec: CsvSource, options: dict) -> None:
+    """pandas renames repeated headers (``a``, ``a.1``): look at the raw header."""
+    if spec.header is None:
+        return
+    head = pd.read_csv(
+        io.StringIO(text),
+        dtype=str,
+        nrows=spec.header + 1,
+        **(options | {"header": None, "usecols": None, "on_bad_lines": "skip"}),
+    )
+    if len(head) <= spec.header:
+        return
+    names = [str(n) for n in head.iloc[spec.header].dropna()]
+    if spec.usecols:  # duplicates that are never loaded are harmless
+        names = [n for n in names if n in spec.usecols]
+    dups = [n for n in names if names.count(n) > 1]
+    if dups:
+        # read_csv's outer handler adds the "cannot read csv <path>: " prefix.
+        raise SourceError(duplicate_columns_message(dups, spec.path))
 
 
 def is_leading_zero_column(values: pd.Series) -> bool:
