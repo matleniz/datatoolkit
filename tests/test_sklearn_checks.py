@@ -73,12 +73,19 @@ def test_workspace_replay_frames_unchanged(tmp_path, monkeypatch):
 
 
 def test_pickle_from_before_params_property_loads():
+    """Main's layout kept ``params`` in the instance __dict__ (set in __init__)."""
     import pickle
 
-    t = DtkTransformer("drop_columns", columns=["a"])
-    state = {**t.__getstate__(), "params": t.__getstate__()["_params"]}
-    del state["_params"]  # the old layout
+    from sklearn.base import clone
+
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [4.0, 3.0, 2.0, 1.0]})
+    fresh = DtkTransformer("scale", columns=["a"]).fit(df)
+    old_state = {k: v for k, v in fresh.__getstate__().items() if k != "_params"}
+    old_state["params"] = {"columns": ["a"]}  # main's layout
     old = DtkTransformer.__new__(DtkTransformer)
-    old.__setstate__(state)
-    assert old.params == {"columns": ["a"]}
-    assert pickle.loads(pickle.dumps(old)).params == {"columns": ["a"]}
+    old.__setstate__(old_state)
+    pd.testing.assert_frame_equal(old.transform(df), fresh.transform(df))
+    # the new layout round-trips through pickle and clone as before
+    again = pickle.loads(pickle.dumps(fresh))
+    pd.testing.assert_frame_equal(again.transform(df), fresh.transform(df))
+    assert clone(fresh).get_params() == fresh.get_params()
