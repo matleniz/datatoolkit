@@ -20,6 +20,7 @@ from starlette.applications import Starlette
 from dtk_engine.agent import policy
 from dtk_engine.agent.ports import LocalUiPort, UiPort
 from dtk_engine.agent.tools import ToolSpec, build_tools
+from dtk_engine.agent.validate import check_arguments, make_validator, strict_schema
 from dtk_engine.errors import (
     KeyParamsError,
     message_from_validation_details,
@@ -53,7 +54,7 @@ def _tool(spec: ToolSpec) -> types.Tool:
     return types.Tool(
         name=spec.name,
         description=spec.description,
-        input_schema=spec.input_schema,
+        input_schema=strict_schema(spec.input_schema),
         title=spec.meta.title,
         annotations=types.ToolAnnotations(
             title=spec.meta.title,
@@ -68,6 +69,7 @@ def _tool(spec: ToolSpec) -> types.Tool:
 def build_server(port: UiPort, audit: policy.AuditLog) -> Server:
     specs = {spec.name: spec for spec in build_tools(port)}
     tools = [_tool(spec) for spec in specs.values()]
+    validators = {name: make_validator(spec.input_schema) for name, spec in specs.items()}
 
     async def list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
         return types.ListToolsResult(tools=tools)
@@ -79,6 +81,7 @@ def build_server(port: UiPort, audit: policy.AuditLog) -> Server:
         try:
             if spec is None:
                 raise KeyParamsError(f"unknown tool: {params.name}")
+            check_arguments(validators[spec.name], args)
             framed = await spec.handler(args)
         except Exception as exc:  # noqa: BLE001 - every failure becomes a tool error
             body = _error_body(exc)
