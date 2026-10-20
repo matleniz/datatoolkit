@@ -91,7 +91,7 @@ async def test_documents_tools_are_read_only(client):
     tools = {t.name: t for t in (await client.list_tools()).tools}
     assert tools["list_documents"].annotations.read_only_hint is True
     assert tools["read_document"].annotations.read_only_hint is True
-    assert tools["keep_attachment"].annotations is None  # a write (through Studio)
+    assert tools["keep_attachment"].annotations.read_only_hint is False  # a write (through Studio)
 
 
 async def test_keep_attachment_is_relayed_with_the_workspace(client, bridge):
