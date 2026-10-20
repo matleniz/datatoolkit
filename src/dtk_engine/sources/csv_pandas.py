@@ -435,7 +435,7 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
         if spec.keep_leading_zeros:
             df = _keep_leading_zeros(df, text, sep, spec, options)
         return df
-    except (MixedSeparatorError, SourceError):
+    except MixedSeparatorError:
         raise
     except FileNotFoundError:
         raise SourceError(f"csv source not found: {spec.path}") from None
@@ -466,9 +466,8 @@ def _refuse_duplicate_header(text: str, spec: CsvSource, options: dict) -> None:
         names = [n for n in names if n in spec.usecols]
     dups = [n for n in names if names.count(n) > 1]
     if dups:
-        raise SourceError(
-            f"cannot read csv {spec.path}: {duplicate_columns_message(dups, spec.path)}"
-        )
+        # read_csv's outer handler adds the "cannot read csv <path>: " prefix.
+        raise SourceError(duplicate_columns_message(dups, spec.path))
 
 
 def is_leading_zero_column(values: pd.Series) -> bool:
