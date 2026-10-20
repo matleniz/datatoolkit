@@ -217,7 +217,7 @@ async def test_get_rows_limits(client, bridge, monkeypatch):
     assert other["identity"].startswith("demo|test|v0|")  # not on screen: computed
     refused = await client.call_tool("get_rows", {"limit": 501})
     assert refused.is_error
-    assert "limit must be between 1 and 500" in _payload(refused)["message"]
+    assert _payload(refused)["message"] == "limit: must be <= 500, got 501"  # schema layer
 
 
 async def test_get_rows_needs_workspace_without_context(client):
