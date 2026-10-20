@@ -86,3 +86,20 @@ async def test_export_description_warns_it_overwrites(tools):
 
 def test_ui_commands_all_have_meta():
     assert {c.tool_name for c in UI_COMMANDS.values()} <= set(TOOL_META)
+
+
+async def test_closed_world_holds_because_no_tool_can_open_a_network_source():
+    """open_world_hint=False everywhere is true only while sql never reaches a reader:
+    policy.check_args refuses it in every tool's args and workspaces hold file sources only."""
+    sql = {"kind": "sql", "url_env": "NO_SUCH_URL", "query": "select 1"}
+    calls = {
+        "source_columns": {"spec": sql},
+        "run_key": {"key": "dataset_overview", "params": {"source": sql}},
+        "preview_step": {"step": {"op": "x", "params": {"source": sql}}},
+    }
+    server = build_server(LocalUiPort(UiBridge()), AuditLog())
+    async with Client(server) as client:
+        for name, args in calls.items():
+            result = await client.call_tool(name, args)
+            assert result.is_error, name
+            assert "sql sources are not available" in result.content[0].text, name
