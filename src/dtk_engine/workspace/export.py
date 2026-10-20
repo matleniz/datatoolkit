@@ -67,6 +67,7 @@ STAGING_PREFIX = ".export-staging-"
 ASIDE_PREFIX = ".export-old-"
 STAGING_MARKER = ".dtk-staging"  # holds the pid of the exporting process
 STAGING_MAX_AGE = 3600  # seconds before a staging dir of a live pid counts as stale
+_IS_WINDOWS = sys.platform == "win32"  # monkeypatched in tests
 
 
 class ExportRestoreError(OSError):
@@ -363,6 +364,26 @@ def _swap(new: Path, aside: Path, out: Path, owned: list[Path]) -> None:
         raise
 
 
+def _pid_alive(pid: int) -> bool:
+    """Whether ``pid`` may still be running (``True`` when unsure: never delete a live one).
+
+    Never probes on Windows: there ``os.kill`` TERMINATES the process for any signal other
+    than CTRL_C_EVENT/CTRL_BREAK_EVENT, so ``os.kill(pid, 0)`` would kill the live export
+    (or an unrelated process owning a recycled pid). The caller then relies on the marker
+    age alone. On POSIX, signal 0 only checks existence; EPERM means it exists, and any
+    other OSError is treated as alive (the conservative choice). A recycled pid owned by an
+    unrelated live process also reads as alive: the age rule reclaims it after an hour."""
+    if _IS_WINDOWS:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # EPERM (the process exists) or anything unexpected: assume alive
+        return True
+    return True
+
+
 def _staging_is_stale(staging: Path) -> bool:
     """Only a staging dir carrying our marker, of a dead pid or older than the max age."""
     marker = staging / STAGING_MARKER
@@ -371,15 +392,7 @@ def _staging_is_stale(staging: Path) -> bool:
         age = datetime.now(UTC).timestamp() - marker.stat().st_mtime
     except (OSError, ValueError):
         return False  # not ours (or unreadable): never delete
-    if age > STAGING_MAX_AGE:
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:  # EPERM: the process exists
-        return False
-    return False
+    return age > STAGING_MAX_AGE or not _pid_alive(pid)
 
 
 def _recover_stale(out: Path) -> None:

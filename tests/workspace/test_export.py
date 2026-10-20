@@ -450,3 +450,73 @@ def test_duplicate_columns_overwrite_keeps_previous(dup_source, tmp_path):
         export("dup", out, overwrite=True, formats=["parquet", "csv"])
     assert _tree(out) == before
     assert _no_staging(out)
+
+
+def _staging(tmp_path, pid, age=0):
+    import os
+    import time
+
+    d = tmp_path / ".export-staging-x"
+    d.mkdir()
+    marker = d / ".dtk-staging"
+    marker.write_text(str(pid))
+    if age:
+        t = time.time() - age
+        os.utime(marker, (t, t))
+    return d
+
+
+def _win32_no_kill(monkeypatch):
+    import os
+
+    from dtk_engine.workspace import export as mod
+
+    def boom(*a):
+        raise AssertionError("os.kill must never be called on win32")
+
+    monkeypatch.setattr(mod, "_IS_WINDOWS", True)
+    monkeypatch.setattr(os, "kill", boom)
+    return mod
+
+
+def test_win32_recent_staging_is_kept_without_os_kill(tmp_path, monkeypatch):
+    mod = _win32_no_kill(monkeypatch)
+    assert not mod._staging_is_stale(_staging(tmp_path, 999999))
+
+
+def test_win32_old_staging_is_stale_without_os_kill(tmp_path, monkeypatch):
+    mod = _win32_no_kill(monkeypatch)
+    assert mod._staging_is_stale(_staging(tmp_path, 999999, age=mod.STAGING_MAX_AGE + 60))
+
+
+def _posix_kill(monkeypatch, exc):
+    import os
+
+    from dtk_engine.workspace import export as mod
+
+    def fake(pid, sig):
+        if exc is not None:
+            raise exc
+
+    monkeypatch.setattr(mod, "_IS_WINDOWS", False)
+    monkeypatch.setattr(os, "kill", fake)
+    return mod
+
+
+@pytest.mark.parametrize(
+    ("exc", "stale"),
+    [
+        (ProcessLookupError(), True),  # dead pid
+        (None, False),  # live pid, also a recycled pid of an unrelated process
+        (PermissionError(), False),  # EPERM: exists
+        (OSError("odd"), False),  # unexpected: conservative, alive
+    ],
+)
+def test_posix_staging_liveness(tmp_path, monkeypatch, exc, stale):
+    mod = _posix_kill(monkeypatch, exc)
+    assert mod._staging_is_stale(_staging(tmp_path, 4242)) is stale
+
+
+def test_posix_old_staging_is_stale_even_if_pid_alive(tmp_path, monkeypatch):
+    mod = _posix_kill(monkeypatch, None)
+    assert mod._staging_is_stale(_staging(tmp_path, 4242, age=mod.STAGING_MAX_AGE + 60))
