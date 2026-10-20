@@ -63,7 +63,7 @@ def _framed_result_schema() -> dict:
         "$defs": {**defs, "Result": result},
         "properties": {
             "identity": {"type": ["string", "null"]},
-            "data": {"$ref": "#/$defs/Result"},
+            "data": {},
             "truncated": {"type": "boolean"},
             "note": {"type": "string"},
             "workspace_changes": {"type": "object"},
@@ -71,6 +71,7 @@ def _framed_result_schema() -> dict:
         "required": ["identity", "data"],
         "if": {"properties": {"truncated": {"const": True}}, "required": ["truncated"]},
         "then": {"properties": {"data": {"type": ["object", "null"]}}},
+        "else": {"properties": {"data": {"$ref": "#/$defs/Result"}}},
     }
 
 

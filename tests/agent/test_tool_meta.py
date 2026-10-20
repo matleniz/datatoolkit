@@ -144,5 +144,9 @@ async def test_truncated_and_error_results_stay_valid(monkeypatch):
     async with Client(server) as client:
         cut = await client.call_tool("run_key", {"key": "dataset_overview", "params": {}})
         assert cut.structured_content["truncated"] is True
+        monkeypatch.setenv("DTK_AGENT_MAX_CHARS", "20")  # even a shrunk frame is over: data null
+        gone = await client.call_tool("run_key", {"key": "dataset_overview", "params": {}})
+        assert gone.structured_content["truncated"] is True
+        assert gone.structured_content["data"] is None
         bad = await client.call_tool("run_key", {"key": "no_such_key", "params": {}})
         assert bad.is_error and bad.structured_content is None
