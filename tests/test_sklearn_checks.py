@@ -70,3 +70,15 @@ def test_workspace_replay_frames_unchanged(tmp_path, monkeypatch):
         expected = t.apply(expected, p, t.fit(expected, p))
     got = workspace_pipeline("replay").fit_transform(df)
     pd.testing.assert_frame_equal(got, expected)
+
+
+def test_pickle_from_before_params_property_loads():
+    import pickle
+
+    t = DtkTransformer("drop_columns", columns=["a"])
+    state = {**t.__getstate__(), "params": t.__getstate__()["_params"]}
+    del state["_params"]  # the old layout
+    old = DtkTransformer.__new__(DtkTransformer)
+    old.__setstate__(state)
+    assert old.params == {"columns": ["a"]}
+    assert pickle.loads(pickle.dumps(old)).params == {"columns": ["a"]}

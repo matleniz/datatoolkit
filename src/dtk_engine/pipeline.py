@@ -63,6 +63,12 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
     # The op's params are the estimator's params, so grid search sees them.
     # ``op`` is the transform's identity; an op param also called ``op`` is
     # exposed as ``param_op`` (never a plain ``op``, which would shadow it).
+    def __setstate__(self, state: dict) -> None:
+        # Pickles written before ``params`` became a property store it as "params".
+        if "params" in state and "_params" not in state:
+            state = {**state, "_params": state.pop("params")}
+        super().__setstate__(state)
+
     def get_params(self, deep: bool = True) -> dict:
         return {"op": self.op, **{_ESC.get(k, k): v for k, v in self.params.items()}}
 
