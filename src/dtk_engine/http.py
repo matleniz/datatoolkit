@@ -29,7 +29,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from starlette.requests import HTTPConnection
+from starlette.requests import ClientDisconnect, HTTPConnection
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
@@ -119,18 +119,43 @@ def _too_large(mb: float) -> UploadTooLargeError:
     )
 
 
+# After refusing an upload, the rest of the body is read and thrown away (never kept or
+# written) so the 413 is delivered before the socket closes: a proxy still sending the body
+# into a closed socket sees ECONNRESET and answers 500/502 instead. Bounded in bytes and
+# seconds; past either bound the connection closes as before.
+_DRAIN_MAX_BYTES = 256 * 2**20
+_DRAIN_MAX_SECONDS = 30.0
+
+
+async def _drain(stream: AsyncIterator[bytes]) -> None:
+    """Discard what is left of the request body, up to the drain bounds."""
+
+    async def discard() -> None:
+        drained = 0
+        async for chunk in stream:
+            drained += len(chunk)
+            if drained > _DRAIN_MAX_BYTES:
+                return
+
+    with contextlib.suppress(TimeoutError, ClientDisconnect):
+        await asyncio.wait_for(discard(), _DRAIN_MAX_SECONDS)
+
+
 async def _read_capped(request: Request) -> bytes:
     """Read the body, refusing early on ``Content-Length`` and on the real size."""
     mb = _max_upload_mb()
     limit = int(mb * 1024 * 1024)
     declared = request.headers.get("content-length", "")
+    stream = request.stream()
     if declared.isdigit() and int(declared) > limit:
+        await _drain(stream)
         raise _too_large(mb)
     chunks: list[bytes] = []
     size = 0
-    async for chunk in request.stream():
+    async for chunk in stream:
         size += len(chunk)
         if size > limit:
+            await _drain(stream)
             raise _too_large(mb)
         chunks.append(chunk)
     return b"".join(chunks)
