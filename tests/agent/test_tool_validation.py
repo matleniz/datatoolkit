@@ -13,6 +13,12 @@ from dtk_engine.agent.policy import AuditLog
 from dtk_engine.agent.ports import LocalUiPort
 from dtk_engine.agent.server import build_server
 from dtk_engine.agent.tools import build_tools
+from dtk_engine.agent.validate import (
+    check_arguments,
+    strict_schema,
+    unsupported_keywords,
+)
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.ui_bridge import UiBridge
 
 pytestmark = pytest.mark.anyio
@@ -195,3 +201,56 @@ async def test_session_is_accepted_by_every_tool(client, calls, tool):
     result = await client.call_tool(tool, {**_valid(SPECS[tool].input_schema), "session": "s1"})
     assert not result.is_error, result.content
     assert calls == [tool]
+
+
+# -- the validator is ours: it must cover every keyword the tool schemas use ----------
+
+
+@pytest.mark.parametrize("tool", sorted(SPECS))
+def test_every_schema_keyword_is_enforced(tool):
+    """A tool using a keyword the validator ignores would silently bypass the check."""
+    assert unsupported_keywords(strict_schema(SPECS[tool].input_schema)) == set()
+
+
+def test_unsupported_keywords_are_reported():
+    assert unsupported_keywords({"type": "object", "properties": {"a": {"const": 1}}}) == {"const"}
+
+
+_SAMPLES = [
+    ({"type": "string"}, ["a", ""], [1, None, True]),
+    ({"type": "integer"}, [1, 2.0], [1.5, "1", True, None]),
+    ({"type": "number"}, [1, 1.5], ["1", True]),
+    ({"type": "boolean"}, [True], [0, "x"]),
+    ({"type": ["integer", "null"]}, [None, 3], ["3"]),
+    ({"enum": ["a", "b"]}, ["a"], ["c", 1]),
+    ({"type": "integer", "minimum": 0}, [0, 5], [-1]),
+    ({"type": "integer", "maximum": 5}, [5], [6]),
+    ({"type": "string", "minLength": 1}, ["a"], [""]),
+    ({"type": "string", "maxLength": 2}, ["ab"], ["abc"]),
+    ({"type": "string", "pattern": "^m[0-9]+$"}, ["m12"], ["x", "m"]),
+    ({"type": "array", "items": {"type": "string"}}, [[], ["a"]], [["a", 1], "a"]),
+    ({"type": "array", "minItems": 1}, [[1]], [[]]),
+    ({"type": "array", "maxItems": 1}, [[1]], [[1, 2]]),
+    ({"type": "object", "minProperties": 1}, [{"a": 1}], [{}]),
+    ({"type": "object", "required": ["a"]}, [{"a": 1}], [{}]),
+    ({"type": "object", "properties": {"a": {"type": "integer"}}}, [{"a": 1}, {"b": 1}],
+     [{"a": "x"}]),
+    ({"type": "object", "properties": {"a": {}}, "additionalProperties": False}, [{"a": 1}],
+     [{"b": 1}]),
+    ({"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+     ["a", ["a"]], [1, [1]]),
+]
+
+
+@pytest.mark.parametrize(("schema", "good", "bad"), _SAMPLES, ids=str)
+def test_validator_agrees_with_jsonschema(schema, good, bad):
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = schema
+    reference = jsonschema.Draft202012Validator(schema)
+    for value in good:
+        assert reference.is_valid(value)
+        check_arguments(validator, value)
+    for value in bad:
+        assert not reference.is_valid(value)
+        with pytest.raises(KeyParamsError):
+            check_arguments(validator, value)
