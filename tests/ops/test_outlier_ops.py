@@ -78,3 +78,22 @@ def test_isolation_forest_memoized_on_content(monkeypatch):
     isolation_forest(df.set_axis(df.index + 1), ["x", "y"], 0.1, 0)  # other index
     assert len(calls) == 4
     cache._FITS.clear()
+
+
+def test_mad_matches_scipy_reference_and_is_robust():
+    from scipy.stats import median_abs_deviation
+
+    df = _frame()
+    x = df["x"].to_numpy()
+    expected = int((np.abs(0.6745 * (x - np.median(x)) / median_abs_deviation(x)) > 3.5).sum())
+    t = univariate_outliers(df, ["x"]).set_index("column")
+    assert t.loc["x", "n_mad"] == expected >= 2
+    assert t.loc["x", "pct_mad"] == round(100 * expected / 500, 2)
+    assert univariate_outliers(df, ["x"], mad_threshold=1e6)["n_mad"].iloc[0] == 0
+
+
+def test_mad_zero_flags_nothing_and_handles_nan():
+    df = pd.DataFrame({"c": [1.0] * 9 + [100.0], "n": [1.0, 2, 3, 4, 100, np.nan, np.nan, np.nan, np.nan, np.nan]})
+    t = univariate_outliers(df, ["c", "n"]).set_index("column")
+    assert t.loc["c", "n_mad"] == 0  # MAD == 0: undefined score, nothing flagged
+    assert t.loc["n", "n_mad"] == 1 and t.loc["n", "count"] == 5

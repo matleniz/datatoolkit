@@ -1,4 +1,4 @@
-"""Outliers: per-column IQR / z-score, multivariate IsolationForest, action table."""
+"""Outliers: per-column IQR / z-score / MAD, multivariate IsolationForest, action table."""
 
 from typing import Literal
 
@@ -13,6 +13,7 @@ from dtk_engine.ops.outliers import (
     ACTION_TABLE,
     BOX_FIELDS,
     IQR_K,
+    MAD_THRESHOLD,
     Z_THRESHOLD,
     box_stats,
     flagged_rows,
@@ -26,7 +27,7 @@ from dtk_engine.registry import key
 from dtk_engine.result import Result, plotly_lock
 from dtk_engine.sources import load
 
-OutlierMethod = Literal["all", "iqr", "zscore", "isolation_forest"]
+OutlierMethod = Literal["all", "iqr", "zscore", "mad", "isolation_forest"]
 
 
 class Params(SourceParams):
@@ -37,13 +38,20 @@ class Params(SourceParams):
     )
     method: OutlierMethod = Field(
         default="all",
-        description="Which detector(s) to run: all | iqr | zscore | isolation_forest",
+        description="Which detector(s) to run: all | iqr | zscore | mad | isolation_forest "
+        "(mad is opt-in: not part of all)",
     )
     iqr_k: float = Field(
         default=IQR_K, gt=0, description="IQR fence multiplier (1.5 = Tukey)"
     )
     z_threshold: float = Field(
         default=Z_THRESHOLD, gt=0, description="Flag values with |z| above this"
+    )
+    mad_threshold: float = Field(
+        default=MAD_THRESHOLD,
+        gt=0,
+        description="method=mad: flag values with robust |0.6745*(x-median)/MAD| "
+        "above this (nothing is flagged when MAD is 0)",
     )
     contamination: float = Field(
         default=0.01,
@@ -72,6 +80,7 @@ def run(params: Params) -> Result:
         params.random_state,
         params.columns,
         params.method,
+        params.mad_threshold,
     )
 
 
@@ -83,6 +92,7 @@ def outliers_result(
     random_state: int = 0,
     columns: list[str] | None = None,
     method: OutlierMethod = "all",
+    mad_threshold: float = MAD_THRESHOLD,
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.outliers``)."""
     if columns:
@@ -97,13 +107,16 @@ def outliers_result(
         picked = numeric_columns(df)
     run_iqr = method in ("all", "iqr")
     run_z = method in ("all", "zscore")
+    run_mad = method == "mad"
     run_if = method in ("all", "isolation_forest")
     # Univariate table always built (empty columns ok); zero out unused detectors.
-    table = univariate_outliers(df, picked, iqr_k, z_threshold)
+    table = univariate_outliers(df, picked, iqr_k, z_threshold, mad_threshold)
     if not run_iqr:
         table = table.assign(n_iqr=0, pct_iqr=0.0, lower_fence=float("nan"), upper_fence=float("nan"))
     if not run_z:
         table = table.assign(n_z=0, pct_z=0.0)
+    if not run_mad:
+        table = table.assign(n_mad=0, pct_mad=0.0)
     scores = (
         isolation_forest(df, picked, contamination, random_state)
         if run_if
@@ -122,6 +135,7 @@ def outliers_result(
             "n_numeric_columns": len(picked),
             "n_columns_with_iqr_outliers": int((table["n_iqr"] > 0).sum()),
             "n_columns_with_z_outliers": int((table["n_z"] > 0).sum()),
+            "n_columns_with_mad_outliers": int((table["n_mad"] > 0).sum()),
             "n_rows_flagged": n_flagged,
             "contamination": contamination,
             "method": method,

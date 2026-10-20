@@ -202,10 +202,18 @@ def outliers(
     random_state: int = 0,
     columns: list[str] | None = None,
     method: str = "all",
+    mad_threshold: float = 3.5,
 ) -> Result:
     """``outliers`` on a DataFrame."""
     return outliers_result(
-        df, iqr_k, z_threshold, contamination, random_state, columns, method
+        df,
+        iqr_k,
+        z_threshold,
+        contamination,
+        random_state,
+        columns,
+        method,
+        mad_threshold,
     )
 
 

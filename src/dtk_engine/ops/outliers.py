@@ -12,6 +12,9 @@ from dtk_engine.ops.profile import columns_of_type
 
 IQR_K = 1.5
 Z_THRESHOLD = 3.0
+MAD_THRESHOLD = 3.5
+# Consistency constant: 0.6745 = 1 / 1.4826 makes MAD comparable to a std.
+MAD_SCALE = 0.6745
 # Rows sampled in the flagged-rows table.
 FLAGGED_SAMPLE = 20
 
@@ -40,6 +43,8 @@ UNIVARIATE_FIELDS = [
     "pct_iqr",
     "n_z",
     "pct_z",
+    "n_mad",
+    "pct_mad",
 ]
 
 # The course's decision table: what to do with a flagged value, by its cause.
@@ -64,15 +69,17 @@ def univariate_outliers(
     columns: list[str],
     iqr_k: float = IQR_K,
     z_threshold: float = Z_THRESHOLD,
+    mad_threshold: float = MAD_THRESHOLD,
 ) -> pd.DataFrame:
-    """Per column: IQR fences, count / % outside them, count / % with |z| > threshold
-    (percentages over non-null values)."""
+    """Per column: IQR fences, count / % outside them, count / % with |z| > threshold,
+    count / % with robust |z_mad| > ``mad_threshold`` (percentages over non-null
+    values)."""
     rows = []
     for col in columns:
         values = df[col].dropna().astype(float)
         n = len(values)
         lo = hi = float("nan")
-        n_iqr = n_z = 0
+        n_iqr = n_z = n_mad = 0
         if n:
             q1, q3 = values.quantile([0.25, 0.75])
             lo, hi = q1 - iqr_k * (q3 - q1), q3 + iqr_k * (q3 - q1)
@@ -80,8 +87,22 @@ def univariate_outliers(
             std = values.std()
             if n > 1 and std > 0:
                 n_z = int((((values - values.mean()) / std).abs() > z_threshold).sum())
-        rows.append((col, n, lo, hi, n_iqr, _pct(n_iqr, n), n_z, _pct(n_z, n)))
+            n_mad = _n_mad_outliers(values, mad_threshold)
+        rows.append(
+            (col, n, lo, hi, n_iqr, _pct(n_iqr, n), n_z, _pct(n_z, n), n_mad, _pct(n_mad, n))
+        )
     return pd.DataFrame(rows, columns=UNIVARIATE_FIELDS)
+
+
+def _n_mad_outliers(values: pd.Series, threshold: float) -> int:
+    """Values with |0.6745 * (x - median) / MAD| > threshold (MAD = median absolute
+    deviation from the median). MAD == 0 (more than half the values identical)
+    makes the score undefined: nothing is flagged rather than dividing by zero."""
+    median = values.median()
+    mad = (values - median).abs().median()
+    if not mad > 0:
+        return 0
+    return int(((MAD_SCALE * (values - median) / mad).abs() > threshold).sum())
 
 
 def box_stats(

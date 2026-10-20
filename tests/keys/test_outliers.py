@@ -127,3 +127,23 @@ def test_sampled_outlier_points_capped():
 
     df = pd.DataFrame({"a": list(range(1000)) + [10_000] * 900})
     assert len(outlier_points(df, "a", 0, 1000)) == OUTLIER_POINTS_MAX
+
+
+def test_mad_method_and_schema():
+    res = run_key("outliers", {"columns": ["Fare"], "method": "mad"})
+    m = res["metrics"]
+    assert m["n_columns_with_mad_outliers"] == 1
+    assert m["n_columns_with_iqr_outliers"] == 0 and m["n_columns_with_z_outliers"] == 0
+    strict = run_key("outliers", {"columns": ["Fare"], "method": "mad", "mad_threshold": 1e6})
+    assert strict["metrics"]["n_columns_with_mad_outliers"] == 0
+    default = run_key("outliers", {"columns": ["Fare"]})
+    assert default["metrics"]["n_columns_with_mad_outliers"] == 0  # opt-in only
+
+
+def test_mad_threshold_in_key_schema():
+    from dtk_engine.contract import key_schema
+
+    props = key_schema("outliers")["properties"]
+    assert props["mad_threshold"]["default"] == 3.5
+    assert props["mad_threshold"]["description"]
+    assert "mad" in str(props["method"])
