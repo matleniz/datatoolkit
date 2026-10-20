@@ -24,7 +24,7 @@ HIGH_CARDINALITY_UNIQUE = 50
 DUPLICATE_ROWS_WARNING_PCT = 5.0
 # |skewness| of a numeric column from which an info is raised (a modelling hint only).
 SKEW_INFO = 2.0
-# A column cannot be called constant (or all-distinct) from fewer rows than this.
+# A column cannot be called constant from fewer rows than this.
 MIN_ROWS_CONSTANT = 2
 # Characters whose presence in the only column's name betrays a wrong ``sep``.
 DELIMITER_CHARS = (";", "\t", "|")
