@@ -144,7 +144,8 @@ async def _drain(stream: AsyncIterator[bytes]) -> None:
 _CHUNK = 1 << 20  # the file comparison reads this much at a time
 
 
-# The temp name ``.<name>.<16 hex>.tmp`` adds 22 bytes; filesystems cap a name at 255.
+# Stored names are cut to this many UTF-8 bytes (a name is 255 at most on most filesystems,
+# and the cut keeps room for a prefix or suffix), so the same long name lands on one path.
 _NAME_MAX_BYTES = 255 - 22
 
 
@@ -653,12 +654,16 @@ async def post_align(request: Request) -> dict:
 
 @uploads_router.put("/uploads/{filename}")
 async def put_upload(filename: str, request: Request) -> dict:
+    sink = None
     try:
         sink = await _receive_upload(request)
         path = await run_in_threadpool(sink.commit, filename)
     except OSError:  # its message carries the server path: log it here, never answer it
         logger.exception("could not store upload %r", filename)
         raise UploadStoreError("could not store the upload") from None
+    finally:
+        if sink is not None:
+            sink.abort()  # no-op once committed; covers a cancellation before/during commit
     return {"path": str(path)}
 
 

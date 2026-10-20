@@ -744,3 +744,15 @@ def test_upload_write_error_midstream_leaves_no_temp_file(client, home, monkeypa
     assert r.status_code == 500
     assert "/secret" not in r.text
     assert _stray_files(home) == []
+
+
+def test_upload_cancelled_before_commit_leaves_no_temp_file(client, home, monkeypatch):
+    import asyncio
+
+    def cancelled(self, name):  # raises without cleaning up: the handler's finally must
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(http_mod._UploadSink, "commit", cancelled)
+    with pytest.raises(BaseException):  # noqa: B017  (the cancellation reaches the test client)
+        client.put("/api/uploads/c.bin", content=b"abc")
+    assert _stray_files(home) == []

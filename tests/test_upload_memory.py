@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import threading
+import time
 import tracemalloc
 
 import pytest
@@ -29,7 +30,9 @@ def engine(tmp_path, monkeypatch):
     server = uvicorn.Server(uvicorn.Config(http.create_app(), log_level="warning"))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
+    deadline = time.monotonic() + 30
     while not server.started:
+        assert time.monotonic() < deadline, "the test server did not start"
         thread.join(0.01)
     yield sock.getsockname()[1]
     server.should_exit = True
