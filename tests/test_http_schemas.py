@@ -410,8 +410,10 @@ def test_upload_normal_name_is_unchanged(client):
 def test_upload_dotdot_name_falls_back_to_upload(tmp_path):
     from dtk_engine import http
 
-    assert http._save_upload("..", b"x", tmp_path).name == "upload"
-    assert http._save_upload("", b"x", tmp_path).name == "upload"
+    for name in ("..", ""):
+        sink = http._UploadSink(tmp_path)
+        sink.write(b"x")
+        assert sink.commit(name).name == "upload"
 
 
 def _no_leak(r):
@@ -427,10 +429,10 @@ def _no_leak(r):
     ids=["ENOSPC", "PermissionError"],
 )
 def test_upload_write_failure_is_a_generic_500_without_path(client, monkeypatch, tmp_path, error):
-    def boom(path, data):
+    def boom(*args, **kwargs):
         raise error
 
-    monkeypatch.setattr("dtk_engine.http._write_atomic", boom)
+    monkeypatch.setattr("dtk_engine.http.os.replace", boom)
     _no_leak(client.put("/api/uploads/notes.txt", content=b"abc"))
 
 
