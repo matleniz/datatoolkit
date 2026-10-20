@@ -23,6 +23,7 @@ nothing here is reachable from the JSON contract.
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import pandas as pd
@@ -51,7 +52,7 @@ from dtk_engine.keys.target_analysis import target_result
 from dtk_engine.keys.train_test_check import check_result
 from dtk_engine.ops import transforms  # noqa: F401  (registers every transform op)
 from dtk_engine.result import Result
-from dtk_engine.sources import SourceSpec
+from dtk_engine.sources import SourceSpec, string_columns
 from dtk_engine.sources import load as load_spec
 from dtk_engine.transform_registry import get_transform
 from dtk_engine.transform_registry import transform_catalog as list_transforms
@@ -123,11 +124,28 @@ def load(source: str | Path | dict | BaseModel) -> pd.DataFrame:
     return load_spec(source)
 
 
+def _string_labels(fn):
+    """Notebook frames may carry int column labels; the keys expect str names."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        args = [string_columns(a) if isinstance(a, pd.DataFrame) else a for a in args]
+        kwargs = {
+            k: string_columns(v) if isinstance(v, pd.DataFrame) else v
+            for k, v in kwargs.items()
+        }
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+@_string_labels
 def overview(df: pd.DataFrame, head_rows: int = 5) -> Result:
     """``dataset_overview`` on a DataFrame."""
     return overview_result(df, head_rows)
 
 
+@_string_labels
 def check(
     train: pd.DataFrame, test: pd.DataFrame, id_columns: list[str] | None = None
 ) -> Result:
@@ -135,6 +153,7 @@ def check(
     return check_result(train, test, id_columns)
 
 
+@_string_labels
 def label_join_preview(
     x: pd.DataFrame, y: pd.DataFrame, key_columns: list[str] | None = None
 ) -> Result:
@@ -142,6 +161,7 @@ def label_join_preview(
     return label_join_preview_result(x, y, key_columns)
 
 
+@_string_labels
 def transform(df: pd.DataFrame, op: str, **params) -> pd.DataFrame:
     """Fit ``op`` on ``df`` and apply it (to fit on train and apply to test,
     use ``DtkTransformer``)."""
@@ -172,16 +192,19 @@ def _raise_missing_columns(
         ) from exc
 
 
+@_string_labels
 def duplicates(df: pd.DataFrame, subset: list[str] | None = None) -> Result:
     """``duplicates`` on a DataFrame (``subset`` null = detected id columns)."""
     return duplicates_result(df, subset)
 
 
+@_string_labels
 def inconsistencies(df: pd.DataFrame, columns: list[str] | None = None) -> Result:
     """``inconsistencies`` on a DataFrame."""
     return inconsistencies_result(df, columns)
 
 
+@_string_labels
 def missing(
     df: pd.DataFrame,
     test: pd.DataFrame | None = None,
@@ -194,6 +217,7 @@ def missing(
     return missing_result(df, test, target, columns, sort, threshold)
 
 
+@_string_labels
 def outliers(
     df: pd.DataFrame,
     iqr_k: float = 1.5,
@@ -217,6 +241,7 @@ def outliers(
     )
 
 
+@_string_labels
 def advise(
     df: pd.DataFrame,
     test: pd.DataFrame | None = None,
@@ -231,6 +256,7 @@ def advise(
     return advisor_result(df, test, model_family, target)
 
 
+@_string_labels
 def select_features(
     df: pd.DataFrame,
     target: str,
@@ -247,6 +273,7 @@ def select_features(
     return selection_result(df, target, task, columns, wrapper, random_state)
 
 
+@_string_labels
 def distribution(
     df: pd.DataFrame,
     test: pd.DataFrame | None = None,
@@ -288,6 +315,7 @@ def distribution(
     )
 
 
+@_string_labels
 def target_analysis(
     df: pd.DataFrame,
     target: str,
@@ -304,6 +332,7 @@ def target_analysis(
     )
 
 
+@_string_labels
 def correlations(
     df: pd.DataFrame,
     columns: list[str] | None = None,
@@ -316,6 +345,7 @@ def correlations(
     return correlations_result(df, columns, method, threshold, target, top_n)
 
 
+@_string_labels
 def chart(df: pd.DataFrame, chart: str = "histogram", **params) -> Result:
     """``chart`` on a DataFrame: a Plotly Express figure from typed params."""
     return chart_result(df, chart, **params)

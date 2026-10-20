@@ -28,6 +28,14 @@ def reader(kind: str):
     return decorator
 
 
+def string_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` with every column label a str (``header=None`` and hand-built frames
+    give ints); the contract speaks column names as strings. Unchanged if already so."""
+    if all(isinstance(c, str) for c in df.columns):
+        return df
+    return df.set_axis([str(c) for c in df.columns], axis=1)
+
+
 def load(spec: BaseModel) -> pd.DataFrame:
     """Load a SourceSpec into a DataFrame; raise SourceError on failure."""
     kind = getattr(spec, "kind", None)
@@ -37,4 +45,4 @@ def load(spec: BaseModel) -> pd.DataFrame:
         raise SourceError(f"no reader for source kind {kind!r}") from None
     stamp = stamps([spec])  # None: no path (sql, dataset) or stat failed -> no caching
     key = stamp and digest(spec.model_dump_json(), stamp)
-    return _RAW_CACHE.memo(key, lambda: read(spec))
+    return _RAW_CACHE.memo(key, lambda: string_columns(read(spec)))

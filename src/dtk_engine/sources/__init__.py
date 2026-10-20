@@ -7,7 +7,7 @@ from . import (  # noqa: F401  (registers the readers)
     parquet,
     sql,
 )
-from .registry import load, reader
+from .registry import load, reader, string_columns
 from .spec import (
     CsvSource,
     DatasetSource,
@@ -30,4 +30,5 @@ __all__ = [
     "SqlSource",
     "load",
     "reader",
+    "string_columns",
 ]
