@@ -244,3 +244,29 @@ def test_store_b_title_line_does_not_decide_delimiter():
     assert df.shape == (3, 4)
     assert list(df.columns) == ["id", "product", "price", "qty"]
     assert df["price"].tolist() == [1.5, 0.95, 3.2]
+
+
+def test_duplicate_header_refused_at_read(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("a,b,a,b,c\n1,2,3,4,5\n")
+    with pytest.raises(SourceError) as err:
+        load(CsvSource(path=str(path)))
+    msg = str(err.value)
+    assert "duplicate column names ['a', 'b']" in msg and "rename" in msg
+
+
+def test_duplicate_header_after_skipped_lines_and_header_none(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("x,x\n1,2\n")
+    with pytest.raises(SourceError, match=r"duplicate column names \['x'\]"):
+        load(CsvSource(path=str(path)))
+    assert load(CsvSource(path=str(path), header=None)).shape == (2, 2)
+
+
+def test_duplicate_message_shared_with_export():
+    from dtk_engine.errors import duplicate_columns_message
+
+    assert duplicate_columns_message(["a", "a", "b"], "t") == (
+        "duplicate column names ['a', 'b'] in t (rename them to be unique)"
+    )
+    assert "(and 5 more)" in duplicate_columns_message([str(i) for i in range(15)], "t")

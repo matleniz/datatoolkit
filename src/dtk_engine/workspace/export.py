@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from dtk_engine.errors import KeyParamsError, SourceError
+from dtk_engine.errors import KeyParamsError, SourceError, duplicate_columns_message
 from dtk_engine.sources.csv_pandas import resolve_path
 from dtk_engine.workspace.dataset import raw_workspace_frame, replay_label
 from dtk_engine.workspace.models import Workspace
@@ -62,7 +62,6 @@ FORMATS = ("parquet", "csv", "ipynb", "py")
 # impute_iterative keep the whole train matrix in their state).
 INLINE_STATE_BYTES = 64 * 1024
 _CHUNK = 1 << 20
-MAX_LISTED_COLUMNS = 10
 STAGING_PREFIX = ".export-staging-"
 ASIDE_PREFIX = ".export-old-"
 STAGING_MARKER = ".dtk-staging"  # holds the pid of the exporting process
@@ -178,14 +177,9 @@ def versions() -> dict:
 def _write_parquet(df: pd.DataFrame, path: Path) -> dict:
     # Parquet needs string column names; the index is not kept (row order is).
     df = df.rename(columns=str)
-    dups = list(dict.fromkeys(df.columns[df.columns.duplicated()]))
+    dups = list(df.columns[df.columns.duplicated()])
     if dups:
-        shown = dups[:MAX_LISTED_COLUMNS]
-        more = f" (and {len(dups) - len(shown)} more)" if len(dups) > len(shown) else ""
-        raise SourceError(
-            f"cannot write parquet: duplicate column names {shown}{more} in "
-            f"{path.stem} (rename them with a rename step)"
-        )
+        raise SourceError(f"cannot write parquet: {duplicate_columns_message(dups, path.stem)}")
     try:
         df.to_parquet(path, index=False)
     except (ValueError, TypeError, ImportError) as exc:

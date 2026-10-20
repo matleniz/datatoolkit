@@ -642,3 +642,13 @@ def test_bom_workspace_file_loads_and_lists_as_normal(client, home):
     assert workspace_steps("b") == []
     assert client.put("/api/workspaces/b", json=plain).status_code == 200
     assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_duplicate_csv_header_422(client, tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("a,a,b\n1,2,3\n")
+    r = client.post("/api/source/columns", json={"spec": {"kind": "csv", "path": str(path)}})
+    assert r.status_code == 422
+    body = r.json()
+    assert body["type"] == "SourceError"
+    assert "duplicate column names ['a']" in body["message"] and "rename" in body["message"]

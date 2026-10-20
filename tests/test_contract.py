@@ -575,3 +575,12 @@ def test_group_invariant_keeps_detail_and_message(tmp_path, monkeypatch):
     assert exc.value.detail == {"rule": "unknown_step", "group_id": "g1", "step_id": "nope"}
     assert "group 'g1' names unknown step id 'nope'" in str(exc.value)
     assert "errors.pydantic.dev" not in str(exc.value)
+
+
+def test_run_key_duplicate_csv_header_raises_source_error(tmp_path):
+    from dtk_engine.errors import SourceError
+
+    path = tmp_path / "dup.csv"
+    path.write_text("a,a,b\n1,2,3\n")
+    with pytest.raises(SourceError, match="duplicate column names"):
+        contract.run_key("dataset_overview", {"source": {"kind": "csv", "path": str(path)}})
