@@ -43,6 +43,35 @@ class ToolSpec:
     input_schema: dict
     handler: Handler
     meta: ToolMeta
+    output_schema: dict | None = None  # set only where the result is structured
+
+
+def _framed_result_schema() -> dict:
+    """Output schema of ``run_key``: the ``policy.frame`` envelope around a ``Result``.
+
+    ``Result`` is the contract's JSON shape. ``plotly`` is optional because figures
+    are reduced to ``{title, group, main}`` unless ``include_figures``. A frame
+    flagged ``truncated`` carries data cut by ``policy`` (nested keys may be gone,
+    or ``data`` null), so only then is ``data`` not held to the ``Result`` shape.
+    """
+    result = contract.result_schema()
+    defs = result.pop("$defs", {})
+    defs["Figure"]["required"] = [n for n in defs["Figure"]["required"] if n != "plotly"]
+    result.pop("title", None)
+    return {
+        "type": "object",
+        "$defs": {**defs, "Result": result},
+        "properties": {
+            "identity": {"type": ["string", "null"]},
+            "data": {"$ref": "#/$defs/Result"},
+            "truncated": {"type": "boolean"},
+            "note": {"type": "string"},
+            "workspace_changes": {"type": "object"},
+        },
+        "required": ["identity", "data"],
+        "if": {"properties": {"truncated": {"const": True}}, "required": ["truncated"]},
+        "then": {"properties": {"data": {"type": ["object", "null"]}}},
+    }
 
 
 def _schema(properties: dict | None = None, required: tuple[str, ...] = ()) -> dict:
@@ -478,6 +507,10 @@ def _checked(handler: Handler) -> Handler:
     return run
 
 
+# Tools whose result is structured: they also return ``structuredContent``.
+OUTPUT_SCHEMAS: dict[str, dict] = {"run_key": _framed_result_schema()}
+
+
 def build_tools(port: UiPort) -> list[ToolSpec]:
     t = _Tools(port)
     session_only = _schema({"session": _SESSION})
@@ -635,7 +668,10 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
          "Final ack of a UI command (poll after propose_steps returned pending: review).",
          _schema({"id": _STR}, ("id",)), t.get_command_status),
     ]
-    tools = [ToolSpec(n, d, s, t.tracked(_checked(h)), _meta(n)) for n, d, s, h in static]
+    tools = [
+        ToolSpec(n, d, s, t.tracked(_checked(h)), _meta(n), OUTPUT_SCHEMAS.get(n))
+        for n, d, s, h in static
+    ]
     tools.extend(
         ToolSpec(
             c.tool_name, c.description, _with_session(c.input_schema),

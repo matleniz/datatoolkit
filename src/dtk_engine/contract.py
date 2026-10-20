@@ -2,7 +2,7 @@
 
 Contract surface (fronts call these; inputs/outputs are plain JSON)::
 
-    list_keys / key_schema / run_key
+    list_keys / key_schema / result_schema / run_key
     list_workspaces / list_workspace_summaries / get_workspace /
         save_workspace / delete_workspace / rename_workspace / duplicate_workspace
     source_columns
@@ -36,6 +36,7 @@ from .errors import (
 from .ops import transforms  # noqa: F401  (registers every transform op)
 from .ops.columns import is_numeric
 from .registry import all_keys, get_key
+from .result import Result
 from .sources import SourceSpec, load
 from .transform_registry import get_transform, transform_catalog
 from .workspace import JsonWorkspaceStore, Workspace
@@ -151,6 +152,11 @@ def list_keys() -> list[dict]:
 
 def key_schema(key_id: str) -> dict:
     return get_key(key_id).params_model.model_json_schema()
+
+
+def result_schema() -> dict:
+    """JSON Schema of what ``run_key`` returns (a ``Result`` dumped to JSON)."""
+    return Result.model_json_schema(mode="serialization")
 
 
 def _source_kinds() -> list[str]:
