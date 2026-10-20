@@ -141,8 +141,61 @@ async def _drain(stream: AsyncIterator[bytes]) -> None:
         await asyncio.wait_for(discard(), _DRAIN_MAX_SECONDS)
 
 
-async def _read_capped(request: Request) -> bytes:
-    """Read the body, refusing early on ``Content-Length`` and on the real size."""
+_CHUNK = 1 << 20  # the file comparison reads this much at a time
+
+
+# The temp name ``.<name>.<16 hex>.tmp`` adds 22 bytes; filesystems cap a name at 255.
+_NAME_MAX_BYTES = 255 - 22
+
+
+class _UploadSink:
+    """Receive an upload chunk by chunk: temp file under ``root`` + running hash.
+
+    Memory is bounded by the chunk size, not the body size. ``commit`` moves the temp file to
+    ``<root>/<content hash>/<file name>``; ``abort`` removes it. The caller must do one of them.
+    """
+
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root or upload_dir()
+        self._hash = hashlib.sha256()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.tmp = self.root / f".upload.{secrets.token_hex(8)}.tmp"
+        # os.open (not mkstemp, which forces 0600) so the umask yields the usual 0644.
+        fd = os.open(self.tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        self._fh = os.fdopen(fd, "wb")
+
+    def write(self, chunk: bytes) -> None:
+        self._hash.update(chunk)
+        self._fh.write(chunk)
+
+    def abort(self) -> None:
+        with contextlib.suppress(OSError):  # a failed cleanup must not mask the real error
+            self._fh.close()
+        with contextlib.suppress(OSError):
+            self.tmp.unlink(missing_ok=True)
+
+    def commit(self, name: str) -> Path:
+        """Store the body as ``<root>/<content hash>/<file name>`` and return its absolute path.
+
+        Same-name uploads with other contents never overwrite a file a saved workspace still
+        reads; an already-stored file is kept only if its bytes equal the body.
+        """
+        try:
+            self._fh.close()
+            base = PurePath(name.replace("\\", "/")).name
+            if base in ("", ".", ".."):
+                base = "upload"
+            path = self.root / self._hash.hexdigest()[:12] / _cap_name(base)
+            if not _same_bytes(path, self.tmp):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(self.tmp, path)
+        finally:
+            self.abort()  # no-op after a successful replace; removes the temp otherwise
+        return path.resolve()
+
+
+async def _receive_upload(request: Request) -> _UploadSink:
+    """Stream the body into a sink, refusing early on ``Content-Length`` and on the real size."""
     mb = _max_upload_mb()
     limit = int(mb * 1024 * 1024)
     declared = request.headers.get("content-length", "")
@@ -150,37 +203,20 @@ async def _read_capped(request: Request) -> bytes:
     if declared.isdigit() and int(declared) > limit:
         await _drain(stream)
         raise _too_large(mb)
-    chunks: list[bytes] = []
+    sink = await run_in_threadpool(_UploadSink)
     size = 0
-    async for chunk in stream:
-        size += len(chunk)
-        if size > limit:
-            await _drain(stream)
-            raise _too_large(mb)
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-# The temp name ``.<name>.<16 hex>.tmp`` adds 22 bytes; filesystems cap a name at 255.
-_NAME_MAX_BYTES = 255 - 22
-
-
-def _save_upload(name: str, data: bytes, root: Path | None = None) -> Path:
-    """Write an uploaded file under ``root`` and return its absolute path.
-
-    Stored as ``<root>/<content hash>/<file name>``: same-name uploads with
-    other contents never overwrite a file a saved workspace still reads.
-    """
-    digest = hashlib.sha256(data).hexdigest()[:12]
-    base = PurePath(name.replace("\\", "/")).name
-    if base in ("", ".", ".."):
-        base = "upload"
-    base = _cap_name(base)
-    path = (root or upload_dir()) / digest / base
-    if not _holds(path, data):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _write_atomic(path, data)
-    return path.resolve()
+    try:
+        async for chunk in stream:
+            size += len(chunk)
+            if size > limit:
+                await run_in_threadpool(sink.abort)
+                await _drain(stream)
+                raise _too_large(mb)
+            await run_in_threadpool(sink.write, chunk)
+    except BaseException:  # 413, client disconnect, write error, cancellation: leave nothing
+        sink.abort()
+        raise
+    return sink
 
 
 def _cap_name(base: str) -> str:
@@ -198,27 +234,18 @@ def _cap_name(base: str) -> str:
     return stem.encode("utf-8")[:room].decode("utf-8", errors="ignore") + ext
 
 
-def _holds(path: Path, data: bytes) -> bool:
-    """True when ``path`` already holds exactly ``data`` (a partial file does not)."""
+def _same_bytes(path: Path, other: Path) -> bool:
+    """True when ``path`` holds exactly the bytes of ``other`` (a partial file does not)."""
     try:
-        return path.stat().st_size == len(data) and path.read_bytes() == data
+        if path.stat().st_size != other.stat().st_size:
+            return False
+        with path.open("rb") as a, other.open("rb") as b:
+            while chunk := a.read(_CHUNK):
+                if chunk != b.read(len(chunk)):
+                    return False
+        return True
     except OSError:
         return False
-
-
-def _write_atomic(path: Path, data: bytes) -> None:
-    """Write via a unique temp file in the same directory, then ``os.replace``."""
-    # os.open (not mkstemp, which forces 0600) so the umask yields the usual 0644.
-    tmp = str(path.parent / f".{path.name}.{secrets.token_hex(8)}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):  # a failed cleanup must not mask the real error
-            Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 def _error_body(exc: BaseException) -> dict:
@@ -626,9 +653,9 @@ async def post_align(request: Request) -> dict:
 
 @uploads_router.put("/uploads/{filename}")
 async def put_upload(filename: str, request: Request) -> dict:
-    data = await _read_capped(request)
     try:
-        path = _save_upload(filename, data)
+        sink = await _receive_upload(request)
+        path = await run_in_threadpool(sink.commit, filename)
     except OSError:  # its message carries the server path: log it here, never answer it
         logger.exception("could not store upload %r", filename)
         raise UploadStoreError("could not store the upload") from None

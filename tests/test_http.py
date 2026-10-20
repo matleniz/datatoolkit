@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 
@@ -12,6 +13,7 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient
 
+from dtk_engine import http as http_mod
 from dtk_engine.demo_data import TRAIN_CSV
 from dtk_engine.http import create_app
 
@@ -704,3 +706,41 @@ def test_bad_cap_env_fails_at_startup(home, monkeypatch):
     monkeypatch.setenv("DTK_MAX_UPLOAD_MB", "abc")
     with pytest.raises(UploadConfigError, match="DTK_MAX_UPLOAD_MB"):
         create_app()
+
+
+def _stray_files(home):
+    return [p for p in (home / "uploads").rglob("*") if p.is_file()] if (home / "uploads").exists() else []
+
+
+def test_upload_413_midstream_leaves_no_temp_file(client, home, monkeypatch):
+    monkeypatch.setenv("DTK_MAX_UPLOAD_MB", "1")
+    r = client.put("/api/uploads/big.bin", content=(b"z" * 2**19 for _ in range(4)))
+    assert r.status_code == 413
+    assert _stray_files(home) == []
+
+
+def test_upload_client_disconnect_leaves_no_temp_file(client, home):
+    def body():
+        yield b"a" * 2**16
+        raise RuntimeError("client went away")
+
+    with pytest.raises(Exception):  # noqa: B017  (the TestClient re-raises the dropped stream)
+        client.put("/api/uploads/cut.bin", content=body())
+    assert _stray_files(home) == []
+
+
+def test_upload_write_error_midstream_leaves_no_temp_file(client, home, monkeypatch):
+    calls = []
+    real = http_mod._UploadSink.write
+
+    def flaky(self, chunk):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError(errno.ENOSPC, "No space left", "/secret/path")
+        real(self, chunk)
+
+    monkeypatch.setattr(http_mod._UploadSink, "write", flaky)
+    r = client.put("/api/uploads/w.bin", content=(b"a" * 2**16 for _ in range(4)))
+    assert r.status_code == 500
+    assert "/secret" not in r.text
+    assert _stray_files(home) == []
