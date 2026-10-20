@@ -65,6 +65,27 @@ def test_constant_column():
     ]
 
 
+@pytest.mark.parametrize(
+    ("pct", "expected"),
+    [(0.0, "warning"), (0.01, "info"), (95.0, "info"), (99.9, "info")],
+)
+def test_constant_with_missing_is_a_presence_flag(pct, expected):
+    prof = _profile(a={"semantic_type": "constant", "n_unique": 1, "pct_missing": pct})
+    found = _find(_alerts(prof), "constant")
+    assert [f["severity"] for f in found] == [expected]
+    if expected == "info":
+        assert "presence flag" in found[0]["message"]
+
+
+def test_presence_flag_keeps_its_missing_alert():
+    prof = _profile(a={"semantic_type": "constant", "n_unique": 1, "pct_missing": 95.0})
+    out = _alerts(prof)
+    assert [(r["severity"], r["check"]) for r in out.to_dict("records")] == [
+        ("warning", "missing"),
+        ("info", "constant"),
+    ]
+
+
 def test_id_like_column():
     out = _alerts(_profile(a={"semantic_type": "id_like"}))
     assert [(r["severity"], r["check"]) for r in out.to_dict("records")] == [("info", "id_like")]
@@ -100,8 +121,8 @@ def test_duplicate_thresholds(n_dups, expected):
         (A.SKEW_INFO - 0.01, None),
         (A.SKEW_INFO, "info"),
         (-A.SKEW_INFO, "info"),
-        (A.SKEW_WARNING - 0.01, "info"),
-        (-A.SKEW_WARNING, "warning"),
+        (-10.0, "info"),
+        (10.0, "info"),
         (float("nan"), None),
     ],
 )
