@@ -308,14 +308,16 @@ def memory_summary(name: str) -> dict:
     return {"entries": entries, "chars": sum(len(e["text"]) for e in entries), "max_chars": MEMORY_CHARS_MAX}
 
 
-def save_workspace(workspace: dict) -> dict:
+def save_workspace(workspace: dict, write_seq: int | None = None) -> dict:
     """Validate (shape, step ops and params) and store (create or overwrite);
     returns the normalized dict. A document path not already in the stored
-    workspace must be a file under the upload dir (KeyParamsError otherwise)."""
+    workspace must be a file under the upload dir (KeyParamsError otherwise).
+    ``write_seq`` (optional, non-negative) refuses a write older than the last
+    accepted one for this name (``StaleWriteError``, datatoolkit-issues#263)."""
     store = JsonWorkspaceStore()
     parsed = parse_workspace(_with_stored_counters(store, workspace))
     _check_new_documents(store, parsed)
-    store.save(parsed)
+    store.save(parsed, write_seq)
     return parsed.model_dump(mode="json")
 
 
