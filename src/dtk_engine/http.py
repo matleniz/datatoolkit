@@ -348,12 +348,19 @@ def _write_seq(request: Request) -> int | None:
     if not values:
         return None
     raw = values[0]
-    # Length first: int() on thousands of digits raises ValueError (a 500).
-    if len(values) > 1 or not re.fullmatch(r"[0-9]{1,19}", raw) or int(raw) > WRITE_SEQ_MAX:
+    # Leading zeros are accepted; the digit count is capped before int(), which
+    # raises ValueError (a 500) on thousands of digits.
+    digits = raw.lstrip("0") or "0"
+    if (
+        len(values) > 1
+        or not re.fullmatch(r"[0-9]+", raw)
+        or len(digits) > 19
+        or int(digits) > WRITE_SEQ_MAX
+    ):
         raise KeyParamsError(
             f"{WRITE_SEQ_HEADER}: must be one integer between 0 and {WRITE_SEQ_MAX}"
         )
-    return int(values[0])
+    return int(digits)
 
 
 @workspaces_router.get("/workspaces/{name}")

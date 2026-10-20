@@ -77,7 +77,7 @@ def test_no_header_never_creates_seq(client):
     assert _put(client, 3, note="b").status_code == 200
 
 
-@pytest.mark.parametrize("value", ["abc", "-1", "", "1.5", "+5", " 5", "5_0", str(2**63), "٥", "1" * 5000])
+@pytest.mark.parametrize("value", ["abc", "-1", "", "1.5", "+5", " 5", "5_0", str(2**63), "٥", "1" * 5000, "1" * 20])
 def test_invalid_header_422(client, value):
     r = client.put(
         "/api/workspaces/w", json=_workspace("w"), headers={H: value.encode("utf-8")}
@@ -180,3 +180,55 @@ def test_cors_preflight_allows_header(client):
     )
     assert r.status_code == 200
     assert H.lower() in r.headers["access-control-allow-headers"].lower()
+
+
+def test_leading_zeros_accepted(client):
+    assert _put(client, "0" * 5000 + "7").status_code == 200
+    assert _put(client, 6).status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("guarded", "code", "winner"), [(True, 409, "six"), (False, 200, "five")]
+)
+def test_late_older_write_deterministic(home, monkeypatch, guarded, code, winner):
+    """The older write (5) takes the lock only after the newer one (6) is done:
+    with the header it is refused; without, the older content wins (the bug)."""
+    from dtk_engine import contract
+    from dtk_engine.errors import StaleWriteError
+
+    store_mod._write_seq.clear()
+    newer_done = threading.Event()
+    real = store_mod.JsonWorkspaceStore._exclusive
+
+    def exclusive(self):
+        if threading.current_thread().name == "late":
+            assert newer_done.wait(10)
+        return real(self)
+
+    monkeypatch.setattr(store_mod.JsonWorkspaceStore, "_exclusive", exclusive)
+    out = {}
+
+    def run(label, seq, note):
+        ws = _workspace("w", notes={"workspace": note})
+        try:
+            contract.save_workspace(ws, seq if guarded else None)
+            out[label] = 200
+        except StaleWriteError:
+            out[label] = 409
+
+    late = threading.Thread(target=run, args=("late", 5, "five"), name="late")
+    late.start()
+    run("early", 6, "six")
+    newer_done.set()
+    late.join(10)
+    assert out == {"early": 200, "late": code}
+    assert contract.get_workspace("w")["notes"]["workspace"] == winner
+
+
+def test_no_header_never_creates_or_advances_seq_table(client):
+    assert _put(client, 9, note="nine").status_code == 200
+    assert _put(client, None, note="free").status_code == 200
+    assert _put(client, 8, note="eight").status_code == 409
+    assert _put(client, 9, note="again").status_code == 200
+    assert _put(client, None, name="other").status_code == 200
+    assert not any(k[1] == "other" for k in store_mod._write_seq)
