@@ -109,7 +109,7 @@ CASES = {
         ("formats null", lambda c: {"out_dir": c.fresh, "formats": None}, True, 200),
         ("out_dir missing", {}, False, None),
         ("out_dir not a string", {"out_dir": 3}, False, None),
-        ("formats not a list", lambda c: {"out_dir": c.fresh, "formats": 7}, False, None),
+        ("formats not a list", lambda c: {"out_dir": c.fresh, "formats": 7}, False, 422),
     ],
     ("post", "/api/workspaces/{name}/documents"): [
         ("path", lambda c: {"path": c.upload}, True, 200),
@@ -273,3 +273,151 @@ def test_integer_field_json_infinity_is_a_422(client):
     )
     assert r.status_code == 422, r.text
     assert r.json()["message"] == "head_rows: must be an integer, got inf"
+
+
+# -- ui commands timeout (datatoolkit-issues#269) --
+
+
+@pytest.fixture
+def ui(client, monkeypatch):
+    """The ui command route, with the bridge's ``send_command`` replaced by a recorder."""
+    seen = []
+
+    async def send_command(self, body, *, session, timeout):
+        seen.append(timeout)
+        return {"id": "c1", "ok": True}
+
+    monkeypatch.setattr("dtk_engine.ui_bridge.UiBridge.send_command", send_command)
+    token = client.app.state.ui_bridge.token
+    local = TestClient(client.app, base_url="http://127.0.0.1:8765", raise_server_exceptions=False)
+
+    def post(query="", body=None):
+        return local.post(
+            f"/api/ui/commands?{query}", json={"type": "x", **(body or {})},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    post.seen = seen
+    return post
+
+
+@pytest.mark.parametrize("raw", ["nan", "-nan", "abc", "1,5"])
+def test_ui_timeout_not_a_number_is_a_422_naming_the_field(ui, raw):
+    r = ui(f"timeout={raw}")
+    assert r.status_code == 422, r.text
+    assert r.json()["type"] == "KeyParamsError"
+    assert r.json()["message"] == f"timeout: must be a number, got {raw!r}"
+    assert ui.seen == []
+
+
+@pytest.mark.parametrize("value", [None, [], {}, "abc", "x" * 500])
+def test_ui_timeout_bad_body_value_is_a_422(ui, value):
+    r = ui(body={"timeout": value})
+    assert r.status_code == 422, r.text
+    assert r.json()["message"].startswith("timeout: must be a number, got ")
+    assert len(r.json()["message"]) < 100
+
+
+@pytest.mark.parametrize(
+    ("query", "body", "expected"),
+    [
+        ("timeout=inf", None, 120.0),
+        ("timeout=1e999", None, 120.0),
+        ("timeout=-5", None, 0.0),
+        ("timeout=-inf", None, 0.0),
+        ("timeout=0", {"timeout": 7}, 0.0),  # the query string wins, "0" included
+        ("", {"timeout": 0}, 0.0),
+        ("timeout=2.5", None, 2.5),
+        ("timeout=500", None, 120.0),
+        ("", None, 30.0),
+        ("", {"timeout": 9}, 9.0),
+    ],
+)
+def test_ui_timeout_finite_values_keep_clamping(ui, query, body, expected):
+    assert ui(query, body).status_code == 200
+    assert ui.seen == [expected]
+
+
+# -- export formats (datatoolkit-issues#270) --
+
+
+@pytest.mark.parametrize(
+    ("formats", "shown"),
+    [(5, "5"), ("csv", "'csv'"), ({"a": 1}, "{'a': 1}"), ([1], "[1]"), (["csv", None], "['csv', None]")],
+)
+def test_export_formats_wrong_type_is_a_422_showing_the_value(client, ctx, formats, shown):
+    r = client.post("/api/workspaces/w/export", json={"out_dir": ctx.fresh, "formats": formats})
+    assert r.status_code == 422, r.text
+    msg = r.json()["message"]
+    assert f"got {shown}" in msg and "parquet" in msg
+    assert not Path(ctx.fresh).exists()  # rejected before any staging dir is created
+
+
+def test_export_formats_unknown_message_unchanged(client, ctx):
+    r = client.post("/api/workspaces/w/export", json={"out_dir": ctx.fresh, "formats": ["csv", "x"]})
+    assert r.status_code == 422
+    assert r.json()["message"].endswith("got ['csv', 'x']")
+    assert not Path(ctx.fresh).exists()
+
+
+def test_export_formats_error_leaves_no_staging_dir_in_existing_out_dir(client, ctx):
+    before = sorted(p.name for p in Path(ctx.out).iterdir())
+    r = client.post(
+        "/api/workspaces/w/export", json={"out_dir": ctx.out, "overwrite": True, "formats": 5}
+    )
+    assert r.status_code == 422
+    assert sorted(p.name for p in Path(ctx.out).iterdir()) == before
+
+
+def test_export_formats_duplicates_dropped_in_first_seen_order(client, ctx):
+    r = client.post(
+        "/api/workspaces/w/export", json={"out_dir": ctx.fresh, "formats": ["csv", "py", "csv", "py"]}
+    )
+    assert r.status_code == 200, r.text
+    manifest = r.json()
+    assert manifest["formats"] == ["csv", "py"]
+    csv_outputs = [k for k in manifest["outputs"] if k.endswith("_csv")]
+    assert len(csv_outputs) == len(set(csv_outputs)) == 2
+
+
+# -- upload file names (datatoolkit-issues#271) --
+
+
+@pytest.mark.parametrize(
+    "name", ["a" * 300 + ".csv", "é" * 300 + ".csv", "日" * 200, "a" * 300, "a" * 10 + "." + "b" * 300],
+)
+def test_upload_long_name_is_truncated_to_a_stable_path(client, name):
+    first = client.put(f"/api/uploads/{name}", content=b"abc")
+    assert first.status_code == 200, first.text
+    path = Path(first.json()["path"])
+    assert len(path.name.encode()) + len(".." + "0" * 16 + ".tmp") <= 255  # temp name fits too
+    assert path.read_bytes() == b"abc"
+    again = client.put(f"/api/uploads/{name}", content=b"abc")
+    assert again.json() == first.json()
+
+
+def test_upload_long_name_keeps_the_extension(client):
+    r = client.put("/api/uploads/" + "a" * 300 + ".csv", content=b"abc")
+    assert Path(r.json()["path"]).suffix == ".csv"
+
+
+def test_upload_normal_name_is_unchanged(client):
+    r = client.put("/api/uploads/data.csv", content=b"abc")
+    assert Path(r.json()["path"]).name == "data.csv"
+
+
+def test_upload_dotdot_name_falls_back_to_upload(tmp_path):
+    from dtk_engine import http
+
+    assert http._save_upload("..", b"x", tmp_path).name == "upload"
+    assert http._save_upload("", b"x", tmp_path).name == "upload"
+
+
+def test_upload_os_error_never_leaks_the_server_path(client, monkeypatch):
+    def boom(path, data):
+        raise OSError(28, "No space left on device", str(path))
+
+    monkeypatch.setattr("dtk_engine.http._write_atomic", boom)
+    r = client.put("/api/uploads/notes.txt", content=b"abc")
+    assert r.status_code == 422, r.text
+    assert "/" not in r.json()["message"]
