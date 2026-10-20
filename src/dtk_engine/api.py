@@ -164,7 +164,7 @@ def label_join_preview(
 @_string_labels
 def transform(df: pd.DataFrame, op: str, **params) -> pd.DataFrame:
     """Fit ``op`` on ``df`` and apply it (to fit on train and apply to test,
-    use ``DtkTransformer``)."""
+    use ``DtkTransformer``). Integer column labels come back as strings."""
     t = get_transform(op)
     parsed = t.parse(params)
     try:

@@ -73,3 +73,30 @@ def test_string_labels_unchanged_frame_is_not_copied():
     from dtk_engine.sources import string_columns
 
     assert string_columns(df) is df
+
+
+def test_caller_frame_is_not_mutated():
+    from dtk_engine.sources import string_columns
+
+    df = pd.DataFrame({0: [1, 2], 1: [3, 4]})
+    out = string_columns(df)
+    assert list(out.columns) == ["0", "1"]
+    assert list(df.columns) == [0, 1]
+    api.overview(df)
+    assert list(df.columns) == [0, 1]
+
+
+def test_colliding_labels_raise_a_clear_error():
+    from dtk_engine.errors import SourceError
+
+    df = pd.DataFrame({1: [1, 2], "1": [3, 4]})
+    with pytest.raises(SourceError, match=r"collide.*\['1'\]"):
+        api.overview(df)
+
+
+def test_mixed_labels_overview_and_parquet_source(tmp_path):
+    df = pd.DataFrame({0: [1, 2], "b": [3, 4]})
+    path = tmp_path / "m.parquet"
+    df.set_axis(["0", "b"], axis=1).to_parquet(path)
+    assert list(api.load(path).columns) == ["0", "b"]
+    assert [r["column"] for r in api.overview(df).tables[0].records] == ["0", "b"]
