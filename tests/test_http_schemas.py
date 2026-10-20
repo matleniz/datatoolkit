@@ -419,5 +419,8 @@ def test_upload_os_error_never_leaks_the_server_path(client, monkeypatch):
 
     monkeypatch.setattr("dtk_engine.http._write_atomic", boom)
     r = client.put("/api/uploads/notes.txt", content=b"abc")
-    assert r.status_code == 422, r.text
-    assert "/" not in r.json()["message"]
+    assert r.status_code == 500, r.text
+    assert r.json() == {
+        "type": "UploadStoreError", "message": "could not store the upload: No space left on device",
+    }
+    assert "/" not in r.text

@@ -79,6 +79,10 @@ def _cors_origins() -> list[str]:
     return origins
 
 
+class UploadStoreError(Exception):
+    """The server failed to write an upload (disk full, permissions); the message has no path."""
+
+
 # The temp name ``.<name>.<16 hex>.tmp`` adds 22 bytes; filesystems cap a name at 255.
 _NAME_MAX_BYTES = 255 - 22
 
@@ -548,7 +552,7 @@ async def put_upload(filename: str, request: Request) -> dict:
         path = _save_upload(filename, data)
     except OSError as exc:  # an OSError message carries the server path: do not echo it
         reason = os.strerror(exc.errno) if exc.errno else "I/O error"
-        raise KeyParamsError(f"could not store the upload: {reason}") from None
+        raise UploadStoreError(f"could not store the upload: {reason}") from None
     return {"path": str(path)}
 
 
@@ -913,6 +917,7 @@ _ERROR_STATUS: dict[type[Exception], int] = {
     **dict.fromkeys((KeyParamsError, SourceError), 422),
     StaleWriteError: 409,
     WorkspaceCorruptError: 500,
+    UploadStoreError: 500,
     Exception: 500,
 }
 
