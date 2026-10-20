@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 from pydantic import Field
 
+from dtk_engine.ops.alerts import dataset_alerts
 from dtk_engine.ops.profile import (
     category_summary,
     category_values,
@@ -72,8 +73,11 @@ def overview_result(df: pd.DataFrame, head_rows: int = 5) -> Result:
             group="Overview",
             main=True,
         )
-    _add_type_groups(
-        result, df, dict(zip(profile["column"], profile["semantic_type"], strict=True))
+    semantic = dict(zip(profile["column"], profile["semantic_type"], strict=True))
+    numeric = numeric_stats(df, semantic)
+    _add_type_groups(result, df, semantic, numeric)
+    result.add_table(
+        "alerts", dataset_alerts(profile, numeric, len(df), n_dups), group="Overview"
     )
     return result
 
@@ -97,11 +101,10 @@ def _histogram_grid(hist: pd.DataFrame):
 
 
 def _add_type_groups(
-    result: Result, df: pd.DataFrame, semantic: dict[str, str]
+    result: Result, df: pd.DataFrame, semantic: dict[str, str], numeric: pd.DataFrame
 ) -> None:
     """One tab per semantic type that has columns (numeric, categorical, ...)."""
 
-    numeric = numeric_stats(df, semantic)
     if not numeric.empty:
         result.add_table("numeric stats", numeric, group="Numeric")
         hists = numeric_histograms(df, semantic=semantic)
