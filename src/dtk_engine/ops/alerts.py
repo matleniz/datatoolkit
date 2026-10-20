@@ -24,6 +24,8 @@ HIGH_CARDINALITY_UNIQUE = 50
 DUPLICATE_ROWS_WARNING_PCT = 5.0
 # |skewness| of a numeric column from which an info is raised (a modelling hint only).
 SKEW_INFO = 2.0
+# Characters whose presence in the only column's name betrays a wrong ``sep``.
+DELIMITER_CHARS = (";", "\t", "|")
 
 
 def _column_issues(profile: pd.DataFrame) -> Iterator[Issue]:
@@ -66,6 +68,23 @@ def _skew_issues(numeric: pd.DataFrame) -> Iterator[Issue]:
             yield "info", "skew", r.column, f"strongly skewed (skewness {r.skew:+.2f})"
 
 
+def _delimiter_issues(profile: pd.DataFrame) -> Iterator[Issue]:
+    """One column whose name holds a delimiter: the file was read with the wrong ``sep``."""
+    if len(profile) != 1:
+        return
+    name = str(profile["column"].iloc[0])
+    for ch in DELIMITER_CHARS:
+        if ch in name:
+            shown = repr(ch)[1:-1] if ch == "\t" else ch
+            label = "tab" if ch == "\t" else f"'{ch}'"
+            msg = (
+                f"single column whose header contains {label}: the file is probably "
+                f"{label}-separated (set the source's sep to '{shown}')"
+            )
+            yield "error", "delimiter", name, msg
+            return
+
+
 def dataset_alerts(
     profile: pd.DataFrame, numeric: pd.DataFrame, n_rows: int, n_dups: int
 ) -> pd.DataFrame:
@@ -73,6 +92,7 @@ def dataset_alerts(
     issues = [
         dict(zip(ISSUE_FIELDS, issue, strict=True))
         for issue in chain(
+            _delimiter_issues(profile),
             _column_issues(profile),
             _duplicate_issues(n_rows, n_dups),
             _skew_issues(numeric),
