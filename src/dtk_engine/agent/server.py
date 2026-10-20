@@ -54,7 +54,14 @@ def _tool(spec: ToolSpec) -> types.Tool:
         name=spec.name,
         description=spec.description,
         input_schema=spec.input_schema,
-        annotations=types.ToolAnnotations(read_only_hint=True) if spec.read_only else None,
+        title=spec.meta.title,
+        annotations=types.ToolAnnotations(
+            title=spec.meta.title,
+            read_only_hint=spec.meta.read_only,
+            destructive_hint=spec.meta.destructive,
+            idempotent_hint=spec.meta.idempotent,
+            open_world_hint=False,
+        ),
     )
 
 
