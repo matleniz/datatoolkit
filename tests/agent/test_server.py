@@ -186,11 +186,12 @@ async def test_propose_steps_relays_with_context_fill(client, bridge):
 async def test_pending_review_then_status(client, bridge):
     bridge.put_context(_context())
     queue = bridge.add_listener("s1")
+    checked = asyncio.Event()
 
     async def studio():
         cmd = await queue.get()
         bridge.ack({"id": cmd["id"], "pending": "review"})
-        await asyncio.sleep(0.05)
+        await checked.wait()  # the final ack only lands once the test saw "pending"
         bridge.ack({"id": cmd["id"], "ok": True, "identity": "demo|train|1"})
 
     task = asyncio.create_task(studio())
@@ -198,6 +199,7 @@ async def test_pending_review_then_status(client, bridge):
     assert pending["data"]["pending"] == "review"
     cid = pending["data"]["id"]
     assert _payload(await client.call_tool("get_command_status", {"id": cid}))["data"]["pending"] == "review"
+    checked.set()
     await task
     final = _payload(await client.call_tool("get_command_status", {"id": cid}))
     assert final["data"]["ok"] is True
