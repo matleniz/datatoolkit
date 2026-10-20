@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.pipeline import Pipeline
-from sklearn.utils.validation import check_is_fitted
+from sklearn.utils.validation import check_array, check_is_fitted
 
 from dtk_engine.errors import UnknownTransformError
 from dtk_engine.ops import transforms  # noqa: F401  (registers every transform op)
@@ -25,7 +25,9 @@ from dtk_engine.workspace import JsonWorkspaceStore
 def _as_frame(X) -> pd.DataFrame:
     if isinstance(X, pd.DataFrame):
         return X
-    X = np.asarray(X)
+    # Array-likes: sklearn's validation gives the standard errors (1d, empty,
+    # sparse, complex); NaN / inf and any dtype stay the op's business.
+    X = check_array(X, dtype=None, ensure_all_finite=False)
     return pd.DataFrame(X, columns=[f"x{i}" for i in range(X.shape[1])])
 
 _ESC = {"op": "param_op"}
@@ -43,13 +45,30 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
 
     # The op identity is positional-only so an op param may itself be called
     # ``op`` (``derive``): ``DtkTransformer("derive", op="ratio")``.
-    def __init__(self, op: str, /, **params):
+    # ``op=None`` only makes the class default-constructible; ``fit`` refuses it.
+    def __init__(self, op: str | None = None, /, **params):
         self.op = op
-        self.params = params
+        self._params = params
+
+    # Kept out of the instance's public attributes: the op's params are
+    # exposed through get_params / set_params, not as a constructor argument.
+    @property
+    def params(self) -> dict:
+        return self._params
+
+    @params.setter
+    def params(self, value: dict) -> None:
+        self._params = value
 
     # The op's params are the estimator's params, so grid search sees them.
     # ``op`` is the transform's identity; an op param also called ``op`` is
     # exposed as ``param_op`` (never a plain ``op``, which would shadow it).
+    def __setstate__(self, state: dict) -> None:
+        # Pickles written before ``params`` became a property store it as "params".
+        if "params" in state and "_params" not in state:
+            state = {**state, "_params": state.pop("params")}
+        super().__setstate__(state)
+
     def get_params(self, deep: bool = True) -> dict:
         return {"op": self.op, **{_ESC.get(k, k): v for k, v in self.params.items()}}
 
@@ -58,11 +77,11 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
         # the old op's own params (e.g. `missing_ok`) are dropped.
         new_op = params.pop("op", self.op)
         params = {_UNESC.get(k, k): v for k, v in params.items()}
-        if new_op != self.op:
+        if not (isinstance(new_op, str) and new_op == self.op):
             try:
                 fields = get_transform(new_op).params_model.model_fields
-            except UnknownTransformError:
-                fields = {}  # unknown op: fails at fit, carry nothing over
+            except (UnknownTransformError, TypeError):
+                fields = {}  # unknown / non-string op: fails at fit, carry nothing over
             self.op = new_op
             self.params = {k: v for k, v in self.params.items() if k in fields}
         self.params = {**self.params, **params}
@@ -73,9 +92,14 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
         # positional-only argument as a keyword; rebuild it explicitly.
         return type(self)(self.op, **{k: clone(v, safe=False) for k, v in self.params.items()})
 
+    def _transform_op(self):
+        if self.op is None:
+            raise ValueError("DtkTransformer needs an op name, e.g. DtkTransformer('scale', ...)")
+        return get_transform(self.op)
+
     def _fit(self, X, y=None) -> pd.DataFrame:
         X = _as_frame(X)
-        t = get_transform(self.op)
+        t = self._transform_op()
         params = t.parse(self.params)
         fit_frame = X
         target = params.target if t.needs_target else None
@@ -97,8 +121,16 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
 
     def transform(self, X) -> pd.DataFrame:
         check_is_fitted(self, "state_")
-        t = get_transform(self.op)
-        return t.apply(_as_frame(X), t.parse(self.params), self.state_)
+        t = self._transform_op()
+        if not isinstance(X, pd.DataFrame):
+            # Arrays carry no names: the width is the only thing to check.
+            X = _as_frame(X)
+            if X.shape[1] != self.n_features_in_:
+                raise ValueError(
+                    f"X has {X.shape[1]} features, but DtkTransformer is expecting "
+                    f"{self.n_features_in_} features as input"
+                )
+        return t.apply(X, t.parse(self.params), self.state_)
 
     def get_feature_names_out(self, input_features=None) -> np.ndarray:
         check_is_fitted(self, "feature_names_out_")
