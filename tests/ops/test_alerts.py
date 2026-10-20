@@ -170,3 +170,34 @@ def test_overview_result_has_alerts_table_on_real_frame():
 def test_overview_alerts_table_empty_but_present_on_demo():
     res = overview_result(pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0, 5.5]})).model_dump()
     assert any(t["title"] == "alerts" for t in res["tables"])
+
+
+@pytest.mark.parametrize("ch", [";", "\t", "|"])
+def test_single_column_with_delimiter_in_header_is_an_error(ch):
+    found = _find(_alerts(_profile(**{f"a{ch}b": {}})), "delimiter")
+    assert [(f["severity"], f["column"]) for f in found] == [("error", f"a{ch}b")]
+
+
+def test_delimiter_error_names_the_character_and_sep():
+    header = 'age;"job";"marital";"y"'
+    (found,) = _find(_alerts(_profile(**{header: {}})), "delimiter")
+    assert "';'" in found["message"]
+    assert "sep" in found["message"]
+
+
+def test_delimiter_error_on_bank_full_shaped_overview():
+    df = pd.DataFrame({'age;"job";"marital";"y"': ['58;"mgmt";"married";"no"'] * 5})
+    res = overview_result(df).model_dump()
+    table = next(t for t in res["tables"] if t["title"] == "alerts")
+    assert (table["records"][0]["severity"], table["records"][0]["check"]) == (
+        "error",
+        "delimiter",
+    )
+
+
+def test_single_plain_column_has_no_delimiter_alert():
+    assert not _find(_alerts(_profile(age={})), "delimiter")
+
+
+def test_multi_column_names_with_delimiter_stay_silent():
+    assert not _find(_alerts(_profile(**{"a;b": {}, "c|d": {}})), "delimiter")
