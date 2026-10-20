@@ -444,3 +444,40 @@ def test_align_report_sees_merged_columns(workspace_files):
     assert cols_train["tier"]["status"] == "missing_in_test"
     assert cols_train["tier"]["test"] is None
 
+
+
+def _merge_ws(source_path: str, key: str = "id") -> dict:
+    return {
+        "name": "m",
+        "datasets": {"train": {"x": {"kind": "csv", "path": "x.csv"}}},
+        "merges": [{"source": {"kind": "csv", "path": source_path}, "key": key}],
+    }
+
+
+def test_workspace_validation_refuses_null_merge_keys(tmp_path):
+    from pydantic import ValidationError
+
+    extra = tmp_path / "extra.csv"
+    extra.write_text("id,val\n1,a\n,b\n")
+    with pytest.raises(ValidationError, match=r"key 'id' contains 1 null value\(s\)"):
+        Workspace.model_validate(_merge_ws(str(extra)))
+
+
+def test_workspace_validation_defers_an_unloadable_merge_source(tmp_path):
+    missing = tmp_path / "gone.csv"
+    ws = Workspace.model_validate(_merge_ws(str(missing)))
+    assert ws.merges[0].source.path == str(missing)
+    # a loadable source without the key column is not this validator's business either
+    other = tmp_path / "other.csv"
+    other.write_text("a,b\n1,2\n")
+    assert Workspace.model_validate(_merge_ws(str(other))).merges[0].key == "id"
+
+
+def test_groups_that_are_not_a_list_are_left_to_validation():
+    from pydantic import ValidationError
+
+    base = {"name": "g", "datasets": {"train": {"x": {"kind": "csv", "path": "x.csv"}}}}
+    with pytest.raises(ValidationError) as exc:
+        Workspace.model_validate({**base, "groups": "oops"})
+    assert exc.value.errors()[0]["loc"] == ("groups",)
+    assert exc.value.errors()[0]["type"] == "list_type"

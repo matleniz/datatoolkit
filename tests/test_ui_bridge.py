@@ -582,3 +582,22 @@ def test_listener_drop_without_return_fails_after_grace():
         assert await asyncio.wait_for(task, 1) == {"id": "a", "ok": False, "error": "no_studio"}
 
     asyncio.run(scenario())
+
+
+def test_guard_error_bodies_are_pinned(client):
+    """Both guard routes (/api/ui and /mcp) answer the same UiBridgeError body."""
+    expected = {
+        "type": "UiBridgeError",
+        "message": "missing or invalid UI token",
+        "details": None,
+    }
+    ui = client.get("/api/ui/context")
+    assert ui.status_code == 401
+    assert ui.json() == expected
+    mcp = client.get("/mcp")
+    assert mcp.status_code == 401
+    assert mcp.json() == expected
+    assert mcp.content == ui.content
+    bad_host = client.get("/mcp", headers={**AUTH, "Host": "evil.example"})
+    assert bad_host.status_code == 403
+    assert bad_host.json() == {**expected, "message": "host not allowed"}

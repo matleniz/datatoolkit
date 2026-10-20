@@ -572,8 +572,7 @@ class _UiGuardError(Exception):
 
 async def _ui_guard_response(_request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, _UiGuardError)
-    body = {"type": "UiBridgeError", "message": str(exc), "details": None}
-    return JSONResponse(status_code=exc.status, content=body)
+    return _ui_error(exc.status, "UiBridgeError", str(exc))
 
 
 def _bridge(request: HTTPConnection) -> UiBridge:
@@ -634,8 +633,8 @@ class _McpGuard:
             if inner is None:
                 raise _UiGuardError(503, "MCP endpoint not running")
         except _UiGuardError as exc:
-            body = {"type": "UiBridgeError", "message": str(exc), "details": None}
-            await JSONResponse(status_code=exc.status, content=body)(scope, receive, send)
+            response = _ui_error(exc.status, "UiBridgeError", str(exc))
+            await response(scope, receive, send)
             return
         await inner({**scope, "path": "/mcp"}, receive, send)
 
@@ -815,7 +814,6 @@ async def post_agent_send(body: AgentSend, request: Request):
     hub = _agent_hub(request)
     if hub is None:
         return _ui_error(503, "NoAgent", _NO_AGENT_EXTRA)
-    from dtk_engine.agent.attachments import UnknownAttachmentError
     from dtk_engine.agent.chat import AgentBusyError, NoAgentError
 
     await run_in_threadpool(hub.unavailable, body.session)  # first auth probe may spawn the CLI
@@ -921,7 +919,7 @@ _ERROR_STATUS: dict[type[Exception], int] = {
     **dict.fromkeys((UnknownKeyError, UnknownTransformError, WorkspaceNotFoundError), 404),
     **dict.fromkeys((KeyParamsError, SourceError), 422),
     StaleWriteError: 409,
-    WorkspaceCorruptError: 500,
+    WorkspaceCorruptError: 500,  # same as the fallback; documents HTTP-API.md's explicit mention
     UploadStoreError: 500,
     Exception: 500,
 }

@@ -520,3 +520,88 @@ def test_posix_staging_liveness(tmp_path, monkeypatch, exc, stale):
 def test_posix_old_staging_is_stale_even_if_pid_alive(tmp_path, monkeypatch):
     mod = _posix_kill(monkeypatch, None)
     assert mod._staging_is_stale(_staging(tmp_path, 4242, age=mod.STAGING_MAX_AGE + 60))
+
+
+def test_provenance_of_a_partitioned_directory(tmp_path):
+    from dtk_engine.workspace.export import file_provenance
+
+    root = tmp_path / "parts"
+    (root / "year=2020").mkdir(parents=True)
+    (root / "year=2021").mkdir()
+    (root / "year=2021" / "b.bin").write_bytes(b"BBBB")
+    (root / "year=2020" / "a.bin").write_bytes(b"AA")
+    prov = file_provenance(root)
+    expected = hashlib.sha256()
+    for rel, blob in (("year=2020/a.bin", b"AA"), ("year=2021/b.bin", b"BBBB")):
+        expected.update(rel.encode() + b"\0" + blob)
+    assert prov["sha256"] == expected.hexdigest()
+    assert prov["n_files"] == 2 and prov["size"] == 6
+    assert prov["path"] == str(root.resolve())
+    (root / "year=2020" / "a.bin").write_bytes(b"AB")
+    assert file_provenance(root)["sha256"] != prov["sha256"]
+
+
+def test_empty_directory_provenance(tmp_path):
+    from dtk_engine.workspace.export import file_provenance
+
+    (tmp_path / "empty").mkdir()
+    prov = file_provenance(tmp_path / "empty")
+    assert prov["n_files"] == 0 and prov["size"] == 0
+    assert prov["sha256"] == hashlib.sha256().hexdigest()
+
+
+def _export_with_bystanders(workspace, out):
+    export_workspace(workspace, str(out))
+    (out / "notes.txt").write_text("mine")
+    (out / "processed" / "mine.txt").write_text("mine too")
+    return _tree(out)
+
+
+@pytest.mark.parametrize(
+    ("manifest_text", "match"),
+    [
+        (b"\xff\xfe not utf-8", "unreadable"),
+        (b"{not json", "unreadable"),
+        (json.dumps({"generator": "dtk_engine", "outputs": [1]}), "malformed"),
+    ],
+)
+def test_overwrite_refuses_unreadable_or_malformed_manifest(
+    workspace, tmp_path, manifest_text, match
+):
+    from dtk_engine.workspace.export import GENERATOR
+
+    out = tmp_path / "export"
+    before = _export_with_bystanders(workspace, out)
+    if isinstance(manifest_text, str):
+        manifest_text = manifest_text.replace("dtk_engine", GENERATOR).encode()
+    (out / "manifest.json").write_bytes(manifest_text)
+    before["manifest.json"] = manifest_text
+    with pytest.raises(KeyParamsError, match=match):
+        export(workspace, out, overwrite=True)
+    assert _tree(out) == before  # nothing deleted, nothing added (no staging left)
+
+
+def test_overwrite_refuses_step_entries_of_the_wrong_type(workspace, tmp_path):
+    out = tmp_path / "export"
+    before = _export_with_bystanders(workspace, out)
+    _tamper(out, lambda m: m.update(steps=[7]))
+    before["manifest.json"] = (out / "manifest.json").read_bytes()
+    with pytest.raises(KeyParamsError, match="malformed"):
+        export(workspace, out, overwrite=True)
+    assert _tree(out) == before
+
+
+def test_load_state_inline_needs_no_file(tmp_path):
+    state = {"mean": [1.5]}
+    assert load_state(tmp_path / "missing", {"state": state}) == state
+
+
+def test_load_state_checks_the_side_file_sha256(tmp_path):
+    side = tmp_path / "states" / "s0.json"
+    side.parent.mkdir()
+    side.write_text(json.dumps({"mean": [1.5]}))
+    entry = {"state_file": "states/s0.json", "state_sha256": _sha(side)}
+    assert load_state(tmp_path, entry) == {"mean": [1.5]}
+    side.write_text(json.dumps({"mean": [9.9]}))
+    with pytest.raises(SourceError, match="does not match its manifest sha256"):
+        load_state(tmp_path, entry)

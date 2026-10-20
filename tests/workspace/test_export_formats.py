@@ -311,3 +311,21 @@ def test_derive_step_exports_and_reproduces_the_parquet(tmp_path):
     done = subprocess.run([sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False)
     assert done.returncode == 0, done.stderr
     _same(pd.read_parquet(tmp_path / "tr.parquet"), expected)
+
+
+def test_test_only_step_without_a_test_set_is_skipped_in_the_script(tmp_path):
+    contract.save_workspace({
+        "name": "solo",
+        "datasets": {"train": {"x": {"kind": "csv", "path": str(TRAIN_CSV)}}},
+        "steps": [
+            {"op": "drop_columns", "target": "test", "params": {"columns": ["Cabin"]}},
+            {"op": "rename", "target": "train", "params": {"mapping": {"Pclass": "pclass"}}},
+        ],
+    })
+    out = tmp_path / "export"
+    manifest = contract.export_workspace("solo", str(out), formats=["parquet", "py"])
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "'drop_columns'" not in script  # the replay skips it, so does the script
+    assert "'rename'" in script
+    assert [s["op"] for s in manifest["steps"]] == ["drop_columns", "rename"]
+    assert "pclass" in pd.read_parquet(out / "processed" / "train.parquet").columns
