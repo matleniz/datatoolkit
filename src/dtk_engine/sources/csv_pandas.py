@@ -582,13 +582,12 @@ def _open_source(path: str, spec: CsvSource) -> _TextSource:
     """
     if not os.path.isfile(path):
         return _held(path, spec.encoding)
-    if spec.encoding == "auto":
-        return _TextSource(path, guess_file_encoding(path))
-    if not codecs.lookup(spec.encoding)._is_text_encoding:
-        return _held(path, spec.encoding)
-    if _decodes(path, spec.encoding):
-        return _TextSource(path, spec.encoding)
-    return _held(path, spec.encoding)  # decodes whole, or raises the same error
+    encoding = guess_file_encoding(path) if spec.encoding == "auto" else spec.encoding
+    if not codecs.lookup(encoding)._is_text_encoding:
+        return _held(path, encoding)
+    if _decodes(path, encoding):
+        return _TextSource(path, encoding)
+    return _held(path, encoding)  # decodes whole, or raises the same error
 
 
 def _held(path: str, encoding: str) -> _TextSource:

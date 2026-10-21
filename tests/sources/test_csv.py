@@ -382,3 +382,19 @@ def test_pipe_with_normalize_and_skiprows(tmp_path):
     t.join()
     assert df.shape == (3, 3)
     assert df["b"].tolist() == [2, 5, 8]
+
+
+@pytest.mark.parametrize("bom,encoding", [(b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe", "utf-16-le")])
+def test_auto_bom_decode_error_reports_file_position(tmp_path, monkeypatch, bom, encoding):
+    from dtk_engine.sources import csv_pandas
+
+    monkeypatch.setattr(csv_pandas, "CHUNK", 16)
+    path = tmp_path / "bad.csv"
+    good = ("a,b\n" + "1,xx\n" * 20).encode(encoding)
+    bad = b"\xff\xff\xff" if encoding == "utf-8" else b"\x00\xd8\x00\xd8"  # lone surrogates
+    path.write_bytes(bom + good + bad)
+    with pytest.raises(SourceError) as exc:
+        load(CsvSource(path=str(path)))
+    with pytest.raises(UnicodeDecodeError) as whole:  # what decoding the whole file says
+        (bom + good + bad).decode({b"\xef\xbb\xbf": "utf-8-sig"}.get(bom, "utf-16-le"))
+    assert str(whole.value) in str(exc.value)
