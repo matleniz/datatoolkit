@@ -6,7 +6,7 @@ import asyncio
 import json
 
 import pytest
-from mcp import Client
+from mcp import Client, types
 
 from dtk_engine import contract
 from dtk_engine.agent import policy
@@ -389,3 +389,78 @@ async def test_export_tool_writes_only_under_exports(client, bridge, home):
     done = _payload(await client.call_tool("export_workspace", {"formats": ["py"], "overwrite": True}))
     assert done["data"]["outputs"] == {"script": "code/pipeline.py"}
     assert not (home / "exports" / "demo" / "code" / "pipeline.ipynb").exists()
+
+
+def _elicit_client(bridge, audit, action, content=None, asked=None, mode="legacy"):
+    async def callback(ctx, params):
+        if asked is not None:
+            asked.append(params)
+        return types.ElicitResult(action=action, content=content)
+
+    return Client(build_server(LocalUiPort(bridge), audit), elicitation_callback=callback, mode=mode)
+
+
+def _snapshot(root):
+    return {str(p): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+async def _first_export(client, bridge):
+    _save_demo()
+    bridge.put_context(_context())
+    await client.call_tool("export_workspace", {})
+
+
+async def test_overwrite_elicits_and_accepts(bridge, audit, home):
+    asked = []
+    async with _elicit_client(bridge, audit, "accept", {"confirm": True}, asked) as c:
+        await _first_export(c, bridge)
+        assert asked == []  # nothing to overwrite yet
+        done = await c.call_tool("export_workspace", {"formats": ["py"], "overwrite": True})
+    assert not done.is_error and _payload(done)["data"]["outputs"] == {"script": "code/pipeline.py"}
+    (q,) = asked
+    assert str(home / "exports" / "demo") in q.message and "replaced" in q.message
+    assert list(q.requested_schema["properties"]) == ["confirm"]
+    assert q.requested_schema["properties"]["confirm"]["type"] == "boolean"
+
+
+@pytest.mark.parametrize(
+    ("action", "content"),
+    [("accept", {"confirm": False}), ("decline", None), ("cancel", None)],
+)
+async def test_overwrite_refused_leaves_disk_untouched(bridge, audit, home, action, content):
+    async with _elicit_client(bridge, audit, action, content) as c:
+        await _first_export(c, bridge)
+        before = _snapshot(home / "exports")
+        res = await c.call_tool("export_workspace", {"formats": ["py"], "overwrite": True})
+    assert not res.is_error
+    body = _payload(res)
+    assert body["exported"] is False and "Not done" in body["reason"]
+    assert _snapshot(home / "exports") == before
+
+
+async def test_no_elicitation_capability_is_unchanged(client, bridge, home):
+    await _first_export(client, bridge)
+    done = await client.call_tool("export_workspace", {"formats": ["py"], "overwrite": True})
+    assert not done.is_error and _payload(done)["data"]["outputs"] == {"script": "code/pipeline.py"}
+
+
+async def test_no_prompt_without_overwrite_or_existing_export(bridge, audit):
+    asked = []
+    async with _elicit_client(bridge, audit, "decline", None, asked) as c:
+        _save_demo()
+        bridge.put_context(_context())
+        first = await c.call_tool("export_workspace", {"overwrite": True})  # nothing there
+        again = await c.call_tool("export_workspace", {"formats": ["py"]})  # no overwrite
+    assert not first.is_error
+    assert again.is_error and "overwrite" in again.content[0].text
+    assert asked == []
+
+
+async def test_modern_era_client_has_no_back_channel_and_is_unchanged(bridge, audit):
+    """2026-07-28 connections forbid server-initiated requests: no prompt, no block."""
+    asked = []
+    async with _elicit_client(bridge, audit, "decline", None, asked, mode="auto") as c:
+        await _first_export(c, bridge)
+        done = await c.call_tool("export_workspace", {"formats": ["py"], "overwrite": True})
+    assert not done.is_error and _payload(done)["data"]["outputs"] == {"script": "code/pipeline.py"}
+    assert asked == []
