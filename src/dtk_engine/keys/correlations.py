@@ -8,6 +8,7 @@ import plotly.express as px
 from pydantic import Field
 
 from dtk_engine.errors import KeyParamsError, valid_names_hint
+from dtk_engine.ops._util import sample_rows, sampling_metrics, sampling_note
 from dtk_engine.ops.columns import is_numeric, numeric_feature, pick_columns
 from dtk_engine.ops.correlation import (
     DEFAULT_THRESHOLD,
@@ -30,6 +31,8 @@ ANNOTATE_MAX = 12
 TOP_PAIRS = 10
 # Longest axis label before truncation.
 LABEL_MAX = 18
+# Seed of the max_rows sample (the key has no random_state).
+SAMPLE_SEED = 0
 
 
 class Params(SourceParams):
@@ -61,6 +64,13 @@ class Params(SourceParams):
         "Optional label column: excluded from the matrix; in each pair the column "
         "more correlated with it is the one to keep",
     )
+    max_rows: int | None = Field(
+        default=None,
+        gt=0,
+        strict=True,
+        description="Correlate a seeded sample of at most this many rows (empty = "
+        "every row); the whole Result (matrix, pairs, n_rows) then comes from it",
+    )
 
 
 @key(
@@ -79,6 +89,7 @@ def run(params: Params) -> Result:
         params.threshold,
         params.target,
         params.top_n,
+        params.max_rows,
     )
 
 
@@ -89,6 +100,7 @@ def correlations_result(
     threshold: float = DEFAULT_THRESHOLD,
     target: str | None = None,
     top_n: int = 15,
+    max_rows: int | None = None,
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.correlations``)."""
     op = "correlations"
@@ -106,6 +118,9 @@ def correlations_result(
         requirement="are not numeric (encode first)",
         cap=MAX_COLUMNS,
     )
+    n_source = len(df)
+    df = sample_rows(df, max_rows, SAMPLE_SEED)
+    n_sampled_out = n_source - len(df)
     corr = correlation_matrix(df, picked, method)
     to_target = (
         target_correlation(df, picked, target, method) if target is not None else None
@@ -155,6 +170,7 @@ def correlations_result(
         },
         text="\n".join(lines),
     )
+    _disclose_sample(result, n_source, n_sampled_out)
     result.add_table(f"correlated_pairs (|corr| >= {threshold})", pairs)
     result.add_table("matrix", corr.rename_axis("column").reset_index())
     if to_target is not None:
@@ -171,6 +187,20 @@ def correlations_result(
         if len(strongest):
             result.add_figure("Strongest pairs", _pairs_bar(strongest))
     return result
+
+
+def _disclose_sample(result: Result, n_source: int, n_sampled_out: int) -> None:
+    """``max_rows`` sampling: metrics and a one-line note (nothing if not sampled)."""
+    if not n_sampled_out:
+        return
+    result.metrics.update(sampling_metrics(n_source, n_sampled_out))
+    note = sampling_note(
+        n_source - n_sampled_out,
+        n_sampled_out,
+        "the correlations",
+        "; every number comes from that sample.",
+    )
+    result.text = "\n".join(filter(None, [result.text, note]))
 
 
 def _top_columns(corr: pd.DataFrame, top_n: int) -> list[str]:

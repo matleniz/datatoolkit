@@ -8,7 +8,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pydantic import Field
 
-from dtk_engine.ops._util import points_disclosure
+from dtk_engine.ops._util import (
+    points_disclosure,
+    sample_rows,
+    sampling_metrics,
+    sampling_note,
+)
 from dtk_engine.ops.columns import is_numeric, pick_columns
 from dtk_engine.ops.outliers import (
     ACTION_TABLE,
@@ -64,7 +69,17 @@ class Params(SourceParams):
         description="Expected share of anomalous rows for the IsolationForest "
         "(explicit, no 'auto')",
     )
-    random_state: int = Field(default=0, description="IsolationForest seed")
+    random_state: int = Field(
+        default=0, description="IsolationForest seed (also seeds the max_rows sample)"
+    )
+    max_rows: int | None = Field(
+        default=None,
+        gt=0,
+        strict=True,
+        description="Fit the IsolationForest on a seeded sample of at most this many "
+        "rows (empty = every row). IQR / z-score / MAD counts always use every row; "
+        "flagged rows and scores then come from the sample",
+    )
 
 
 @key(
@@ -85,6 +100,7 @@ def run(params: Params) -> Result:
         params.columns,
         params.method,
         params.mad_threshold,
+        params.max_rows,
     )
 
 
@@ -97,6 +113,7 @@ def outliers_result(
     columns: list[str] | None = None,
     method: OutlierMethod = "all",
     mad_threshold: float = MAD_THRESHOLD,
+    max_rows: int | None = None,
 ) -> Result:
     """The key's Result on a DataFrame (shared with ``dtk_engine.api.outliers``)."""
     if columns:
@@ -121,12 +138,15 @@ def outliers_result(
         table = table.assign(n_z=0, pct_z=0.0)
     if not run_mad:
         table = table.assign(n_mad=0, pct_mad=0.0)
+    # Only the multivariate part is sampled: the univariate detectors are exact and cheap.
+    fit_df = sample_rows(df, max_rows, random_state) if run_if else df
+    n_sampled_out = len(df) - len(fit_df)
     scores = (
-        isolation_forest(df, picked, contamination, random_state)
+        isolation_forest(fit_df, picked, contamination, random_state)
         if run_if
         else pd.DataFrame({"score": [], "flagged": []}, dtype=float)
     )
-    flagged = flagged_rows(df, scores, picked) if run_if else pd.DataFrame(
+    flagged = flagged_rows(fit_df, scores, picked) if run_if else pd.DataFrame(
         columns=["row", "score", *picked]
     )
     n_flagged = int(scores["flagged"].sum()) if len(scores) else 0
@@ -148,7 +168,7 @@ def outliers_result(
     )
     hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
     plan, plan_cols = _box_plan(run_iqr, picked, hit)
-    _disclose(result, df, boxes, plan_cols, n_flagged if run_if else 0)
+    _disclose(result, df, boxes, plan_cols, n_flagged if run_if else 0, n_sampled_out)
     result.add_table("outliers_per_column", table)
     result.add_table("flagged_rows", flagged)
     if run_iqr:
@@ -199,8 +219,11 @@ def _box_plan(run_iqr: bool, picked, hit) -> tuple[str, list[str]]:
     return "none", []
 
 
-def _disclose(result: Result, df, boxes, columns: list[str], n_flagged: int) -> None:
-    """Sampling notes: outlier points per plotted column, and the flagged-rows cap."""
+def _disclose(
+    result: Result, df, boxes, columns: list[str], n_flagged: int, n_sampled_out: int = 0
+) -> None:
+    """Sampling notes: outlier points per plotted column, the flagged-rows cap and
+    the ``max_rows`` sample behind the IsolationForest."""
     fences = boxes.set_index("column")
     entries = []
     for col in columns:
@@ -210,6 +233,17 @@ def _disclose(result: Result, df, boxes, columns: list[str], n_flagged: int) -> 
     metrics, note = points_disclosure(entries, "outlier points")
     result.metrics.update(metrics)
     notes = [note] if note else []
+    if n_sampled_out:
+        result.metrics.update(sampling_metrics(len(df), n_sampled_out))
+        notes.append(
+            sampling_note(
+                len(df) - n_sampled_out,
+                n_sampled_out,
+                "the IsolationForest",
+                "; scores and flagged rows come from that sample, "
+                "IQR / z-score / MAD counts use every row.",
+            )
+        )
     if n_flagged > FLAGGED_SAMPLE:
         notes.append(
             f"Showing the {FLAGGED_SAMPLE} most anomalous of {n_flagged} flagged rows."

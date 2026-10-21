@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -192,3 +193,48 @@ def test_flagged_rows_truncation_noted():
     n = res.metrics["n_rows_flagged"]
     assert n > 20
     assert f"Showing the 20 most anomalous of {n} flagged rows." in res.text
+
+
+def _frame(n=600):
+    rng = np.random.default_rng(3)
+    return pd.DataFrame(rng.normal(size=(n, 4)), columns=list("abcd"))
+
+
+def test_max_rows_unset_is_unchanged():
+    df = _frame()
+    full = api.outliers(df)
+    assert "n_rows_source" not in full.metrics
+    assert api.outliers(df, max_rows=None).metrics == full.metrics
+    assert api.outliers(df, max_rows=600).metrics == full.metrics  # frame <= cap
+
+
+def test_max_rows_samples_isolation_forest_only():
+    df = _frame()
+    full = api.outliers(df)
+    res = api.outliers(df, max_rows=200)
+    assert res.metrics["n_rows_source"] == 600 and res.metrics["n_sampled_out"] == 400
+    assert "Sampled 200 rows for the IsolationForest" in res.text
+    assert res.metrics["n_rows"] == 600
+    assert res.metrics["n_rows_flagged"] == 2  # 1 % of the 200 sampled rows
+    uni = next(t for t in res.tables if t.title == "outliers_per_column")
+    uni_full = next(t for t in full.tables if t.title == "outliers_per_column")
+    assert uni.records == uni_full.records  # univariate counts use every row
+
+
+def test_max_rows_same_seed_same_result_and_no_note_without_if():
+    df = _frame()
+    assert api.outliers(df, max_rows=200).metrics == api.outliers(df, max_rows=200).metrics
+    res = api.outliers(df, max_rows=200, method="iqr")
+    assert "n_sampled_out" not in res.metrics and "Sampled 200 rows" not in res.text
+
+
+@pytest.mark.parametrize("bad", [0, -5, 2.5, True])
+def test_max_rows_rejected(bad):
+    with pytest.raises(KeyParamsError):
+        run_key("outliers", {"max_rows": bad})
+
+
+def test_max_rows_in_key_schema():
+    from dtk_engine.keys.outliers import Params
+
+    assert Params.model_json_schema()["properties"]["max_rows"]["description"]

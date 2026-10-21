@@ -227,6 +227,7 @@ def outliers(
     columns: list[str] | None = None,
     method: str = "all",
     mad_threshold: float = 3.5,
+    max_rows: int | None = None,
 ) -> Result:
     """``outliers`` on a DataFrame."""
     return outliers_result(
@@ -238,6 +239,7 @@ def outliers(
         columns,
         method,
         mad_threshold,
+        max_rows,
     )
 
 
@@ -340,9 +342,10 @@ def correlations(
     threshold: float = 0.9,
     target: str | None = None,
     top_n: int = 15,
+    max_rows: int | None = None,
 ) -> Result:
     """``correlations`` on a DataFrame: heatmap + pairs with |corr| >= threshold."""
-    return correlations_result(df, columns, method, threshold, target, top_n)
+    return correlations_result(df, columns, method, threshold, target, top_n, max_rows)
 
 
 @_string_labels
