@@ -168,8 +168,33 @@ def notebook_json(ws: Workspace, exported_at: str) -> str:
     return json.dumps(notebook, indent=1, ensure_ascii=False) + "\n"
 
 
-def script_text(ws: Workspace, exported_at: str) -> str:
-    """The same code as a plain script; notes and group headers become ``#`` comments."""
+def _pipeline_code(ws: Workspace) -> str:
+    """The "both" steps as an unfitted sklearn ``Pipeline``, standalone: built from the
+    steps' literals, no stored workspace needed. Same names / steps as
+    ``dtk_engine.workspace_pipeline``."""
+    steps = [
+        f"    ({f'{i}_{s.op}'!r}, DtkTransformer({s.op!r}, **{_literal(s.params)})),"
+        for i, s in enumerate(ws.steps)
+        if s.target == "both"
+    ] or ["    ('passthrough', 'passthrough'),"]
+    return "\n".join(
+        [
+            "# --- sklearn pipeline (optional) ---",
+            "# The steps applied to train and test, as an unfitted Pipeline: fit it on your",
+            "# own training data (PIPELINE.fit(X_train)), then PIPELINE.transform(X_new).",
+            "# Train-only / test-only steps (row cleaning of one side) are not part of it.",
+            "from sklearn.pipeline import Pipeline",
+            "",
+            "PIPELINE = Pipeline([",
+            *steps,
+            "])",
+        ]
+    )
+
+
+def script_text(ws: Workspace, exported_at: str, pipeline: bool = False) -> str:
+    """The same code as a plain script; notes and group headers become ``#`` comments.
+    ``pipeline`` appends the optional trailing sklearn ``Pipeline`` section."""
 
     def comment(text: str) -> str:
         return "\n".join(f"# {line}".rstrip() for line in text.splitlines())
@@ -181,4 +206,6 @@ def script_text(ws: Workspace, exported_at: str) -> str:
             header.append(comment(group.intent))
         parts.append("\n".join([*header, code]))
     parts.append(f"print({_SHAPES})")
+    if pipeline:
+        parts.append(_pipeline_code(ws))
     return "\n\n".join(parts) + "\n"

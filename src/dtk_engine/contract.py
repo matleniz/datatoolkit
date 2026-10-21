@@ -394,7 +394,11 @@ def duplicate_workspace(name: str, new_name: str) -> dict:
 
 
 def export_workspace(
-    name: str, out_dir: str, overwrite: bool = False, formats: list[str] | None = None
+    name: str,
+    out_dir: str,
+    overwrite: bool = False,
+    formats: list[str] | None = None,
+    pipeline: bool = False,
 ) -> dict:
     """Export the processed train / test and a manifest into ``out_dir``; returns the
     manifest.
@@ -404,7 +408,9 @@ def export_workspace(
     (sources hashed, steps with fitted states, versions). ``formats`` (default
     ``["parquet"]``) adds / picks ``csv`` (``processed/*.csv``), ``ipynb`` and
     ``py`` (``code/pipeline.*``, a replay of the steps through the notebook door,
-    notes as markdown / comments).
+    notes as markdown / comments). ``pipeline`` (default false, needs ``py``) appends
+    an optional, standalone sklearn ``Pipeline`` section (the train + test steps,
+    unfitted) to ``code/pipeline.py``.
 
     Transactional: everything is built in a staging directory inside ``out_dir``,
     then swapped in (manifest last). A failure leaves ``out_dir`` as it was; with
@@ -419,7 +425,7 @@ def export_workspace(
     on the data -> SourceError; an unknown step op -> UnknownTransformError,
     invalid step params -> KeyParamsError.
     """
-    return _export(name, out_dir, overwrite=overwrite, formats=formats)
+    return _export(name, out_dir, overwrite=overwrite, formats=formats, pipeline=pipeline)
 
 
 # Workspace documents (datatoolkit-issues#178): upload refs kept with a

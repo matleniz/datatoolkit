@@ -329,3 +329,80 @@ def test_test_only_step_without_a_test_set_is_skipped_in_the_script(tmp_path):
     assert "'rename'" in script
     assert [s["op"] for s in manifest["steps"]] == ["drop_columns", "rename"]
     assert "pclass" in pd.read_parquet(out / "processed" / "train.parquet").columns
+
+
+# -- optional sklearn Pipeline section (datatoolkit-issues#295) --
+
+BOTH_STEPS = [s for s in STEPS if s["target"] == "both"]
+
+
+def _export_demo(tmp_path, name: str, steps, **kwargs):
+    contract.save_workspace({
+        "name": name,
+        "datasets": {
+            "train": {"x": {"kind": "csv", "path": str(TRAIN_CSV)}},
+            "test": {"x": {"kind": "csv", "path": str(TEST_CSV)}},
+        },
+        "steps": steps,
+    })
+    out = tmp_path / name
+    contract.export_workspace(name, str(out), **kwargs)
+    return out
+
+
+def test_pipeline_is_off_by_default(tmp_path):
+    out = _export_demo(tmp_path, "w", STEPS, formats=["py"])
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "PIPELINE" not in script and "sklearn" not in script
+    again = _export_demo(tmp_path, "w2", STEPS, formats=["py"], pipeline=False)
+    assert _statements(script) == _statements((again / "code" / "pipeline.py").read_text())
+
+
+def test_pipeline_needs_the_py_format(tmp_path):
+    with pytest.raises(KeyParamsError, match="pipeline needs the 'py' format"):
+        contract.export_workspace("demo", str(tmp_path / "x"), formats=["ipynb"], pipeline=True)
+
+
+def test_pipeline_section_runs_standalone_and_matches_the_replay(tmp_path):
+    out = _export_demo(tmp_path, "pp", BOTH_STEPS, formats=["parquet", "py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    head, _, section = script.partition("# --- sklearn pipeline (optional) ---")
+    assert section and "workspace_pipeline" not in script  # no stored workspace needed
+    assert _statements(head) == _statements(
+        (_export_demo(tmp_path, "pp2", BOTH_STEPS, formats=["py"]) / "code" / "pipeline.py").read_text()
+    )
+    check = tmp_path / "check.py"
+    check.write_text(
+        script
+        + "\nraw_train, raw_test = workspace_frames(SOURCES)"
+        + "\nPIPELINE.fit(raw_train)"
+        + f"\nPIPELINE.transform(raw_train).to_parquet({str(tmp_path / 'tr.parquet')!r})"
+        + f"\nPIPELINE.transform(raw_test).to_parquet({str(tmp_path / 'te.parquet')!r})\n"
+    )
+    done = subprocess.run(
+        [sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False,
+        cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stderr
+    _same(pd.read_parquet(tmp_path / "tr.parquet"), _parquet(out, "train"))
+    _same(pd.read_parquet(tmp_path / "te.parquet"), _parquet(out, "test"))
+
+
+def test_pipeline_section_keeps_only_both_steps(tmp_path):
+    out = _export_demo(tmp_path, "mix", STEPS, formats=["py"], pipeline=True)
+    section = (out / "code" / "pipeline.py").read_text().split("PIPELINE = ")[1]
+    assert "'0_impute'" in section and "'5_rename'" in section
+    assert "filter_rows" not in section and "drop_columns" not in section
+
+
+def test_pipeline_without_both_steps_is_a_passthrough(tmp_path):
+    out = _export_demo(tmp_path, "none", [STEPS[3]], formats=["py"], pipeline=True)
+    assert "('passthrough', 'passthrough')" in (out / "code" / "pipeline.py").read_text()
+
+
+def test_pipeline_leaves_other_formats_alone(tmp_path):
+    plain = _export_demo(tmp_path, "a", BOTH_STEPS, formats=["parquet", "csv", "ipynb"])
+    withp = _export_demo(tmp_path, "b", BOTH_STEPS, formats=["parquet", "csv", "ipynb", "py"], pipeline=True)
+    for rel in ("processed/train.parquet", "processed/train.csv", "processed/test.csv"):
+        assert (plain / rel).read_bytes() == (withp / rel).read_bytes()
+    assert "PIPELINE" not in (withp / "code" / "pipeline.ipynb").read_text()

@@ -360,12 +360,14 @@ def export_workspace(
     overwrite: bool = False,
     store=None,
     formats: list[str] | None = None,
+    pipeline: bool = False,
 ) -> dict:
     """Write the workspace's processed data (``formats``: parquet by default,
     csv, ipynb, py) + ``manifest.json`` under ``out_dir``; returns the manifest
-    (see ``dtk_engine.workspace.export``)."""
+    (see ``dtk_engine.workspace.export``). ``pipeline`` adds a standalone sklearn
+    ``Pipeline`` section to the ``py`` script."""
     return _export_workspace(
-        name, out_dir, overwrite=overwrite, store=store, formats=formats
+        name, out_dir, overwrite=overwrite, store=store, formats=formats, pipeline=pipeline
     )
 
 

@@ -355,6 +355,7 @@ class _Tools:
         manifest = await _compute(
             contract.export_workspace, str(name), str(out_dir),
             bool(args.get("overwrite")), args.get("formats") or ["ipynb"],
+            bool(args.get("pipeline")),
         )
         data = {
             "out_dir": str(out_dir),
@@ -633,7 +634,8 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
          ("Export the workspace into $DTK_HOME/exports/<workspace> (the only place): "
           "formats ipynb (default: a notebook replaying the steps, with the notes as "
           "markdown), py (same as a script), csv / parquet (the processed train / "
-          "test). overwrite replaces a previous export there (destructive: it can overwrite "
+          "test). pipeline (needs py) appends a standalone sklearn Pipeline to the "
+          "script. overwrite replaces a previous export there (destructive: it can overwrite "
           "files; a client that supports elicitation is asked to confirm first). "
           "Only when the user asks."),
          _schema({
@@ -642,6 +644,7 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
                  "items": {"type": "string", "enum": ["parquet", "csv", "ipynb", "py"]},
              },
              "overwrite": {"type": "boolean"},
+             "pipeline": {"type": "boolean"},
              "workspace": _VIEW["workspace"], "session": _SESSION,
          }), t.export_workspace),
         ("align_report",

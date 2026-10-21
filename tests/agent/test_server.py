@@ -391,6 +391,17 @@ async def test_export_tool_writes_only_under_exports(client, bridge, home):
     assert not (home / "exports" / "demo" / "code" / "pipeline.ipynb").exists()
 
 
+async def test_export_tool_pipeline_option(client, bridge, home):
+    """#295: pipeline adds the sklearn section to the py script; it needs py."""
+    _save_demo()
+    bridge.put_context(_context())
+    refused = await client.call_tool("export_workspace", {"pipeline": True})
+    assert refused.is_error and "py" in refused.content[0].text
+    done = _payload(await client.call_tool("export_workspace", {"formats": ["py"], "pipeline": True}))
+    assert done["data"]["outputs"] == {"script": "code/pipeline.py"}
+    assert "PIPELINE = Pipeline" in (home / "exports" / "demo" / "code" / "pipeline.py").read_text()
+
+
 def _elicit_client(bridge, audit, action, content=None, asked=None, mode="legacy"):
     async def callback(ctx, params):
         if asked is not None:

@@ -349,6 +349,7 @@ class ExportBody(_Doc):
     out_dir: str
     overwrite: _Truthy = False
     formats: list[str] | None = None
+    pipeline: _Truthy = False
 
 
 class AddDocumentBody(_Doc):
@@ -550,6 +551,7 @@ async def post_export(name: str, request: Request) -> dict:
         body["out_dir"],
         overwrite=bool(body.get("overwrite", False)),
         formats=body.get("formats"),
+        pipeline=bool(body.get("pipeline", False)),
     )
 
 
