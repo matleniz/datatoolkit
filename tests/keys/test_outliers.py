@@ -155,12 +155,40 @@ def test_outlier_points_sampling_disclosed():
     df = pd.DataFrame({"a": [i % 10 for i in range(5000)] + [10_000] * 900})
     res = api.outliers(df, columns=["a"])
     m = res.metrics
-    assert m["n_rows_source"] == 900 and m["n_sampled_out"] == 900 - OUTLIER_POINTS_MAX
-    assert "Sampled 500 rows for the outlier points (400 rows left out)." in res.text
+    assert m["n_points_total"] == 900 and m["n_points_shown"] == OUTLIER_POINTS_MAX
+    assert "n_rows_source" not in m
+    assert "Sampled 500 of 900 outlier points for column a (400 left out)." in res.text
 
 
 def test_outlier_points_unsampled_has_no_note():
     df = pd.DataFrame({"a": [i % 10 for i in range(5000)] + [10_000] * 5})
     res = api.outliers(df, columns=["a"])
-    assert res.metrics["n_rows_source"] == 5 and res.metrics["n_sampled_out"] == 0
+    assert res.metrics["n_points_total"] == 5 == res.metrics["n_points_shown"]
     assert "Sampled" not in res.text
+
+
+def test_outlier_points_multi_column_names_worst():
+    base = [i % 10 for i in range(5000)]
+    df = pd.DataFrame({
+        "a": base + [10_000] * 600 + [0] * 300,
+        "b": base + [10_000] * 900,
+    })
+    res = api.outliers(df, columns=["a", "b"], method="iqr")
+    m = res.metrics
+    assert m["n_points_total"] == 900 and m["n_points_shown"] == 500
+    assert "for column b (400 left out); 2 of 2 plots are sampled" in res.text
+
+
+def test_no_points_figure_publishes_no_sampling_metrics():
+    df = pd.DataFrame({"a": [i % 10 for i in range(100)]})
+    res = api.outliers(df, columns=["a"], method="isolation_forest")
+    assert "n_points_total" not in res.metrics
+    assert "Sampled" not in res.text
+
+
+def test_flagged_rows_truncation_noted():
+    df = pd.DataFrame({"a": [float(i % 10) for i in range(2000)]})
+    res = api.outliers(df, columns=["a"], method="isolation_forest", contamination=0.1)
+    n = res.metrics["n_rows_flagged"]
+    assert n > 20
+    assert f"Showing the 20 most anomalous of {n} flagged rows." in res.text

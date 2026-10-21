@@ -235,13 +235,30 @@ def test_scatter_sampling_disclosed():
     df = pd.DataFrame({"x": [i % 7 for i in range(n)], "by": [i % 11 for i in range(n)]})
     res = api.distribution(df, columns=["x"], by="by")
     m = res.metrics
-    assert m["n_rows_source"] == n and m["n_sampled_out"] == 500
-    assert f"Sampled {SCATTER_MAX} rows for the scatter plots (500 rows left out)." in res.text
-    assert m["n_rows_source"] - m["n_sampled_out"] == SCATTER_MAX
+    assert m["n_points_total"] == n and m["n_points_shown"] == SCATTER_MAX
+    assert "n_rows_source" not in m
+    assert f"Sampled {SCATTER_MAX} of {n} scatter points for x vs by (500 left out)." in res.text
 
 
 def test_scatter_unsampled_has_no_note():
     df = pd.DataFrame({"x": [i % 7 for i in range(50)], "by": [i % 11 for i in range(50)]})
     res = api.distribution(df, columns=["x"], by="by")
-    assert res.metrics["n_rows_source"] == 50 and res.metrics["n_sampled_out"] == 0
+    assert res.metrics["n_points_total"] == 50 == res.metrics["n_points_shown"]
     assert "Sampled" not in res.text
+
+
+def test_scatter_no_by_publishes_no_sampling_metrics():
+    res = api.distribution(pd.DataFrame({"x": [i % 7 for i in range(3000)]}))
+    assert "n_points_total" not in res.metrics
+
+
+def test_scatter_multi_column_names_most_truncated():
+    n = 2600
+    df = pd.DataFrame({
+        "a": [float(i % 7) for i in range(n)],
+        "b": [float(i % 5) if i < 2100 else None for i in range(n)],
+        "by": [float(i % 11) for i in range(n)],
+    })
+    res = api.distribution(df, columns=["a", "b"], by="by")
+    assert res.metrics["n_points_total"] == n and res.metrics["n_points_shown"] == 2000
+    assert "for a vs by (600 left out); 2 of 2 plots are sampled" in res.text
