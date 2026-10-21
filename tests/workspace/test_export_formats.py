@@ -450,3 +450,58 @@ def test_pipeline_leaves_other_formats_alone(tmp_path):
     for rel in ("processed/train.parquet", "processed/train.csv", "processed/test.csv"):
         assert (plain / rel).read_bytes() == (withp / rel).read_bytes()
     assert "PIPELINE" not in (withp / "code" / "pipeline.ipynb").read_text()
+
+
+def test_row_ops_classification_covers_every_registered_op():
+    from dtk_engine.ops import transforms  # noqa: F401  (registers every op)
+    from dtk_engine.transform_registry import all_transforms
+    from dtk_engine.workspace.notebook import _ROW_OPS
+
+    ROW_PRESERVING = {
+    "align_to_train",
+    "bin",
+    "cast",
+    "clip",
+    "copy_column",
+    "cyclical",
+    "datetime_parts",
+    "derive",
+    "drop_columns",
+    "drop_correlated",
+    "drop_high_missing",
+    "drop_low_variance",
+    "extract",
+    "ffill",
+    "formula",
+    "group_agg",
+    "impute",
+    "impute_iterative",
+    "impute_knn",
+    "interactions",
+    "log1p",
+    "onehot",
+    "ordinal",
+    "parse_dates",
+    "pca",
+    "polynomial",
+    "power_transform",
+    "quantile_transform",
+    "rename",
+    "rename_columns_bulk",
+    "reorder_columns",
+    "replace_sentinels",
+    "replace_values",
+    "scale",
+    "select_columns",
+    "select_from_model",
+    "select_k_best",
+    "spline",
+    "standardize_text",
+    "to_numeric",
+}
+    registered = {t.op for t in all_transforms()}
+    assert registered >= _ROW_OPS, f"_ROW_OPS names unknown ops (renamed?): {_ROW_OPS - registered}"
+    assert registered == _ROW_OPS | ROW_PRESERVING, (
+        f"classify the new op: row-changing -> _ROW_OPS, else add to ROW_PRESERVING: "
+        f"{registered ^ (_ROW_OPS | ROW_PRESERVING)}"
+    )
