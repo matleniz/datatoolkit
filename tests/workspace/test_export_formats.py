@@ -329,3 +329,179 @@ def test_test_only_step_without_a_test_set_is_skipped_in_the_script(tmp_path):
     assert "'rename'" in script
     assert [s["op"] for s in manifest["steps"]] == ["drop_columns", "rename"]
     assert "pclass" in pd.read_parquet(out / "processed" / "train.parquet").columns
+
+
+# -- optional sklearn Pipeline section (datatoolkit-issues#295) --
+
+BOTH_STEPS = [s for s in STEPS if s["target"] == "both"]
+
+
+def _export_demo(tmp_path, name: str, steps, **kwargs):
+    contract.save_workspace({
+        "name": name,
+        "datasets": {
+            "train": {"x": {"kind": "csv", "path": str(TRAIN_CSV)}},
+            "test": {"x": {"kind": "csv", "path": str(TEST_CSV)}},
+        },
+        "steps": steps,
+    })
+    out = tmp_path / name
+    contract.export_workspace(name, str(out), **kwargs)
+    return out
+
+
+def test_pipeline_is_off_by_default(tmp_path):
+    out = _export_demo(tmp_path, "w", STEPS, formats=["py"])
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "PIPELINE" not in script and "sklearn" not in script
+    again = _export_demo(tmp_path, "w2", STEPS, formats=["py"], pipeline=False)
+    assert _statements(script) == _statements((again / "code" / "pipeline.py").read_text())
+
+
+def test_pipeline_needs_the_py_format(tmp_path):
+    with pytest.raises(KeyParamsError, match="pipeline needs the 'py' format"):
+        contract.export_workspace("demo", str(tmp_path / "x"), formats=["ipynb"], pipeline=True)
+
+
+def test_pipeline_section_runs_standalone_and_matches_the_replay(tmp_path):
+    out = _export_demo(tmp_path, "pp", BOTH_STEPS, formats=["parquet", "py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    head, _, section = script.partition("# --- sklearn pipeline (optional) ---")
+    assert section and "workspace_pipeline" not in script  # no stored workspace needed
+    assert _statements(head) == _statements(
+        (_export_demo(tmp_path, "pp2", BOTH_STEPS, formats=["py"]) / "code" / "pipeline.py").read_text()
+    )
+    check = tmp_path / "check.py"
+    check.write_text(
+        script
+        + "\nraw_train, raw_test = workspace_frames(SOURCES)"
+        + "\nPIPELINE.fit(raw_train)"
+        + f"\nPIPELINE.transform(raw_train).to_parquet({str(tmp_path / 'tr.parquet')!r})"
+        + f"\nPIPELINE.transform(raw_test).to_parquet({str(tmp_path / 'te.parquet')!r})\n"
+    )
+    done = subprocess.run(
+        [sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False,
+        cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stderr
+    _same(pd.read_parquet(tmp_path / "tr.parquet"), _parquet(out, "train"))
+    _same(pd.read_parquet(tmp_path / "te.parquet"), _parquet(out, "test"))
+
+
+def _run_script(tmp_path, script: str, extra: str = ""):
+    check = tmp_path / "check.py"
+    check.write_text(script + "\n" + extra)
+    done = subprocess.run(
+        [sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False,
+        cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+def test_pipeline_lists_skipped_steps_as_comments(tmp_path):
+    out = _export_demo(tmp_path, "mix", STEPS, formats=["py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    section = script.split("PIPELINE = ")[1]
+    assert "'0_impute'" in section and "'5_rename'" in section
+    assert "DtkTransformer('filter_rows'" not in section
+    assert "DtkTransformer('drop_columns'" not in section
+    assert "# skipped: s5 drop_columns (test): test-only" in section
+    assert "# skipped: s4 filter_rows (train): train-only" in section
+    _run_script(tmp_path, script)
+
+
+def test_pipeline_row_changing_both_step_is_skipped_with_a_reason(tmp_path):
+    steps = [STEPS[0], {"op": "filter_rows", "target": "both", "params": STEPS[3]["params"]}]
+    out = _export_demo(tmp_path, "rows", steps, formats=["py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    section = script.split("PIPELINE = ")[1]
+    assert "# skipped: s2 filter_rows (both): changes the rows" in section
+    assert "apply it to your data yourself before fitting" in section
+    assert "DtkTransformer('filter_rows'" not in section
+    _run_script(tmp_path, script)
+
+
+def test_pipeline_label_reading_step_is_flagged(tmp_path):
+    steps = [{"op": "select_k_best", "target": "both",
+              "params": {"target": "Survived", "k": 2, "columns": ["Fare", "Pclass"]}}]
+    out = _export_demo(tmp_path, "sel", steps, formats=["py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "reads the label column 'Survived'" in script
+    assert "must be in the frame passed to" in script
+    assert "DtkTransformer('select_k_best'" in script
+    assert "PIPELINE.fit(X_train)" not in script
+
+
+def test_pipeline_header_states_what_is_outside(tmp_path):
+    out = _export_demo(tmp_path, "hdr", BOTH_STEPS, formats=["py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "merges and label joins are not in it" in script
+    assert "label_last" not in script
+
+
+def test_pipeline_without_both_steps_is_a_passthrough(tmp_path):
+    out = _export_demo(tmp_path, "none", [STEPS[3]], formats=["py"], pipeline=True)
+    assert "('passthrough', 'passthrough')" in (out / "code" / "pipeline.py").read_text()
+
+
+def test_pipeline_leaves_other_formats_alone(tmp_path):
+    plain = _export_demo(tmp_path, "a", BOTH_STEPS, formats=["parquet", "csv", "ipynb"])
+    withp = _export_demo(tmp_path, "b", BOTH_STEPS, formats=["parquet", "csv", "ipynb", "py"], pipeline=True)
+    for rel in ("processed/train.parquet", "processed/train.csv", "processed/test.csv"):
+        assert (plain / rel).read_bytes() == (withp / rel).read_bytes()
+    assert "PIPELINE" not in (withp / "code" / "pipeline.ipynb").read_text()
+
+
+def test_row_ops_classification_covers_every_registered_op():
+    from dtk_engine.ops import transforms  # noqa: F401  (registers every op)
+    from dtk_engine.transform_registry import all_transforms
+    from dtk_engine.workspace.notebook import _ROW_OPS
+
+    ROW_PRESERVING = {
+    "align_to_train",
+    "bin",
+    "cast",
+    "clip",
+    "copy_column",
+    "cyclical",
+    "datetime_parts",
+    "derive",
+    "drop_columns",
+    "drop_correlated",
+    "drop_high_missing",
+    "drop_low_variance",
+    "extract",
+    "ffill",
+    "formula",
+    "group_agg",
+    "impute",
+    "impute_iterative",
+    "impute_knn",
+    "interactions",
+    "log1p",
+    "onehot",
+    "ordinal",
+    "parse_dates",
+    "pca",
+    "polynomial",
+    "power_transform",
+    "quantile_transform",
+    "rename",
+    "rename_columns_bulk",
+    "reorder_columns",
+    "replace_sentinels",
+    "replace_values",
+    "scale",
+    "select_columns",
+    "select_from_model",
+    "select_k_best",
+    "spline",
+    "standardize_text",
+    "to_numeric",
+}
+    registered = {t.op for t in all_transforms()}
+    assert registered >= _ROW_OPS, f"_ROW_OPS names unknown ops (renamed?): {_ROW_OPS - registered}"
+    assert registered == _ROW_OPS | ROW_PRESERVING, (
+        f"classify the new op: row-changing -> _ROW_OPS, else add to ROW_PRESERVING: "
+        f"{registered ^ (_ROW_OPS | ROW_PRESERVING)}"
+    )

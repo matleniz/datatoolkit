@@ -108,6 +108,7 @@ CASES = {
         ("fresh dir, defaults", lambda c: {"out_dir": c.fresh}, True, 200),
         ("formats", lambda c: {"out_dir": c.fresh, "formats": ["csv"]}, True, 200),
         ("formats null", lambda c: {"out_dir": c.fresh, "formats": None}, True, 200),
+        ("pipeline with py", lambda c: {"out_dir": c.fresh, "formats": ["py"], "pipeline": True}, True, 200),
         ("out_dir missing", {}, False, None),
         ("out_dir not a string", {"out_dir": 3}, False, None),
         ("formats not a list", lambda c: {"out_dir": c.fresh, "formats": 7}, False, 422),

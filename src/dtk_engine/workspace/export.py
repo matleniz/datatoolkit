@@ -12,7 +12,9 @@
 
 ``formats`` picks the data / code outputs (default parquet only):
 ``parquet``, ``csv``, ``ipynb`` and ``py``, the last two replaying the
-pipeline through the notebook door (``workspace.notebook``). Parquet refuses
+pipeline through the notebook door (``workspace.notebook``). ``pipeline=True``
+(needs ``py``) appends a standalone, unfitted sklearn ``Pipeline`` section to
+the script. Parquet refuses
 duplicate column names (csv writes them as they are).
 
 The manifest records the sources (path, size, sha256, mtime), the export time,
@@ -227,7 +229,8 @@ def _check_formats(formats: list[str] | None) -> list[str]:
 
 
 def _write_outputs(
-    ws: Workspace, out: Path, frames: dict, formats: list[str], exported_at: str
+    ws: Workspace, out: Path, frames: dict, formats: list[str], exported_at: str,
+    pipeline: bool = False,
 ) -> dict:
     outputs: dict[str, dict] = {}
     if "parquet" in formats or "csv" in formats:
@@ -241,7 +244,9 @@ def _write_outputs(
         text = notebook_json(ws, exported_at)
         outputs["notebook"] = _write_text(text, out / CODE_DIR / "pipeline.ipynb")
     if "py" in formats:
-        outputs["script"] = _write_text(script_text(ws, exported_at), out / CODE_DIR / "pipeline.py")
+        outputs["script"] = _write_text(
+            script_text(ws, exported_at, pipeline), out / CODE_DIR / "pipeline.py"
+        )
     return outputs
 
 
@@ -414,14 +419,20 @@ def export_workspace(
     store=None,
     inline_state_bytes: int = INLINE_STATE_BYTES,
     formats: list[str] | None = None,
+    pipeline: bool = False,
 ) -> dict:
     """Export the workspace's processed train / test and its manifest; returns it.
+
+    ``pipeline`` adds the optional sklearn ``Pipeline`` section to the ``py`` script
+    (refused without the ``py`` format).
 
     An existing export in ``out_dir`` (a ``manifest.json``) is refused unless
     ``overwrite``, which replaces the files that export listed once the new one
     is fully written.
     """
     formats = _check_formats(formats)
+    if pipeline and "py" not in formats:
+        raise KeyParamsError("pipeline needs the 'py' format (it adds a section to the script)")
     store = store if store is not None else JsonWorkspaceStore()
     ws = store.get(name)
     out = Path(out_dir).resolve()
@@ -456,7 +467,7 @@ def export_workspace(
     aside = Path(tempfile.mkdtemp(prefix=ASIDE_PREFIX, dir=out))
     keep_aside = False
     try:
-        manifest = _build_export(ws, new, formats, sources, merges, inline_state_bytes)
+        manifest = _build_export(ws, new, formats, sources, merges, inline_state_bytes, pipeline)
         _swap(new, aside, out, owned or [])
     except ExportRestoreError:
         keep_aside = True  # the only copy of the previous export
@@ -474,7 +485,7 @@ def export_workspace(
 
 def _build_export(
     ws: Workspace, out: Path, formats: list[str], sources: list[dict], merges: list[dict],
-    inline_state_bytes: int,
+    inline_state_bytes: int, pipeline: bool = False,
 ) -> dict:
     train = raw_workspace_frame(ws, "train", labeled=True)
     test = None
@@ -484,7 +495,7 @@ def _build_export(
 
     exported_at = datetime.now(UTC).isoformat()
     frames = {"train": train} if test is None else {"train": train, "test": test}
-    outputs = _write_outputs(ws, out, frames, formats, exported_at)
+    outputs = _write_outputs(ws, out, frames, formats, exported_at, pipeline)
 
     group_of = {sid: g.id for g in ws.groups for sid in g.step_ids}
     manifest = {
