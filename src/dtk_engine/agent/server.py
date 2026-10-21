@@ -11,9 +11,11 @@ import time
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
+import anyio
 from mcp import types
 from mcp.server.lowlevel import Server
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.shared.exceptions import NoBackChannelError
 from pydantic import ValidationError
 from starlette.applications import Starlette
 
@@ -77,6 +79,42 @@ def _tool(spec: ToolSpec) -> types.Tool:
     )
 
 
+CONFIRM_TIMEOUT = 120.0  # seconds a client gets to answer a confirmation; silence = not confirmed
+_CONFIRM_SCHEMA: types.ElicitRequestedSchema = {
+    "type": "object",
+    "properties": {"confirm": {"type": "boolean", "title": "Replace the previous export"}},
+    "required": ["confirm"],
+}
+
+
+async def _declined(ctx: Any, question: str) -> str | None:
+    """Ask the human through MCP elicitation; the reason to stop, or None to go on.
+
+    Only a client that declared the elicitation capability is asked: any other
+    (or one with no back-channel, as on 2026-07-28 connections where the SDK forbids
+    server-initiated requests) is never blocked, the call proceeds as before.
+    """
+    session = ctx.session
+    if not session.check_client_capability(
+        types.ClientCapabilities(elicitation=types.ElicitationCapability())
+    ):
+        return None
+    try:
+        with anyio.fail_after(CONFIRM_TIMEOUT):
+            answer = await session.elicit_form(
+                question, _CONFIRM_SCHEMA, related_request_id=ctx.request_id
+            )
+    except NoBackChannelError:
+        return None
+    except TimeoutError:
+        return f"no answer from the user within {CONFIRM_TIMEOUT:g}s"
+    if answer.action == "accept" and (answer.content or {}).get("confirm") is True:
+        return None
+    if answer.action == "accept":
+        return "the user did not confirm"
+    return f"the user chose to {answer.action}"
+
+
 def build_server(port: UiPort, audit: policy.AuditLog) -> Server:
     specs = {spec.name: spec for spec in build_tools(port)}
     tools = [_tool(spec) for spec in specs.values()]
@@ -93,6 +131,15 @@ def build_server(port: UiPort, audit: policy.AuditLog) -> Server:
             if spec is None:
                 raise KeyParamsError(f"unknown tool: {params.name}")
             check_arguments(validators[spec.name], args)
+            question = await spec.confirm(args) if spec.confirm else None
+            reason = await _declined(ctx, question) if question else None
+            if reason:
+                refusal = {"exported": False, "reason": f"Not done: {reason}; nothing was written."}
+                audit.record(
+                    params.name, args, status="declined", error=reason,
+                    duration_ms=_ms(started),
+                )
+                return _text_result(refusal)
             framed = await spec.handler(args)
         except Exception as exc:  # noqa: BLE001 - every failure becomes a tool error
             body = _error_body(exc)

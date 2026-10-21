@@ -24,6 +24,7 @@ from dtk_engine.agent.tool_meta import TOOL_META, ToolMeta
 from dtk_engine.errors import KeyParamsError
 
 COMMAND_TIMEOUT = 30.0
+_EXPORT_MANIFEST = "manifest.json"  # workspace.export.MANIFEST (agent may not import it)
 _NO_CONTEXT = "no Studio context: pass workspace"
 _NO_CONTEXT_NOTE = "no Studio context: key defaults (demo data) used"
 # UI-command fields filled from the Studio context: field -> context key.
@@ -44,6 +45,8 @@ class ToolSpec:
     handler: Handler
     meta: ToolMeta
     output_schema: dict | None = None  # set only where the result is structured
+    # Returns the question to put to the human before the call, or None when none is due.
+    confirm: Callable[[dict], Awaitable[str | None]] | None = None
 
 
 def _framed_result_schema() -> dict:
@@ -361,6 +364,18 @@ class _Tools:
         }
         return policy.frame(data)
 
+    async def confirm_export(self, args: dict) -> str | None:
+        """The overwrite question, only when ``overwrite`` would replace a real export."""
+        if not args.get("overwrite"):
+            return None
+        out_dir = policy.exports_dir(await self._workspace_name(args))
+        if not (out_dir / _EXPORT_MANIFEST).exists():
+            return None
+        return (
+            f"Export workspace to {out_dir}? The previous export there will be "
+            "replaced."
+        )
+
     async def align_report(self, args: dict) -> dict:
         view = await self._view(args, use_version=False)
         ws = await self._workspace_dict(view)
@@ -619,7 +634,8 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
           "formats ipynb (default: a notebook replaying the steps, with the notes as "
           "markdown), py (same as a script), csv / parquet (the processed train / "
           "test). overwrite replaces a previous export there (destructive: it can overwrite "
-          "files). Only when the user asks."),
+          "files; a client that supports elicitation is asked to confirm first). "
+          "Only when the user asks."),
          _schema({
              "formats": {
                  "type": "array", "minItems": 1,
@@ -670,7 +686,10 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
          _schema({"id": _STR}, ("id",)), t.get_command_status),
     ]
     tools = [
-        ToolSpec(n, d, s, t.tracked(_checked(h)), _meta(n), OUTPUT_SCHEMAS.get(n))
+        ToolSpec(
+            n, d, s, t.tracked(_checked(h)), _meta(n), OUTPUT_SCHEMAS.get(n),
+            t.confirm_export if n == "export_workspace" else None,
+        )
         for n, d, s, h in static
     ]
     tools.extend(
