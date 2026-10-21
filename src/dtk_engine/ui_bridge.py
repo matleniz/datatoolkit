@@ -70,6 +70,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 import tempfile
 import time
 from collections import OrderedDict
@@ -82,6 +83,7 @@ LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 DEFAULT_REVIEW_TIMEOUT = 900.0
 DEFAULT_RECONNECT_GRACE = 3.0
 MAX_RESULTS = 200
+_IS_WINDOWS = sys.platform == "win32"  # monkeypatched in tests
 _TOKEN_IN_QUERY = re.compile(r"([?&]token=)[^&\s\"']*", re.IGNORECASE)
 
 
@@ -420,6 +422,12 @@ def write_runtime(url: str, token: str) -> Path | None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Whether ``pid`` is running. Never probes on Windows, where ``os.kill`` TERMINATES
+    the process for any signal but CTRL_C_EVENT/CTRL_BREAK_EVENT: the runtime file is then
+    trusted (``True``) and a stale one fails at connect time. Same guard as the export
+    staging check; duplicated because this module imports nothing from the package."""
+    if _IS_WINDOWS:
+        return True
     try:
         os.kill(pid, 0)
     except PermissionError:
