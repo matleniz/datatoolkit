@@ -31,6 +31,14 @@ def sampling_metrics(n_source: int, n_sampled_out: int) -> dict[str, int]:
     return {"n_rows_source": int(n_source), "n_sampled_out": int(n_sampled_out)}
 
 
+def sample_rows(df: pd.DataFrame, max_rows: int | None, seed: int) -> pd.DataFrame:
+    """``df`` itself when ``max_rows`` is None or not exceeded, else a seeded
+    sample of ``max_rows`` rows in original order (same input, same sample)."""
+    if max_rows is None or len(df) <= max_rows:
+        return df
+    return df.sample(n=max_rows, random_state=seed).sort_index(kind="stable")
+
+
 def sampling_note(
     n_shown: int, n_sampled_out: int, what: str = "the figure", end: str = "."
 ) -> str:

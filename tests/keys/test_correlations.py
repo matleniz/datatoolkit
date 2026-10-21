@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from dtk_engine import api, run_key
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.transform_registry import get_transform
 
 
@@ -148,3 +149,34 @@ def test_strongest_pairs_figure():
 def test_top_n_bounds():
     with pytest.raises(ValueError):
         api.correlations(_wide(), top_n=1)
+
+
+def _big(n=600):
+    rng = np.random.default_rng(3)
+    a = rng.normal(size=n)
+    return pd.DataFrame({"a": a, "b": a + rng.normal(size=n) * 0.1, "c": rng.normal(size=n)})
+
+
+def test_max_rows_unset_or_not_exceeded_is_unchanged():
+    df = _big()
+    full = api.correlations(df)
+    assert "n_rows_source" not in full.metrics
+    assert api.correlations(df, max_rows=600).metrics == full.metrics
+    assert api.correlations(df, max_rows=None).text == full.text
+
+
+def test_max_rows_samples_and_discloses():
+    df = _big()
+    res = api.correlations(df, max_rows=100)
+    assert res.metrics["n_rows_source"] == 600 and res.metrics["n_sampled_out"] == 500
+    assert "Sampled 100 rows for the correlations" in res.text
+    pairs = next(t for t in res.tables if t.title.startswith("correlated_pairs"))
+    assert pairs.records[0]["n_rows"] == 100
+    again = api.correlations(df, max_rows=100)
+    assert again.tables[1].records == res.tables[1].records  # same seed, same matrix
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5])
+def test_max_rows_rejected(bad):
+    with pytest.raises(KeyParamsError):
+        run_key("correlations", {"max_rows": bad})
