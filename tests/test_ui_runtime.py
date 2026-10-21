@@ -126,3 +126,35 @@ def test_one_dtk_home_resolver_expands_user(tmp_path, monkeypatch):
     assert Path(os.path.realpath(home)) in policy.allowed_roots()
     monkeypatch.delenv("DTK_HOME")
     assert ui_bridge.dtk_home() == tmp_path / ".datatoolkit"
+
+
+def _kill(monkeypatch, windows, exc=None):
+    def fake(pid, sig):
+        if windows:
+            raise AssertionError("os.kill must never be called on win32")
+        if exc is not None:
+            raise exc
+
+    monkeypatch.setattr(ui_bridge, "_IS_WINDOWS", windows)
+    monkeypatch.setattr(os, "kill", fake)
+
+
+def test_win32_runtime_is_read_without_os_kill(home, monkeypatch):
+    write_runtime("http://127.0.0.1:8765", "tok")
+    _kill(monkeypatch, windows=True)
+    assert read_runtime()["url"] == "http://127.0.0.1:8765"
+
+
+@pytest.mark.parametrize(
+    ("exc", "alive"),
+    [
+        (None, True),
+        (PermissionError(), True),  # EPERM: the process exists
+        (ProcessLookupError(), False),
+        (OverflowError(), False),
+    ],
+)
+def test_posix_runtime_liveness(home, monkeypatch, exc, alive):
+    write_runtime("http://127.0.0.1:8765", "tok")
+    _kill(monkeypatch, windows=False, exc=exc)
+    assert (read_runtime() is not None) is alive
