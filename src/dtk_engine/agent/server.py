@@ -11,6 +11,7 @@ import time
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
+import anyio
 from mcp import types
 from mcp.server.lowlevel import Server
 from mcp.server.transport_security import TransportSecuritySettings
@@ -78,6 +79,7 @@ def _tool(spec: ToolSpec) -> types.Tool:
     )
 
 
+CONFIRM_TIMEOUT = 120.0  # seconds a client gets to answer a confirmation; silence = not confirmed
 _CONFIRM_SCHEMA: types.ElicitRequestedSchema = {
     "type": "object",
     "properties": {"confirm": {"type": "boolean", "title": "Replace the previous export"}},
@@ -98,11 +100,14 @@ async def _declined(ctx: Any, question: str) -> str | None:
     ):
         return None
     try:
-        answer = await session.elicit_form(
-            question, _CONFIRM_SCHEMA, related_request_id=ctx.request_id
-        )
+        with anyio.fail_after(CONFIRM_TIMEOUT):
+            answer = await session.elicit_form(
+                question, _CONFIRM_SCHEMA, related_request_id=ctx.request_id
+            )
     except NoBackChannelError:
         return None
+    except TimeoutError:
+        return f"no answer from the user within {CONFIRM_TIMEOUT:g}s"
     if answer.action == "accept" and (answer.content or {}).get("confirm") is True:
         return None
     if answer.action == "accept":

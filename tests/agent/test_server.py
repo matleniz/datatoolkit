@@ -464,3 +464,24 @@ async def test_modern_era_client_has_no_back_channel_and_is_unchanged(bridge, au
         done = await c.call_tool("export_workspace", {"formats": ["py"], "overwrite": True})
     assert not done.is_error and _payload(done)["data"]["outputs"] == {"script": "code/pipeline.py"}
     assert asked == []
+
+
+async def test_unanswered_confirmation_times_out_as_not_confirmed(bridge, audit, home, monkeypatch):
+    from dtk_engine.agent import server
+
+    monkeypatch.setattr(server, "CONFIRM_TIMEOUT", 0.05)
+
+    async def silent(ctx, params):
+        await asyncio.sleep(1)
+        return types.ElicitResult(action="accept", content={"confirm": True})
+
+    async with Client(
+        build_server(LocalUiPort(bridge), audit), elicitation_callback=silent, mode="legacy"
+    ) as c:
+        await _first_export(c, bridge)
+        before = _snapshot(home / "exports")
+        res = await c.call_tool("export_workspace", {"formats": ["py"], "overwrite": True})
+    assert not res.is_error
+    body = _payload(res)
+    assert body["exported"] is False and "no answer" in body["reason"]
+    assert _snapshot(home / "exports") == before
