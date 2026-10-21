@@ -143,3 +143,62 @@ def test_json_bom_and_encoding(tmp_path):
     assert df["a"].tolist() == ["café"]
     with pytest.raises(SourceError, match="unknown encoding"):
         api.load({"kind": "json", "path": str(latin), "encoding": "nope"})
+
+
+def _write_xlsx(path, rows, sheet="s"):
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
+    return str(path)
+
+
+def test_excel_duplicate_header_refused_at_read(tmp_path):
+    path = _write_xlsx(tmp_path / "d.xlsx", [["a", "b", "a", "b", "c"], [1, 2, 3, 4, 5]])
+    with pytest.raises(SourceError) as err:
+        load(ExcelSource(path=path))
+    assert str(err.value) == (
+        f"cannot read excel {path}: duplicate column names ['a', 'b'] in {path} "
+        "(rename them to be unique)"
+    )
+
+
+def test_excel_duplicate_header_none_is_accepted(tmp_path):
+    path = _write_xlsx(tmp_path / "d.xlsx", [["x", "x"], [1, 2]])
+    assert load(ExcelSource(path=path, header=None)).shape == (2, 2)
+
+
+def test_excel_duplicate_header_below_a_title_row(tmp_path):
+    path = _write_xlsx(tmp_path / "d.xlsx", [["title"], ["x", "x"], [1, 2]])
+    with pytest.raises(SourceError, match=r"duplicate column names \['x'\]"):
+        load(ExcelSource(path=path, header=1))
+
+
+def test_excel_duplicates_outside_usecols_are_accepted(tmp_path):
+    path = _write_xlsx(tmp_path / "d.xlsx", [["a", "a", "b"], [1, 2, 3]])
+    assert list(load(ExcelSource(path=path, usecols=["b"])).columns) == ["b"]
+    with pytest.raises(SourceError, match="duplicate column names"):
+        load(ExcelSource(path=path, usecols=["a", "b"]))
+
+
+def test_excel_empty_header_cells_are_not_duplicates(tmp_path):
+    path = _write_xlsx(tmp_path / "d.xlsx", [["a", None, None], [1, 2, 3]])
+    assert load(ExcelSource(path=path)).shape == (1, 3)
+
+
+def test_excel_duplicate_header_checks_the_selected_sheet(tmp_path):
+    import openpyxl
+
+    path = tmp_path / "d.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.title = "ok"
+    wb.active.append(["a", "b"])
+    wb.create_sheet("bad").append(["z", "z"])
+    wb.save(path)
+    assert list(load(ExcelSource(path=str(path))).columns) == ["a", "b"]
+    with pytest.raises(SourceError, match=r"\['z'\]"):
+        load(ExcelSource(path=str(path), sheet="bad"))
