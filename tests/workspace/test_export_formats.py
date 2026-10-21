@@ -388,11 +388,55 @@ def test_pipeline_section_runs_standalone_and_matches_the_replay(tmp_path):
     _same(pd.read_parquet(tmp_path / "te.parquet"), _parquet(out, "test"))
 
 
-def test_pipeline_section_keeps_only_both_steps(tmp_path):
+def _run_script(tmp_path, script: str, extra: str = ""):
+    check = tmp_path / "check.py"
+    check.write_text(script + "\n" + extra)
+    done = subprocess.run(
+        [sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False,
+        cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+def test_pipeline_lists_skipped_steps_as_comments(tmp_path):
     out = _export_demo(tmp_path, "mix", STEPS, formats=["py"], pipeline=True)
-    section = (out / "code" / "pipeline.py").read_text().split("PIPELINE = ")[1]
+    script = (out / "code" / "pipeline.py").read_text()
+    section = script.split("PIPELINE = ")[1]
     assert "'0_impute'" in section and "'5_rename'" in section
-    assert "filter_rows" not in section and "drop_columns" not in section
+    assert "DtkTransformer('filter_rows'" not in section
+    assert "DtkTransformer('drop_columns'" not in section
+    assert "# skipped: s5 drop_columns (test): test-only" in section
+    assert "# skipped: s4 filter_rows (train): train-only" in section
+    _run_script(tmp_path, script)
+
+
+def test_pipeline_row_changing_both_step_is_skipped_with_a_reason(tmp_path):
+    steps = [STEPS[0], {"op": "filter_rows", "target": "both", "params": STEPS[3]["params"]}]
+    out = _export_demo(tmp_path, "rows", steps, formats=["py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    section = script.split("PIPELINE = ")[1]
+    assert "# skipped: s2 filter_rows (both): changes the rows" in section
+    assert "apply it to your data yourself before fitting" in section
+    assert "DtkTransformer('filter_rows'" not in section
+    _run_script(tmp_path, script)
+
+
+def test_pipeline_label_reading_step_is_flagged(tmp_path):
+    steps = [{"op": "select_k_best", "target": "both",
+              "params": {"target": "Survived", "k": 2, "columns": ["Fare", "Pclass"]}}]
+    out = _export_demo(tmp_path, "sel", steps, formats=["py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "reads the label column 'Survived'" in script
+    assert "must be in the frame passed to" in script
+    assert "DtkTransformer('select_k_best'" in script
+    assert "PIPELINE.fit(X_train)" not in script
+
+
+def test_pipeline_header_states_what_is_outside(tmp_path):
+    out = _export_demo(tmp_path, "hdr", BOTH_STEPS, formats=["py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "merges and label joins are not in it" in script
+    assert "label_last" not in script
 
 
 def test_pipeline_without_both_steps_is_a_passthrough(tmp_path):

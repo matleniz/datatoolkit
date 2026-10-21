@@ -166,3 +166,29 @@ def test_zero_steps_and_groups(tmp_path):
     ]
     expected = _check_exports(ws, tmp_path / "g", "Survived")
     assert list(expected["train"].columns[-3:]) == ["fare_pp", "fare_3", "Survived"]
+
+
+def test_pipeline_section_states_the_column_order_difference(tmp_path):
+    import subprocess
+    import sys
+
+    save_workspace(_ws(True))
+    out = tmp_path / "out"
+    export_workspace("ll", out, formats=["parquet", "py"], pipeline=True)
+    script = (out / "code" / "pipeline.py").read_text()
+    assert "label_last: the replay moves 'Survived' to the end" in script
+    assert "keep_label_last(frame, LABEL)" in script
+    check = tmp_path / "check.py"
+    check.write_text(
+        script
+        + "\nraw, _ = workspace_frames(SOURCES)"
+        + "\nout = keep_label_last(PIPELINE.fit_transform(raw), LABEL)"
+        + f"\nout.reset_index(drop=True).to_parquet({str(tmp_path / 'p.parquet')!r})\n"
+    )
+    done = subprocess.run(
+        [sys.executable, str(check)], capture_output=True, text=True, timeout=120, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    replayed = pd.read_parquet(tmp_path / "p.parquet")
+    assert replayed.columns[-1] == "Survived"
+    assert list(replayed.columns) == list(pd.read_parquet(out / "processed" / "train.parquet").columns)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import pprint
 
+from dtk_engine.transform_registry import get_transform
 from dtk_engine.workspace.dataset import replay_label
 from dtk_engine.workspace.models import Group, Step, Workspace
 
@@ -168,27 +169,60 @@ def notebook_json(ws: Workspace, exported_at: str) -> str:
     return json.dumps(notebook, indent=1, ensure_ascii=False) + "\n"
 
 
+# Ops that drop, duplicate or reorder rows: a sklearn Pipeline cannot keep X and y aligned
+# through them, so PIPELINE leaves them out (with a comment).
+_ROW_OPS = frozenset(
+    {"filter_rows", "sample_rows", "sort_rows", "drop_duplicates", "drop_missing_target"}
+)
+
+
+def _pipeline_entry(i: int, step: Step) -> list[str]:
+    """Lines of the ``Pipeline`` list for one step: a ``# skipped`` comment, or the
+    ``DtkTransformer`` (with a caveat comment when it reads the label)."""
+    what = f"{step.id} {_one_line(step.op)} ({step.target})"
+    if step.target != "both":
+        return [f"    # skipped: {what}: {step.target}-only"]
+    if step.op in _ROW_OPS:
+        return [
+            f"    # skipped: {what}: changes the rows, which a Pipeline cannot keep aligned",
+            "    #   with y; apply it to your data yourself before fitting.",
+        ]
+    lines = []
+    if get_transform(step.op).needs_target:
+        col = step.params.get("target")
+        lines += [
+            f"    # {step.id} reads the label column {col!r}: it must be in the frame passed to",
+            "    #   fit (and then stays in the output); a separate X without it fails.",
+        ]
+    make = f"DtkTransformer({step.op!r}, **{_literal(step.params)})"
+    return [*lines, f"    ({f'{i}_{step.op}'!r}, {make}),"]
+
+
 def _pipeline_code(ws: Workspace) -> str:
     """The "both" steps as an unfitted sklearn ``Pipeline``, standalone: built from the
     steps' literals, no stored workspace needed. Same names / steps as
-    ``dtk_engine.workspace_pipeline``."""
-    steps = [
-        f"    ({f'{i}_{s.op}'!r}, DtkTransformer({s.op!r}, **{_literal(s.params)})),"
-        for i, s in enumerate(ws.steps)
-        if s.target == "both"
-    ] or ["    ('passthrough', 'passthrough'),"]
-    return "\n".join(
-        [
-            "# --- sklearn pipeline (optional) ---",
-            "# The steps applied to train and test, as an unfitted Pipeline: fit it on your",
-            "# own training data (PIPELINE.fit(X_train)), then PIPELINE.transform(X_new).",
-            "# Train-only / test-only steps (row cleaning of one side) are not part of it.",
-            "from sklearn.pipeline import Pipeline",
-            "",
-            "PIPELINE = Pipeline([",
-            *steps,
-            "])",
+    ``dtk_engine.workspace_pipeline``, except that row-changing steps are left out;
+    every step not in it is listed in a comment."""
+    label = replay_label(ws)
+    entries = [line for i, s in enumerate(ws.steps) for line in _pipeline_entry(i, s)]
+    if not any(not line.lstrip().startswith("#") for line in entries):
+        entries.append("    ('passthrough', 'passthrough'),")
+    head = [
+        "# --- sklearn pipeline (optional) ---",
+        "# The steps applied to train AND test, as an unfitted Pipeline. It starts from the",
+        "# frame workspace_frames(SOURCES) returns (merges and label joins are not in it),",
+        "# so fit it on a frame of that shape: PIPELINE.fit(train), PIPELINE.transform(new).",
+        "# Train-only / test-only and row-changing steps are skipped (listed below).",
+    ]
+    if ws.merges:
+        head.append(f"# This workspace has {len(ws.merges)} merge(s): run them on your data first.")
+    if label is not None:
+        head += [
+            f"# label_last: the replay moves {label!r} to the end after each step; PIPELINE does",
+            "# not, so the column order can differ: keep_label_last(frame, LABEL) restores it.",
         ]
+    return "\n".join(
+        [*head, "from sklearn.pipeline import Pipeline", "", "PIPELINE = Pipeline([", *entries, "])"]
     )
 
 
