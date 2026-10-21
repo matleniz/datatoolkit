@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import itertools
@@ -9,8 +10,9 @@ import os
 import re
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from typing import TextIO
 
 import pandas as pd
 
@@ -154,7 +156,11 @@ def guess_decimal(sample: str, sep: str | None) -> str:
 
 
 def find_bad_record(
-    text: str, sep: str, header: int | None, *, locate: bool = False
+    text: str | Callable[[], TextIO],
+    sep: str,
+    header: int | None,
+    *,
+    locate: bool = False,
 ) -> tuple[int, str] | None:
     """First malformed record after the header, as (1-based line, reason).
 
@@ -163,8 +169,21 @@ def find_bad_record(
     quote swallowing the next fields, an extra field turned into the index). Fewer
     fields are fine (padded with missing values). Blank lines are skipped and do
     not count towards ``header``, as in pandas.
+
+    ``text`` is the content, or a callable opening it as a stream (read twice at
+    most, never held whole).
     """
-    reader = csv.reader(io.StringIO(text, newline=""), delimiter=sep, strict=True)
+    opener = text if callable(text) else (lambda: io.StringIO(text, newline=""))
+    with opener() as fh:
+        return _scan_records(fh, sep, header, locate, lambda: _locate(opener, sep, header))
+
+
+def _locate(opener, sep: str, header: int | None) -> tuple[int, str] | None:
+    return find_bad_record(opener, sep, header, locate=True)
+
+
+def _scan_records(fh, sep: str, header: int | None, locate: bool, again):
+    reader = csv.reader(fh, delimiter=sep, strict=True)
     rows = filter(None, reader)  # drop blank lines
     try:
         for _ in range(header or 0):
@@ -176,7 +195,7 @@ def find_bad_record(
                 return _first_wide_record(reader, rows, expected)
             # Fast path in C: the widest record; walk again only to locate it.
             if max(map(len, rows), default=0) > expected:
-                return find_bad_record(text, sep, header, locate=True)
+                return again()
     except csv.Error as exc:
         return _csv_error_record(reader, exc)
     return None
@@ -272,19 +291,116 @@ def _body_start(lines: list[str], sep: str) -> tuple[int, int, int] | None:
     return rows[0], width, len(rows)
 
 
-def _trim_and_sniff(text: str, spec: CsvSource) -> tuple[str, str | None, int]:
-    """(text without the junk top lines, delimiter, lines dropped)."""
+CHUNK = 1 << 20
+
+
+def _chunks(path: str) -> Iterator[bytes]:
+    with open(path, "rb") as fh:
+        while chunk := fh.read(CHUNK):
+            yield chunk
+
+
+def _decodes(path: str, encoding: str) -> bool:
+    """Whether the whole file decodes, checked chunk by chunk."""
+    decoder = codecs.getincrementaldecoder(encoding)()
+    try:
+        for chunk in _chunks(path):
+            decoder.decode(chunk)
+        decoder.decode(b"", final=True)
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def guess_file_encoding(path: str) -> str:
+    """``guess_encoding`` of a whole file, without holding it in memory."""
+    with open(path, "rb") as fh:
+        head = fh.read(4)
+    if any(head.startswith(mark) for mark, _ in BOMS):
+        return guess_encoding(head)
+    return next((n for n in ("utf-8", "cp1252") if _decodes(path, n)), "latin-1")
+
+
+class _TextSource:
+    """The csv text, past its BOM and ``skipped`` top lines, read as streams.
+
+    Backed by the file (every pass re-opens it, so the text is never held whole)
+    or, for what cannot be re-read (a pipe) or was rewritten, by a string.
+    """
+
+    def __init__(
+        self, path: str, encoding: str, text: str | None = None, skipped: int = 0
+    ) -> None:
+        self.path, self.encoding, self.text, self.skipped = path, encoding, text, skipped
+
+    def open(self, newline: str = "\n") -> TextIO:
+        """Fresh stream. ``newline="\n"``: lines end at ``\\n`` only; ``""``: also at ``\\r``."""
+        if self.text is not None:
+            return io.StringIO(drop_lines(self.text, self.skipped), newline=newline)
+        fh = open(self.path, encoding=self.encoding, newline=newline)  # noqa: SIM115
+        try:
+            bom = int(fh.read(1) == "\ufeff")  # a BOM is never content
+            if not bom:
+                fh.seek(0)
+            skip = _skipped_chars(fh, self.skipped) if self.skipped else 0
+            fh.seek(0)
+            _discard(fh, bom + skip)
+        except BaseException:
+            fh.close()
+            raise
+        return fh
+
+    def skipping(self, skipped: int) -> _TextSource:
+        return _TextSource(self.path, self.encoding, self.text, skipped)
+
+    def head(self, size: int = SNIFF_CHARS) -> str:
+        with self.open() as fh:
+            return fh.read(size)
+
+    def is_blank(self) -> bool:
+        with self.open() as fh:
+            while chunk := fh.read(CHUNK):
+                if not chunk.isspace():
+                    return False
+        return True
+
+    def read_all(self) -> str:
+        with self.open() as fh:
+            return fh.read()
+
+
+def _skipped_chars(fh: TextIO, lines: int) -> int:
+    """Characters from the stream's position to the end of its next ``lines`` lines."""
+    consumed = 0
+    while lines:
+        chunk = fh.read(CHUNK)
+        if not chunk:
+            break
+        pos = 0
+        while lines and (nxt := chunk.find("\n", pos)) >= 0:
+            lines, pos = lines - 1, nxt + 1
+        consumed += len(chunk) if lines else pos
+    return consumed
+
+
+def _discard(fh: TextIO, count: int) -> None:
+    while count > 0:
+        count -= len(fh.read(min(count, CHUNK)))
+
+
+def _trim_and_sniff(src: _TextSource, spec: CsvSource) -> tuple[_TextSource, str | None, int]:
+    """(source without the junk top lines, delimiter, lines dropped)."""
     sep: str | None = spec.sep
     skipped = spec.skiprows if isinstance(spec.skiprows, int) else 0
     if spec.skiprows == "auto":
-        sample = _drop_cut_line(text[:SNIFF_CHARS]).splitlines()[:JUNK_SCAN]
+        sample = _drop_cut_line(src.head()).splitlines()[:JUNK_SCAN]
         skipped, found = detect_junk(sample, SNIFF_DELIMITERS if sep == "auto" else sep)
         if sep == "auto" and found:
             sep = found
-    text = drop_lines(text, skipped)
+    src = src.skipping(skipped)
     if sep == "auto":
-        sep = sniff_sep(text[:SNIFF_CHARS])
-    return text, sep, skipped
+        sep = sniff_sep(src.head())
+    return src, sep, skipped
 
 
 def mixed_separator_report(
@@ -346,7 +462,7 @@ def _classify(report: MixedReport, line: str, number: int, sep: str, width: int)
             return
 
 
-def _has_sepless_line(lines: list[str], sep: str) -> bool:
+def _has_sepless_line(lines, sep: str) -> bool:
     """Whether a non-blank line holds no ``sep`` (the only possible offenders).
 
     A cheap membership pass, so the usual clean file skips the quote-aware scan.
@@ -354,23 +470,26 @@ def _has_sepless_line(lines: list[str], sep: str) -> bool:
     return any(sep not in line and line.strip() for line in lines)
 
 
-def _check_mixed_sep(text: str, sep: str | None, spec: CsvSource, skipped: int) -> str:
-    """``text`` with mixed-delimiter lines normalized, or the typed error."""
+def _check_mixed_sep(
+    src: _TextSource, sep: str | None, spec: CsvSource, skipped: int
+) -> _TextSource:
+    """``src`` with mixed-delimiter lines normalized, or the typed error."""
     if not sep or spec.mixed_sep == "ignore":
-        return text
-    lines = text.split("\n")
-    if not _has_sepless_line(lines, sep):
-        return text
+        return src
+    with src.open() as fh:
+        if not _has_sepless_line(fh, sep):
+            return src
+    lines = src.read_all().split("\n")
     report = mixed_separator_report(lines, sep, spec.header, skipped)
     if not report.lines:
-        return text
+        return src
     if spec.mixed_sep == "error":
         raise _mixed_error(spec.path, report)
     for alt, numbers in report.lines.items():
         for number in numbers:
             i = number - 1 - skipped
             lines[i] = lines[i].replace(alt, sep)
-    return "\n".join(lines)
+    return _TextSource(src.path, src.encoding, "\n".join(lines))
 
 
 def _listed(numbers: list[int]) -> str:
@@ -396,21 +515,16 @@ def _mixed_error(path: str, report: MixedReport) -> MixedSeparatorError:
 def read_csv(spec: CsvSource) -> pd.DataFrame:
     path = resolve_path(spec.path)
     try:
-        with open(path, "rb") as fh:
-            raw = fh.read()
-        encoding = guess_encoding(raw) if spec.encoding == "auto" else spec.encoding
-        # A BOM is never content (utf-8 / utf-16 codecs without -sig keep it).
-        text = raw.decode(encoding).removeprefix("\ufeff")
-        del raw
-        if not text or text.isspace():
+        src = _open_source(path, spec)
+        if src.is_blank():
             raise SourceError("file is empty")
-        text, sep, skipped = _trim_and_sniff(text, spec)
-        text = _check_mixed_sep(text, sep, spec, skipped)
+        src, sep, skipped = _trim_and_sniff(src, spec)
+        src = _check_mixed_sep(src, sep, spec, skipped)
         decimal = spec.decimal
         if decimal == "auto":
-            decimal = guess_decimal(_drop_cut_line(text[:SNIFF_CHARS]), sep)
+            decimal = guess_decimal(_drop_cut_line(src.head()), sep)
         if spec.on_bad_lines == "error" and sep:
-            bad = find_bad_record(text, sep, spec.header)
+            bad = find_bad_record(lambda: src.open(""), sep, spec.header)
             if bad:
                 line, reason = bad
                 raise SourceError(
@@ -428,12 +542,11 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
             "usecols": spec.usecols,
             "on_bad_lines": spec.on_bad_lines,
         }
-        _refuse_duplicate_header(text, spec, options)
-        df = pd.read_csv(
-            io.StringIO(text), dtype=spec.dtype, parse_dates=spec.parse_dates, **options
-        )
+        _refuse_duplicate_header(src, spec, options)
+        with src.open() as fh:
+            df = pd.read_csv(fh, dtype=spec.dtype, parse_dates=spec.parse_dates, **options)
         if spec.keep_leading_zeros:
-            df = _keep_leading_zeros(df, text, sep, spec, options)
+            df = _keep_leading_zeros(df, src, sep, spec, options)
         return df
     except MixedSeparatorError:
         raise
@@ -449,16 +562,36 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
         raise SourceError(f"cannot read csv {spec.path}: {exc}") from exc
 
 
-def _refuse_duplicate_header(text: str, spec: CsvSource, options: dict) -> None:
+def _open_source(path: str, spec: CsvSource) -> _TextSource:
+    """The file as a re-readable source; a pipe (read once) is held as text."""
+    if not os.path.isfile(path):
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        encoding = guess_encoding(raw) if spec.encoding == "auto" else spec.encoding
+        return _TextSource(path, encoding, raw.decode(encoding).removeprefix("\ufeff"))
+    encoding = guess_file_encoding(path) if spec.encoding == "auto" else spec.encoding
+    if spec.encoding != "auto" or encoding not in ("utf-8", "cp1252", "latin-1"):
+        _check_decodes(path, encoding)  # same typed error as decoding it whole
+    return _TextSource(path, encoding)
+
+
+def _check_decodes(path: str, encoding: str) -> None:
+    if not _decodes(path, encoding):
+        with open(path, "rb") as fh:
+            fh.read().decode(encoding)  # raises the UnicodeDecodeError, with its position
+
+
+def _refuse_duplicate_header(src: _TextSource, spec: CsvSource, options: dict) -> None:
     """pandas renames repeated headers (``a``, ``a.1``): look at the raw header."""
     if spec.header is None:
         return
-    head = pd.read_csv(
-        io.StringIO(text),
-        dtype=str,
-        nrows=spec.header + 1,
-        **(options | {"header": None, "usecols": None, "on_bad_lines": "skip"}),
-    )
+    with src.open() as fh:
+        head = pd.read_csv(
+            fh,
+            dtype=str,
+            nrows=spec.header + 1,
+            **(options | {"header": None, "usecols": None, "on_bad_lines": "skip"}),
+        )
     if len(head) <= spec.header:
         return
     names = [str(n) for n in head.iloc[spec.header].dropna()]
@@ -468,6 +601,20 @@ def _refuse_duplicate_header(text: str, spec: CsvSource, options: dict) -> None:
     if dups:
         # read_csv's outer handler adds the "cannot read csv <path>: " prefix.
         raise SourceError(duplicate_columns_message(dups, spec.path))
+
+
+def _has_leading_zero(src: _TextSource, seps: str) -> bool:
+    """Whether a value starts with 0 then a digit (after a delimiter or a line start)."""
+    pattern = re.compile(rf'(?:\n|[{seps}])"?0\d')
+    keep, first = "", True
+    with src.open() as fh:
+        while chunk := fh.read(CHUNK):
+            # Keep a tail so a match cut by the chunk edge is still seen.
+            block = ("\n" if first else "") + keep + chunk
+            if pattern.search(block):
+                return True
+            keep, first = chunk[-3:], False
+    return False
 
 
 def is_leading_zero_column(values: pd.Series) -> bool:
@@ -481,11 +628,11 @@ def is_leading_zero_column(values: pd.Series) -> bool:
 
 
 def _keep_leading_zeros(
-    df: pd.DataFrame, text: str, sep: str | None, spec: CsvSource, options: dict
+    df: pd.DataFrame, src: _TextSource, sep: str | None, spec: CsvSource, options: dict
 ) -> pd.DataFrame:
     """Numeric columns whose raw values carry leading zeros go back to strings."""
     seps = re.escape(sep) if sep else re.escape(SNIFF_DELIMITERS)
-    if not re.search(rf'(?:^|[{seps}])"?0\d', text, re.MULTILINE):
+    if not _has_leading_zero(src, seps):
         return df  # cheap exit: no value starts with 0 then a digit
     pinned = set(spec.dtype or {})
     numeric = [
@@ -501,9 +648,8 @@ def _keep_leading_zeros(
         warnings.simplefilter("ignore")  # on_bad_lines="warn" already warned once
         # Only the numeric columns, by name if the spec already selects columns.
         usecols = [df.columns[i] for i in numeric] if spec.usecols else numeric
-        raw = pd.read_csv(
-            io.StringIO(text), dtype=str, **(options | {"usecols": usecols})
-        )
+        with src.open() as fh:
+            raw = pd.read_csv(fh, dtype=str, **(options | {"usecols": usecols}))
     if raw.shape != (len(df), len(numeric)):
         return df
     for j, i in enumerate(numeric):

@@ -298,3 +298,51 @@ def test_duplicate_message_shared_with_export():
         "duplicate column names ['a', 'b'] in t (rename them to be unique)"
     )
     assert "(and 5 more)" in duplicate_columns_message([str(i) for i in range(15)], "t")
+
+
+def test_pipe_is_read_once(tmp_path):
+    import os
+    import threading
+
+    fifo = tmp_path / "pipe.csv"
+    os.mkfifo(fifo)
+
+    def feed():
+        with open(fifo, "wb") as fh:
+            fh.write("﻿a;b\n1;é\n2;x\n".encode())
+
+    t = threading.Thread(target=feed)
+    t.start()
+    df = load(CsvSource(path=str(fifo)))
+    t.join()
+    assert list(df.columns) == ["a", "b"]
+    assert df["b"].tolist() == ["é", "x"]
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "cp1252"])
+def test_skiprows_past_bom_beyond_one_chunk(tmp_path, encoding, monkeypatch):
+    from dtk_engine.sources import csv_pandas
+
+    monkeypatch.setattr(csv_pandas, "CHUNK", 16)  # junk, header and rows span chunks
+    path = tmp_path / "junk.csv"
+    path.write_text("title é\nsecond junk line\nid,name\n01,é\n02,b\n", encoding=encoding)
+    df = load(CsvSource(path=str(path), skiprows=2))
+    assert list(df.columns) == ["id", "name"]
+    assert df["id"].tolist() == ["01", "02"]
+    assert df["name"].tolist() == ["é", "b"]
+
+
+def test_leading_zero_cut_by_chunk_edge(tmp_path, monkeypatch):
+    from dtk_engine.sources import csv_pandas
+
+    monkeypatch.setattr(csv_pandas, "CHUNK", 8)
+    path = tmp_path / "zip.csv"
+    path.write_text("a,zip\n1,01234\n2,56789\n")
+    assert load(CsvSource(path=str(path)))["zip"].tolist() == ["01234", "56789"]
+
+
+def test_explicit_encoding_error_keeps_position(tmp_path):
+    path = tmp_path / "bad.csv"
+    path.write_bytes(b"a,b\n1,caf\xe9\n")
+    with pytest.raises(SourceError, match="can't decode byte 0xe9 in position 9"):
+        load(CsvSource(path=str(path), encoding="utf-8"))
