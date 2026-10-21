@@ -7,7 +7,7 @@ from zipfile import BadZipFile
 
 import pandas as pd
 
-from dtk_engine.errors import SourceError
+from dtk_engine.errors import SourceError, duplicate_columns_message
 from dtk_engine.sources.csv_pandas import resolve_path
 from dtk_engine.sources.registry import reader
 from dtk_engine.sources.spec import ExcelSource
@@ -21,6 +21,7 @@ def read_excel(spec: ExcelSource) -> pd.DataFrame:
             f"cannot read excel {spec.path}: legacy .xls is not supported, "
             "only .xlsx is supported (re-save the file as .xlsx)"
         )
+    _refuse_duplicate_header(path, spec)
     return read_excel_checked(
         path,
         spec.path,
@@ -28,6 +29,29 @@ def read_excel(spec: ExcelSource) -> pd.DataFrame:
         header=spec.header,
         usecols=spec.usecols,
     )
+
+
+def _refuse_duplicate_header(path: str, spec: ExcelSource) -> None:
+    """pandas renames repeated headers (``a``, ``a.1``): look at the raw header."""
+    if spec.header is None:
+        return
+    head = read_excel_checked(
+        path,
+        spec.path,
+        sheet_name=spec.sheet,
+        header=None,
+        nrows=spec.header + 1,
+    )
+    if len(head) <= spec.header:
+        return
+    names = [str(n) for n in head.iloc[spec.header].dropna()]
+    if spec.usecols:  # duplicates that are never loaded are harmless
+        names = [n for n in names if n in spec.usecols]
+    dups = [n for n in names if names.count(n) > 1]
+    if dups:
+        raise SourceError(
+            f"cannot read excel {spec.path}: {duplicate_columns_message(dups, spec.path)}"
+        )
 
 
 def read_excel_checked(path: str, shown: str, **kw: Any) -> Any:
