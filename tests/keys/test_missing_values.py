@@ -181,3 +181,19 @@ def test_missingness_matrix_figure():
     clean_res = api.missing(pd.DataFrame({"x": [1, 2, 3]}))
     assert not any(f.title == "Missingness matrix" for f in clean_res.figures)
 
+
+
+def test_matrix_sampling_disclosed():
+    df = pd.DataFrame({"a": [None, 1.0] * 250, "b": range(500)})
+    res = api.missing(df)
+    m = res.metrics
+    assert m["n_rows_source"] == 500 and m["n_sampled_out"] == 200
+    assert "Sampled 300 rows for the missingness matrix (200 rows left out)." in res.text
+    assert m["n_rows"] == 500  # statistics still on the full data
+
+
+def test_matrix_unsampled_has_no_note():
+    df = pd.DataFrame({"a": [None, 1.0] * 50, "b": range(100)})
+    res = api.missing(df)
+    assert res.metrics["n_rows_source"] == 100 and res.metrics["n_sampled_out"] == 0
+    assert "Sampled" not in res.text

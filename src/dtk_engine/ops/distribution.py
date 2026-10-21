@@ -118,7 +118,18 @@ def sample_scatter(
     random_state: int = 0,
 ) -> pd.DataFrame:
     """Up to ``n`` non-null ``(x, y)`` pairs (deterministic sample when longer)."""
-    pair = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+    return sample_pairs(scatter_pairs(df, x, y), n, random_state)
+
+
+def scatter_pairs(df: pd.DataFrame, x: str, y: str) -> pd.DataFrame:
+    """Every non-null numeric ``(x, y)`` pair."""
+    return df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+
+
+def sample_pairs(
+    pair: pd.DataFrame, n: int = SCATTER_MAX, random_state: int = 0
+) -> pd.DataFrame:
+    """``pair`` itself, or ``n`` of its rows (seeded) when longer; index reset."""
     if len(pair) > n:
         pair = pair.sample(n, random_state=random_state)
     return pair.reset_index(drop=True)

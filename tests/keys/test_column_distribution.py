@@ -226,3 +226,22 @@ def test_bins_number_and_density():
     assert (hist["density"] >= 0).all()
     assert res.metrics["bins"] == 8
 
+
+
+def test_scatter_sampling_disclosed():
+    from dtk_engine.ops.distribution import SCATTER_MAX
+
+    n = SCATTER_MAX + 500
+    df = pd.DataFrame({"x": [i % 7 for i in range(n)], "by": [i % 11 for i in range(n)]})
+    res = api.distribution(df, columns=["x"], by="by")
+    m = res.metrics
+    assert m["n_rows_source"] == n and m["n_sampled_out"] == 500
+    assert f"Sampled {SCATTER_MAX} rows for the scatter plots (500 rows left out)." in res.text
+    assert m["n_rows_source"] - m["n_sampled_out"] == SCATTER_MAX
+
+
+def test_scatter_unsampled_has_no_note():
+    df = pd.DataFrame({"x": [i % 7 for i in range(50)], "by": [i % 11 for i in range(50)]})
+    res = api.distribution(df, columns=["x"], by="by")
+    assert res.metrics["n_rows_source"] == 50 and res.metrics["n_sampled_out"] == 0
+    assert "Sampled" not in res.text

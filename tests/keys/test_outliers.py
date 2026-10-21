@@ -147,3 +147,20 @@ def test_mad_threshold_in_key_schema():
     assert props["mad_threshold"]["default"] == 3.5
     assert props["mad_threshold"]["description"]
     assert "mad" in str(props["method"])
+
+
+def test_outlier_points_sampling_disclosed():
+    from dtk_engine.ops.outliers import OUTLIER_POINTS_MAX
+
+    df = pd.DataFrame({"a": [i % 10 for i in range(5000)] + [10_000] * 900})
+    res = api.outliers(df, columns=["a"])
+    m = res.metrics
+    assert m["n_rows_source"] == 900 and m["n_sampled_out"] == 900 - OUTLIER_POINTS_MAX
+    assert "Sampled 500 rows for the outlier points (400 rows left out)." in res.text
+
+
+def test_outlier_points_unsampled_has_no_note():
+    df = pd.DataFrame({"a": [i % 10 for i in range(5000)] + [10_000] * 5})
+    res = api.outliers(df, columns=["a"])
+    assert res.metrics["n_rows_source"] == 5 and res.metrics["n_sampled_out"] == 0
+    assert "Sampled" not in res.text

@@ -136,13 +136,20 @@ def box_stats(
     return pd.DataFrame(rows, columns=BOX_FIELDS)
 
 
+def outlier_values(
+    df: pd.DataFrame, column: str, lower: float, upper: float
+) -> pd.Series:
+    """Every value of ``column`` outside ``[lower, upper]``."""
+    values = df[column].dropna().astype(float)
+    return values[(values < lower) | (values > upper)]
+
+
 def outlier_points(
     df: pd.DataFrame, column: str, lower: float, upper: float
 ) -> pd.Series:
     """Values of ``column`` outside ``[lower, upper]``, sampled (seeded) down to
     ``OUTLIER_POINTS_MAX``."""
-    values = df[column].dropna().astype(float)
-    out = values[(values < lower) | (values > upper)]
+    out = outlier_values(df, column, lower, upper)
     if len(out) > OUTLIER_POINTS_MAX:
         out = out.sample(OUTLIER_POINTS_MAX, random_state=0)
     return out

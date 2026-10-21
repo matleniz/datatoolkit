@@ -8,18 +8,21 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pydantic import Field
 
+from dtk_engine.ops._util import sampling_metrics, sampling_note
 from dtk_engine.ops.columns import is_numeric, pick_columns
 from dtk_engine.ops.outliers import (
     ACTION_TABLE,
     BOX_FIELDS,
     IQR_K,
     MAD_THRESHOLD,
+    OUTLIER_POINTS_MAX,
     Z_THRESHOLD,
     box_stats,
     flagged_rows,
     isolation_forest,
     numeric_columns,
     outlier_points,
+    outlier_values,
     univariate_outliers,
 )
 from dtk_engine.params import SourceParams, columns_field
@@ -142,11 +145,13 @@ def outliers_result(
         },
         text=ACTION_TABLE,
     )
+    hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
+    shown_cols = _boxed_columns(boxes, picked, hit, run_iqr)
+    _disclose_points(result, df, boxes, shown_cols)
     result.add_table("outliers_per_column", table)
     result.add_table("flagged_rows", flagged)
     if run_iqr:
         result.add_table("box_stats", boxes)
-    hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
     has_main = False
     if run_iqr and len(picked) == 1:
         col = picked[0]
@@ -181,6 +186,29 @@ def outliers_result(
 
 
 MULTIPLES = 6
+
+
+def _boxed_columns(boxes, picked, hit, run_iqr: bool) -> list[str]:
+    """Columns whose box plot draws outlier points (mirrors the figure branches)."""
+    if run_iqr and len(picked) == 1:
+        return list(picked)
+    if run_iqr and len(hit):
+        return hit["column"].head(MULTIPLES).tolist()
+    return []
+
+
+def _disclose_points(result: Result, df, boxes, columns: list[str]) -> None:
+    """Publish the sampling of the outlier points (worst plotted column) in ``result``."""
+    fences = boxes.set_index("column")
+    worst = (0, 0)  # (n_outliers, n_left_out) of the most truncated column
+    for col in columns:
+        n = len(outlier_values(df, col, fences.at[col, "lower_fence"], fences.at[col, "upper_fence"]))
+        worst = max(worst, (n, max(0, n - OUTLIER_POINTS_MAX)), key=lambda t: (t[1], t[0]))
+    total, dropped = worst
+    result.metrics.update(sampling_metrics(total, dropped))
+    note = sampling_note(total - dropped, dropped, "the outlier points")
+    if note:
+        result.text = f"{result.text}\n\n{note}"
 _OUTLIER_COLOR = "#d62728"
 _BOX_COLOR = "#1f77b4"
 

@@ -11,9 +11,11 @@ from pydantic import Field, model_validator
 
 from dtk_engine.demo_data import TEST_CSV
 from dtk_engine.errors import KeyParamsError, valid_names_hint
+from dtk_engine.ops._util import sampling_metrics, sampling_note
 from dtk_engine.ops.columns import is_numeric, pick_columns, value_kind
 from dtk_engine.ops.distribution import (
     GROUP,
+    SCATTER_MAX,
     TARGET_BINS,
     TOP_K,
     by_binner,
@@ -22,7 +24,8 @@ from dtk_engine.ops.distribution import (
     grouped_frame,
     label_binner,
     numeric_distribution,
-    sample_scatter,
+    sample_pairs,
+    scatter_pairs,
     vs_by_correlations,
 )
 from dtk_engine.params import SourceParams, column_field, columns_field
@@ -303,12 +306,21 @@ def _add_vs_by(result: Result, df: pd.DataFrame, numeric_cols: list[str], by: st
     if len(corr) == 1:
         result.metrics["pearson"] = float(corr["pearson"].iloc[0])
         result.metrics["spearman"] = float(corr["spearman"].iloc[0])
+    worst = (0, 0)  # (n_pairs, n_left_out) of the most truncated scatter
     for col in numeric_cols:
-        sample = sample_scatter(df, col, by)
+        pairs = scatter_pairs(df, col, by)
+        sample = sample_pairs(pairs)
         if sample.empty:
             continue
+        worst = max(worst, (len(pairs), len(pairs) - len(sample)), key=lambda t: (t[1], t[0]))
         fig = px.scatter(sample, x=by, y=col, labels={by: by, col: col}, opacity=0.55)
         result.add_figure(f"{col} vs {by}", fig, "numeric")
+    total, dropped = worst
+    if total:
+        result.metrics.update(sampling_metrics(total, dropped))
+        note = sampling_note(SCATTER_MAX, dropped, "the scatter plots")
+        if note:
+            result.text = f"{result.text}\n\n{note}" if result.text else note
 
 
 def _y_column(norm: NormSpec, cumulative: bool) -> str:

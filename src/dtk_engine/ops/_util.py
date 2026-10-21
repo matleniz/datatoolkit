@@ -24,3 +24,15 @@ def require_numeric(df: pd.DataFrame, columns: list[str], op: str) -> None:
     bad = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
     if bad:
         raise ValueError(f"{op} needs numeric columns, got non-numeric {bad}")
+
+
+def sampling_metrics(n_source: int, n_sampled_out: int) -> dict[str, int]:
+    """Display-sampling metrics, same names as the ``chart`` key (always published)."""
+    return {"n_rows_source": int(n_source), "n_sampled_out": int(n_sampled_out)}
+
+
+def sampling_note(n_shown: int, n_sampled_out: int, what: str = "the figure") -> str:
+    """One-line note when a display sample was really taken, else ``""``."""
+    if not n_sampled_out:
+        return ""
+    return f"Sampled {n_shown} rows for {what} ({n_sampled_out} rows left out)."

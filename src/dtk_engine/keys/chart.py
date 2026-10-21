@@ -2,6 +2,7 @@
 
 from pydantic import Field
 
+from dtk_engine.ops._util import sampling_note
 from dtk_engine.ops.chart import (
     DEFAULT_SAMPLE_SIZE,
     Agg,
@@ -156,7 +157,6 @@ def _text(n_dropped: int, sample_size: int | None) -> str:
     if not n_dropped:
         return ""
     return (
-        f"Sampled {sample_size} rows for the figure "
-        f"({n_dropped} rows left out); raise sample_size or set it to null "
-        "to plot more."
+        sampling_note(sample_size or 0, n_dropped)[:-1]
+        + "; raise sample_size or set it to null to plot more."
     )
