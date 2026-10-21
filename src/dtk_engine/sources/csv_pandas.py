@@ -313,7 +313,7 @@ def _decodes(path: str, encoding: str) -> bool:
         for chunk in _chunks(path):
             decoder.decode(chunk)
         decoder.decode(b"", final=True)
-    except UnicodeDecodeError:
+    except UnicodeError:  # utf-16 / utf-32 without BOM: plain UnicodeError before 3.13
         return False
     return True
 
