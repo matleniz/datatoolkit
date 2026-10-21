@@ -346,3 +346,39 @@ def test_explicit_encoding_error_keeps_position(tmp_path):
     path.write_bytes(b"a,b\n1,caf\xe9\n")
     with pytest.raises(SourceError, match="can't decode byte 0xe9 in position 9"):
         load(CsvSource(path=str(path), encoding="utf-8"))
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-32"])
+def test_explicit_bomless_utf16_32_falls_back_to_native_order(tmp_path, encoding):
+    path = tmp_path / "x.csv"
+    path.write_bytes("a,b\n1,é\n".encode(f"{encoding}-le"))
+    df = load(CsvSource(path=str(path), encoding=encoding))
+    assert df["b"].tolist() == ["é"]
+
+
+@pytest.mark.parametrize("encoding", ["rot13", "base64"])
+def test_non_text_codec_is_a_source_error(tmp_path, encoding):
+    path = tmp_path / "x.csv"
+    path.write_text("a,b\n1,2\n")
+    with pytest.raises(SourceError, match="cannot read csv"):
+        load(CsvSource(path=str(path), encoding=encoding))
+
+
+def test_pipe_with_normalize_and_skiprows(tmp_path):
+    import os
+    import threading
+
+    fifo = tmp_path / "pipe.csv"
+    os.mkfifo(fifo)
+    body = "junk\na;b;c\n1;2;3\n4,5,6\n7;8;9\n"
+
+    def feed():
+        with open(fifo, "wb") as fh:
+            fh.write(body.encode())
+
+    t = threading.Thread(target=feed)
+    t.start()
+    df = load(CsvSource(path=str(fifo), skiprows=1, sep=";", mixed_sep="normalize"))
+    t.join()
+    assert df.shape == (3, 3)
+    assert df["b"].tolist() == [2, 5, 8]

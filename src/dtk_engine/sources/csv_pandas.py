@@ -156,7 +156,7 @@ def guess_decimal(sample: str, sep: str | None) -> str:
 
 
 def find_bad_record(
-    text: str | Callable[[], TextIO],
+    source: str | Callable[[], TextIO],
     sep: str,
     header: int | None,
     *,
@@ -170,19 +170,25 @@ def find_bad_record(
     fields are fine (padded with missing values). Blank lines are skipped and do
     not count towards ``header``, as in pandas.
 
-    ``text`` is the content, or a callable opening it as a stream (read twice at
+    ``source`` is the content, or a callable opening it as a stream (read twice at
     most, never held whole).
     """
-    opener = text if callable(text) else (lambda: io.StringIO(text, newline=""))
+    opener = source if callable(source) else (lambda: io.StringIO(source, newline=""))
     with opener() as fh:
         return _scan_records(fh, sep, header, locate, lambda: _locate(opener, sep, header))
 
 
-def _locate(opener, sep: str, header: int | None) -> tuple[int, str] | None:
+def _locate(opener: Callable[[], TextIO], sep: str, header: int | None) -> tuple[int, str] | None:
     return find_bad_record(opener, sep, header, locate=True)
 
 
-def _scan_records(fh, sep: str, header: int | None, locate: bool, again):
+def _scan_records(
+    fh: TextIO,
+    sep: str,
+    header: int | None,
+    locate: bool,
+    again: Callable[[], tuple[int, str] | None],
+) -> tuple[int, str] | None:
     reader = csv.reader(fh, delimiter=sep, strict=True)
     rows = filter(None, reader)  # drop blank lines
     try:
@@ -513,6 +519,11 @@ def _mixed_error(path: str, report: MixedReport) -> MixedSeparatorError:
 
 @reader("csv")
 def read_csv(spec: CsvSource) -> pd.DataFrame:
+    """Read the csv in several passes (encoding check, sniffing, checks, pandas).
+
+    A regular file is re-opened for each, so network drives pay more I/O and its
+    content must not change while loading.
+    """
     path = resolve_path(spec.path)
     try:
         src = _open_source(path, spec)
@@ -563,22 +574,28 @@ def read_csv(spec: CsvSource) -> pd.DataFrame:
 
 
 def _open_source(path: str, spec: CsvSource) -> _TextSource:
-    """The file as a re-readable source; a pipe (read once) is held as text."""
+    """The file as a re-readable source; what cannot stream is held as text.
+
+    Held as text: a pipe (read once), a non-text codec (its error comes from the
+    whole-bytes decode), and a file the streaming codec rejects but the whole-bytes
+    decode accepts (``utf-16`` / ``utf-32`` without a BOM fall back to native order).
+    """
     if not os.path.isfile(path):
-        with open(path, "rb") as fh:
-            raw = fh.read()
-        encoding = guess_encoding(raw) if spec.encoding == "auto" else spec.encoding
-        return _TextSource(path, encoding, raw.decode(encoding).removeprefix("\ufeff"))
-    encoding = guess_file_encoding(path) if spec.encoding == "auto" else spec.encoding
-    if spec.encoding != "auto" or encoding not in ("utf-8", "cp1252", "latin-1"):
-        _check_decodes(path, encoding)  # same typed error as decoding it whole
-    return _TextSource(path, encoding)
+        return _held(path, spec.encoding)
+    if spec.encoding == "auto":
+        return _TextSource(path, guess_file_encoding(path))
+    if not codecs.lookup(spec.encoding)._is_text_encoding:
+        return _held(path, spec.encoding)
+    if _decodes(path, spec.encoding):
+        return _TextSource(path, spec.encoding)
+    return _held(path, spec.encoding)  # decodes whole, or raises the same error
 
 
-def _check_decodes(path: str, encoding: str) -> None:
-    if not _decodes(path, encoding):
-        with open(path, "rb") as fh:
-            fh.read().decode(encoding)  # raises the UnicodeDecodeError, with its position
+def _held(path: str, encoding: str) -> _TextSource:
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    encoding = guess_encoding(raw) if encoding == "auto" else encoding
+    return _TextSource(path, encoding, raw.decode(encoding).removeprefix("\ufeff"))
 
 
 def _refuse_duplicate_header(src: _TextSource, spec: CsvSource, options: dict) -> None:
