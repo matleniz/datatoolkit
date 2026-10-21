@@ -24,3 +24,38 @@ def require_numeric(df: pd.DataFrame, columns: list[str], op: str) -> None:
     bad = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
     if bad:
         raise ValueError(f"{op} needs numeric columns, got non-numeric {bad}")
+
+
+def sampling_metrics(n_source: int, n_sampled_out: int) -> dict[str, int]:
+    """Row-level display-sampling metrics, same names as the ``chart`` key."""
+    return {"n_rows_source": int(n_source), "n_sampled_out": int(n_sampled_out)}
+
+
+def sampling_note(
+    n_shown: int, n_sampled_out: int, what: str = "the figure", end: str = "."
+) -> str:
+    """One-line note when a row sample was really taken, else ``""``."""
+    if not n_sampled_out:
+        return ""
+    return f"Sampled {n_shown} rows for {what} ({n_sampled_out} rows left out){end}"
+
+
+def points_disclosure(
+    entries: list[tuple[str, int, int]], unit: str
+) -> tuple[dict[str, int], str]:
+    """``(metrics, note)`` for point-level sampling; ``entries`` = ``(label, n_total, n_shown)``.
+
+    Metrics describe the most truncated entry; the note names it and counts the
+    sampled ones. Nothing (``({}, "")``) when there is no entry.
+    """
+    if not entries:
+        return {}, ""
+    label, total, shown = max(entries, key=lambda e: (e[1] - e[2], e[1]))
+    metrics = {"n_points_shown": int(shown), "n_points_total": int(total)}
+    n_sampled = sum(t > s for _, t, s in entries)
+    if not n_sampled:
+        return metrics, ""
+    note = f"Sampled {shown} of {total} {unit} for {label} ({total - shown} left out)"
+    if n_sampled > 1:
+        note += f"; {n_sampled} of {len(entries)} plots are sampled, this is the most truncated"
+    return metrics, note + "."

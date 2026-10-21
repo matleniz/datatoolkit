@@ -7,6 +7,7 @@ import plotly.express as px
 from pydantic import Field
 
 from dtk_engine.errors import KeyParamsError, valid_names_hint
+from dtk_engine.ops._util import sampling_metrics, sampling_note
 from dtk_engine.ops.missing import (
     DROP_PCT,
     REVIEW_PCT,
@@ -137,6 +138,10 @@ def missing_result(
 
     headline = _headline(metrics["n_columns_with_missing"], rates)
     result = Result(headline=headline, metrics=metrics, text="\n".join(issues))
+    missing_cols = _missing_columns(rates)
+    fig_matrix = _matrix_figure(work, missing_cols)
+    if fig_matrix is not None:
+        _disclose_matrix(result, len(work))
     result.add_table("missing_rates", rates)
     result.add_table("missing_per_row", per_row)
     result.add_table("sentinels", sentinels)
@@ -151,8 +156,6 @@ def missing_result(
         _suggested_steps(drop_candidates, target),
         kind="steps",
     )
-    missing_cols = _missing_columns(rates)
-    fig_matrix = _matrix_figure(work, missing_cols)
     with plotly_lock:
         result.add_figure("% missing per column", _bars_figure(missing_cols), main=True)
         if fig_matrix is not None:
@@ -240,13 +243,25 @@ def _bars_figure(missing_cols: pd.DataFrame):
     return fig
 
 
+# Rows drawn in the missingness matrix.
+MATRIX_ROWS_MAX = 300
+
+
+def _disclose_matrix(result: Result, n_rows: int) -> None:
+    dropped = max(0, n_rows - MATRIX_ROWS_MAX)
+    result.metrics.update(sampling_metrics(n_rows, dropped))
+    note = sampling_note(MATRIX_ROWS_MAX, dropped, "the missingness matrix")
+    if note:
+        result.text = f"{result.text}\n\n{note}" if result.text else note
+
+
 def _matrix_figure(work: pd.DataFrame, missing_cols: pd.DataFrame):
     cols_with_missing = [c for c in missing_cols.get("column", []) if c in work.columns]
     if not cols_with_missing:
         return None
     sample_work = (
-        work[cols_with_missing].sample(n=300, random_state=42).sort_index()
-        if len(work) > 300
+        work[cols_with_missing].sample(n=MATRIX_ROWS_MAX, random_state=42).sort_index()
+        if len(work) > MATRIX_ROWS_MAX
         else work[cols_with_missing]
     )
     fig = px.imshow(

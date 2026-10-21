@@ -8,18 +8,22 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pydantic import Field
 
+from dtk_engine.ops._util import points_disclosure
 from dtk_engine.ops.columns import is_numeric, pick_columns
 from dtk_engine.ops.outliers import (
     ACTION_TABLE,
     BOX_FIELDS,
+    FLAGGED_SAMPLE,
     IQR_K,
     MAD_THRESHOLD,
+    OUTLIER_POINTS_MAX,
     Z_THRESHOLD,
     box_stats,
     flagged_rows,
     isolation_forest,
     numeric_columns,
     outlier_points,
+    outlier_values,
     univariate_outliers,
 )
 from dtk_engine.params import SourceParams, columns_field
@@ -142,13 +146,15 @@ def outliers_result(
         },
         text=ACTION_TABLE,
     )
+    hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
+    plan, plan_cols = _box_plan(run_iqr, picked, hit)
+    _disclose(result, df, boxes, plan_cols, n_flagged if run_if else 0)
     result.add_table("outliers_per_column", table)
     result.add_table("flagged_rows", flagged)
     if run_iqr:
         result.add_table("box_stats", boxes)
-    hit = table[table["n_iqr"] > 0].sort_values("pct_iqr", ascending=False)
     has_main = False
-    if run_iqr and len(picked) == 1:
+    if plan == "single":
         col = picked[0]
         result.add_figure(
             f"{col}: box plot" + (" with outliers" if len(hit) else ""),
@@ -156,7 +162,7 @@ def outliers_result(
             main=True,
         )
         has_main = True
-    elif run_iqr and len(hit):
+    elif plan == "multiples":
         result.add_figure(
             "% outliers per column (IQR)",
             lambda: _pct_bars(hit),
@@ -181,6 +187,36 @@ def outliers_result(
 
 
 MULTIPLES = 6
+
+
+def _box_plan(run_iqr: bool, picked, hit) -> tuple[str, list[str]]:
+    """Which box-plot figure is drawn and for which columns: the one decision
+    shared by the figures and by the sampling disclosure."""
+    if run_iqr and len(picked) == 1:
+        return "single", list(picked)
+    if run_iqr and len(hit):
+        return "multiples", hit["column"].head(MULTIPLES).tolist()
+    return "none", []
+
+
+def _disclose(result: Result, df, boxes, columns: list[str], n_flagged: int) -> None:
+    """Sampling notes: outlier points per plotted column, and the flagged-rows cap."""
+    fences = boxes.set_index("column")
+    entries = []
+    for col in columns:
+        n = len(outlier_values(df, col, fences.at[col, "lower_fence"], fences.at[col, "upper_fence"]))
+        if n:
+            entries.append((f"column {col}", n, min(n, OUTLIER_POINTS_MAX)))
+    metrics, note = points_disclosure(entries, "outlier points")
+    result.metrics.update(metrics)
+    notes = [note] if note else []
+    if n_flagged > FLAGGED_SAMPLE:
+        notes.append(
+            f"Showing the {FLAGGED_SAMPLE} most anomalous of {n_flagged} flagged rows."
+        )
+    if notes:
+        result.text = "\n\n".join([result.text, *notes])
+
 _OUTLIER_COLOR = "#d62728"
 _BOX_COLOR = "#1f77b4"
 

@@ -100,7 +100,10 @@ def test_sampling():
     assert res.metrics["n_rows"] == 20
     assert res.metrics["n_rows_source"] == 100
     assert res.metrics["n_sampled_out"] == 80
-    assert "Sampled 20" in res.text
+    assert res.text == (
+        "Sampled 20 rows for the figure (80 rows left out); raise sample_size "
+        "or set it to null to plot more."
+    )
 
 
 def test_dataset_source_version(tmp_path, monkeypatch):
