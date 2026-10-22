@@ -29,6 +29,18 @@ run() {
   [ "$got" = "$want" ] || fail "exit $got (wanted $want) from: $*"
 }
 
+# engine="duckdb": reads the csv with the extra `large`, else a SourceError naming it.
+DUCKDB_CSV='
+import sys
+from dtk_engine.errors import SourceError
+from dtk_engine.sources import CsvSource, load
+try:
+    print(len(load(CsvSource(path="data.csv", engine="duckdb"))), "rows")
+except SourceError as exc:
+    print(exc)
+    sys.exit(1)
+'
+
 # hint <script> <extra>: the script prints the one-line install hint and exits 1.
 hint() {
   run 1 "$BIN/$1" --help
@@ -81,7 +93,7 @@ Result(**run_key("dataset_overview", {"source": {"kind": "csv", "path": "data.cs
   run 0 "$BIN/python" -c "from dtk_engine import api; print(api.list_transforms()[:1])"
 
   case "$extra" in
-    bare | pdf) hint dtk-api api; hint dtk-mcp agent ;;
+    bare | pdf | large) hint dtk-api api; hint dtk-mcp agent ;;
     api) run 0 "$BIN/dtk-api" --help; hint dtk-mcp agent ;;
     agent | agent-sdk) run 0 "$BIN/dtk-api" --help; run 0 "$BIN/dtk-mcp" --help ;;
     *) fail "no smoke checks for extra $extra: add them" ;;
@@ -90,6 +102,8 @@ Result(**run_key("dataset_overview", {"source": {"kind": "csv", "path": "data.cs
     api | agent | agent-sdk) serve_and_run_key ;;
   esac
   case "$extra" in
+    bare) (cd "$WORK" && run 1 "$BIN/python" -c "$DUCKDB_CSV") ;;
+    large) (cd "$WORK" && run 0 "$BIN/python" -c "$DUCKDB_CSV") ;;
     pdf) run 0 "$BIN/python" -c "import pypdf" ;;
     agent) run 0 "$BIN/python" -c "import mcp, httpx, websockets" ;;
     agent-sdk) run 0 "$BIN/python" -c "import claude_agent_sdk, mcp" ;;

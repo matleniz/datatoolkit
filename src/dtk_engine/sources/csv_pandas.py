@@ -519,6 +519,16 @@ def _mixed_error(path: str, report: MixedReport) -> MixedSeparatorError:
 
 @reader("csv")
 def read_csv(spec: CsvSource) -> pd.DataFrame:
+    """``engine="duckdb"`` hands over to the optional DuckDB reader (csv_duckdb,
+    imported only then); otherwise ``read_csv_pandas``."""
+    if spec.engine == "duckdb":
+        from dtk_engine.sources.csv_duckdb import read_csv_duckdb
+
+        return read_csv_duckdb(spec)
+    return read_csv_pandas(spec)
+
+
+def read_csv_pandas(spec: CsvSource) -> pd.DataFrame:
     """Read the csv in several passes (encoding check, sniffing, checks, pandas).
 
     A regular file is re-opened for each, so network drives pay more I/O and its
