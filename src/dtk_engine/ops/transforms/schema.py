@@ -199,8 +199,9 @@ def _check(df: pd.DataFrame, params: ExpectedSchemaParams, state: dict) -> list[
     title="Expected schema",
 )
 def expected_schema(df: pd.DataFrame, params: ExpectedSchemaParams, state: dict) -> pd.DataFrame:
-    """Check the frame against a declared schema (data unchanged); a report quotes offending values (cut to 40 chars), which agents and clients receive.
+    """Check the frame against a declared schema; the data passes through unchanged.
 
+    A report quotes offending values (cut to 40 chars); agents and clients receive them.
     ``row`` in an example is the position in the frame as replayed at this step
     (earlier row-changing steps included), not the workspace ``_rid``. A report
     keeps at most 200 findings, most severe first, then one ``truncated`` row.
