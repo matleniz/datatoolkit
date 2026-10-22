@@ -388,6 +388,14 @@ class RowsBody(WorkspaceRefBody):
 class ProfilesBody(WorkspaceRefBody):
     version: Annotated[int, Field(ge=0)] | None = None
     columns: list[str] | None = None
+    sample_rows: Annotated[int, Field(gt=0)] | None = Field(
+        None,
+        description=(
+            "Profile a seeded sample of this many rows when the frame is larger "
+            "(null = every row). 0, a negative number, a float or a boolean is a 422 "
+            "naming sample_rows. The response carries n_rows, n_rows_used and sampled."
+        ),
+    )
 
 
 class PreviewStepBody(WorkspaceRefBody):
@@ -629,6 +637,7 @@ async def post_profiles(request: Request) -> dict:
     return await run_in_threadpool(
         contract.column_profiles, body["workspace"], body.get("role", "train"),
         version=body.get("version"), columns=body.get("columns"),
+        sample_rows=body.get("sample_rows"),
     )
 
 

@@ -25,7 +25,7 @@ from dtk_engine.errors import (
     key_params_from_validation,
     valid_names_hint,
 )
-from dtk_engine.ops._util import json_scalar, py
+from dtk_engine.ops._util import json_scalar, py, sample_rows, sampling_metrics
 from dtk_engine.ops.compare import schema_diff
 from dtk_engine.ops.compare.schema import (
     CATEGORY_TYPES,
@@ -480,24 +480,51 @@ def _profile_one(name: str, series: pd.Series) -> dict:
     }
 
 
+PROFILE_SAMPLE_SEED = 0
+
+
+def check_sample_rows(sample_rows_: object) -> int | None:
+    """``sample_rows`` as given when it is None or an int > 0, else ``KeyParamsError``
+    (bool, float, string, 0 and negatives are rejected)."""
+    if sample_rows_ is None:
+        return None
+    if type(sample_rows_) is not int or sample_rows_ <= 0:
+        raise KeyParamsError(
+            f"sample_rows: must be an integer > 0 or null, got {sample_rows_!r:.40}"
+        )
+    return sample_rows_
+
+
 def column_profiles(
     ws: Workspace,
     role: str,
     version: int | None = None,
     columns: list[str] | None = None,
+    sample_rows_: int | None = None,
 ) -> dict:
     """Per-column profile for ``role`` at ``version`` (None = all steps).
 
     Optional ``columns`` (non-empty) profiles only those names in that order;
     unknown names raise ``KeyParamsError``. ``None`` / empty = every column.
+
+    ``sample_rows_`` (int > 0, None = full frame) profiles a seeded sample of
+    that many rows when the frame is larger. The payload always carries
+    ``n_rows`` (rows of the frame), ``n_rows_used`` (rows profiled), ``sampled``
+    and the ``n_rows_source`` / ``n_sampled_out`` Result metrics.
     """
     _check_role(role)
+    cap = check_sample_rows(sample_rows_)
     df, n = _frame_at(ws, role, version)
     picked = _resolve_columns(df, columns, "column_profiles")
     names = picked if picked is not None else [str(c) for c in df.columns]
+    used = sample_rows(df, cap, PROFILE_SAMPLE_SEED)
     return {
-        "columns": [_profile_one(name, df[name]) for name in names],
+        "columns": [_profile_one(name, used[name]) for name in names],
         "version": n,
+        "n_rows": len(df),
+        "n_rows_used": len(used),
+        "sampled": len(used) < len(df),
+        **sampling_metrics(len(df), len(df) - len(used)),
     }
 
 

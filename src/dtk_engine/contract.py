@@ -549,15 +549,22 @@ def column_profiles(
     role: str,
     version: int | None = None,
     columns: list[str] | None = None,
+    sample_rows: int | None = None,
 ) -> dict:
     """Per-column profile for ``role`` at ``version`` (histograms, sentinels,
     IQR bounds, variants, dates-/numbers-as-text, skew).
 
     Optional ``columns`` (non-empty list) profiles only those names in that
     order; unknown names raise ``KeyParamsError``. ``None`` / empty = all.
+
+    ``sample_rows`` (int > 0, default None = full frame; 0, negatives, floats
+    and bools raise ``KeyParamsError``) profiles a seeded sample of that many
+    rows when the frame is larger. The result also carries ``n_rows``,
+    ``n_rows_used``, ``sampled``, ``n_rows_source`` and ``n_sampled_out``.
     """
     return _inspect.column_profiles(
-        parse_workspace(ws), role, version=version, columns=columns
+        parse_workspace(ws), role, version=version, columns=columns,
+        sample_rows_=sample_rows,
     )
 
 

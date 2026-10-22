@@ -273,7 +273,7 @@ class _Tools:
         ws = await self._workspace_dict(view)
         data = await _compute(
             contract.column_profiles, ws, view.role, version=view.version,
-            columns=args.get("columns"),
+            columns=args.get("columns"), sample_rows=args.get("sample_rows"),
         )
         if not args.get("columns") and not args.get("detail"):
             data = policy.compact_profiles(data)
@@ -571,7 +571,13 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
         ("get_profiles",
          ("Per-column profiles (kind, missing, distinct, top values, sentinels, skew, ...). "
           "Without columns: compact (no histograms); detail: true for everything."),
-         _schema({**_VIEW, "columns": _COLUMNS, "detail": _DETAIL}), t.get_profiles),
+         _schema({
+             **_VIEW, "columns": _COLUMNS, "detail": _DETAIL,
+             "sample_rows": {
+                 "type": "integer", "minimum": 1,
+                 "description": "Profile a seeded sample of this many rows (default: all).",
+             },
+         }), t.get_profiles),
         ("preview_step",
          (f"Dry-run a step on top of the workspace steps; nothing is saved. Changed "
           f"cells, removed rids and the fitted state are cut to {policy.PREVIEW_ITEMS} "
