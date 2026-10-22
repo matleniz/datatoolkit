@@ -141,8 +141,11 @@ def csv_to_parquet(spec: CsvSource) -> Path:
         if os.path.exists(tmp):
             os.unlink(tmp)
     for partial in root.glob(".partial-*"):  # left by a killed conversion
-        if time.time() - partial.stat().st_mtime > 3600:
-            partial.unlink(missing_ok=True)
+        try:
+            if time.time() - partial.stat().st_mtime > 3600:
+                partial.unlink(missing_ok=True)
+        except FileNotFoundError:  # a concurrent conversion finished or cleaned it
+            pass
     for old in root.glob(f"{prefix}-*.parquet"):
         if old != out:
             old.unlink(missing_ok=True)
