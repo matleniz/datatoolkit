@@ -58,7 +58,7 @@ def test_pipeline_cross_val_score(center):
 
 def test_params_are_sklearn_params():
     t = DtkTransformer("drop_columns", columns=["a"])
-    assert t.get_params() == {"op": "drop_columns", "columns": ["a"]}
+    assert t.get_params() == {"op": "drop_columns", "strict": False, "columns": ["a"]}
     c = clone(t).set_params(columns=["b"], missing_ok=True)
     assert c.params == {"columns": ["b"], "missing_ok": True}
     assert t.params == {"columns": ["a"]}
@@ -176,15 +176,16 @@ def test_advised_workspace_pipeline_in_cross_val_score(tmp_path, monkeypatch):
 def test_set_params_op_change_drops_old_op_params():
     t = DtkTransformer("drop_columns", columns=["a"], missing_ok=True)
     t.set_params(op="scale")
-    assert t.get_params() == {"op": "scale", "columns": ["a"]}
+    assert t.get_params() == {"op": "scale", "strict": False, "columns": ["a"]}
     t.set_params(op="scale", method="minmax")  # same op: params merge
     assert t.params == {"columns": ["a"], "method": "minmax"}
     t.set_params(op="nope")
-    assert t.get_params() == {"op": "nope"}
+    assert t.get_params() == {"op": "nope", "strict": False}
     # a fixed op still clones / round-trips as before
     c = clone(DtkTransformer("drop_columns", columns=["a"], missing_ok=True))
     assert c.get_params() == {
         "op": "drop_columns",
+        "strict": False,
         "columns": ["a"],
         "missing_ok": True,
     }
@@ -195,7 +196,7 @@ def test_param_named_op_and_name_round_trip():
     t = DtkTransformer("derive", a="x", b="y", op="product", name="xy")
     assert t.op == "derive" and t.params["op"] == "product" and t.params["name"] == "xy"
     assert t.get_params() == {
-        "op": "derive", "a": "x", "b": "y", "param_op": "product", "name": "xy",
+        "op": "derive", "strict": False, "a": "x", "b": "y", "param_op": "product", "name": "xy",
     }
     c = clone(t)
     assert c.op == "derive" and c.params == t.params and c.get_params() == t.get_params()
@@ -211,3 +212,96 @@ def test_pipeline_with_derive_fits_and_clones():
     pipe = Pipeline([("d", DtkTransformer("derive", a="x", b="y", op="product", name="xy"))])
     out = clone(pipe).fit_transform(df)
     assert out["xy"].tolist() == [4.0, 10.0, 18.0]
+
+
+# --- strict=True: sklearn-style feature-name check on DataFrame transform ---
+
+
+def _strict_frames():
+    train = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0], "y": [0, 1, 0]})
+    return train, train.drop(columns="y")
+
+
+def test_strict_default_off_and_hyperparameter():
+    assert DtkTransformer("scale", columns=["a"]).strict is False
+    t = DtkTransformer("scale", columns=["a"], strict=True)
+    assert t.get_params()["strict"] is True
+    c = clone(t)
+    assert c.strict is True and c.get_params() == t.get_params()
+    assert c.set_params(strict=False).strict is False and t.strict is True
+    assert "strict" not in t.params
+
+
+def test_strict_off_label_absent_from_test_unchanged():
+    train, test = _strict_frames()
+    t = DtkTransformer("scale", columns=["a"]).fit(train)
+    # missing label, extra column and reordering are all accepted by name
+    assert list(t.transform(test).columns) == ["a", "b"]
+    assert list(t.transform(test.assign(z=1)).columns) == ["a", "b", "z"]
+    assert list(t.transform(train[["b", "y", "a"]]).columns) == ["b", "y", "a"]
+
+
+def test_strict_accepts_same_columns():
+    train, _ = _strict_frames()
+    t = DtkTransformer("scale", columns=["a"], strict=True).fit(train)
+    assert list(t.transform(train.copy()).columns) == ["a", "b", "y"]
+
+
+def test_strict_missing_column_names_it():
+    train, test = _strict_frames()
+    t = DtkTransformer("scale", columns=["a"], strict=True).fit(train)
+    with pytest.raises(ValueError, match="seen at fit time, yet now missing:\n- y\n") as e:
+        t.transform(test)
+    assert "unseen" not in str(e.value)
+
+
+def test_strict_extra_column_names_it():
+    train, _ = _strict_frames()
+    t = DtkTransformer("scale", columns=["a"], strict=True).fit(train)
+    with pytest.raises(ValueError, match="unseen at fit time:\n- z\n") as e:
+        t.transform(train.assign(z=1))
+    assert "missing" not in str(e.value)
+
+
+def test_strict_missing_and_extra_together():
+    train, test = _strict_frames()
+    t = DtkTransformer("scale", columns=["a"], strict=True).fit(train)
+    with pytest.raises(ValueError) as e:
+        t.transform(test.assign(z=1))
+    msg = str(e.value)
+    assert msg.startswith("The feature names should match those that were passed during fit.")
+    assert "- z\n" in msg and "- y\n" in msg
+
+
+def test_strict_reordered_columns_raise_like_sklearn():
+    train, _ = _strict_frames()
+    t = DtkTransformer("scale", columns=["a"], strict=True).fit(train)
+    with pytest.raises(ValueError, match="must be in the same order"):
+        t.transform(train[["b", "a", "y"]])
+
+
+def test_strict_numpy_input_path_unchanged():
+    train, _ = _strict_frames()
+    t = DtkTransformer("scale", columns=["x0"], strict=True).fit(train.to_numpy())
+    assert t.transform(train.to_numpy()).shape == (3, 3)
+    with pytest.raises(ValueError, match="expecting 3 features"):
+        t.transform(train.to_numpy()[:, :2])
+
+
+def test_strict_in_pipeline_cross_val_clone():
+    train, _ = _strict_frames()
+    p = clone(Pipeline([("s", DtkTransformer("scale", columns=["a"], strict=True))]))
+    assert p.named_steps["s"].strict is True
+    p.fit(train)
+    with pytest.raises(ValueError, match="missing"):
+        p.transform(train.drop(columns="y"))
+
+
+def test_no_registered_op_declares_a_param_named_strict():
+    """``strict`` is DtkTransformer's own hyperparameter: an op param of that name
+    would be captured by the estimator and never reach the op."""
+    clashing = [
+        t.op for t in registry.all_transforms() if "strict" in t.params_model.model_fields
+    ]
+    assert not clashing, f"ops declaring a param named 'strict' (reserved by DtkTransformer): {clashing}"
+    assert registry.all_transforms()  # the scan above must not be vacuous
