@@ -74,7 +74,8 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
     estimators require); otherwise ``transform`` raises a ``ValueError`` listing
     the unseen and the missing names. Use it when the estimator sits in a model
     pipeline fed only features, to catch a schema drift early. Array input is
-    unaffected: only the width is checked.
+    unaffected: only the width is checked. Fitted on an array (names ``x0``...),
+    a named DataFrame then raises under ``strict=True``, where sklearn only warns.
     """
 
     # The op identity is positional-only so an op param may itself be called

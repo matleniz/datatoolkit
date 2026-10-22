@@ -295,3 +295,13 @@ def test_strict_in_pipeline_cross_val_clone():
     p.fit(train)
     with pytest.raises(ValueError, match="missing"):
         p.transform(train.drop(columns="y"))
+
+
+def test_no_registered_op_declares_a_param_named_strict():
+    """``strict`` is DtkTransformer's own hyperparameter: an op param of that name
+    would be captured by the estimator and never reach the op."""
+    clashing = [
+        t.op for t in registry.all_transforms() if "strict" in t.params_model.model_fields
+    ]
+    assert not clashing, f"ops declaring a param named 'strict' (reserved by DtkTransformer): {clashing}"
+    assert registry.all_transforms()  # the scan above must not be vacuous
