@@ -257,3 +257,67 @@ def test_dtk_transformer_error_policy_raises_and_report_warns():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         est.transform(df.iloc[:2])
+
+
+# --- review of #207 --------------------------------------------------------------
+
+
+def test_report_is_capped_with_a_truncation_row_and_totals():
+    from dtk_engine.ops.schema_check import MAX_FINDINGS
+
+    n = 400
+    df = pd.DataFrame({f"c{i}": [1.0] for i in range(n)})
+    rules = [{"name": f"c{i}", "max": 0} for i in range(n)]
+    found = _check(df, columns=rules, extra_columns="ignore")
+    assert len(found) == MAX_FINDINGS + 1
+    last = found[-1]
+    assert (last["severity"], last["check"], last["column"]) == ("info", "truncated", None)
+    assert last["count"] == n - MAX_FINDINGS
+    assert f"{n - MAX_FINDINGS} more violations not shown" in last["message"]
+    assert f"{n} errors" in last["message"]
+    assert [f["column"] for f in found[:3]] == ["c0", "c1", "c2"]  # deterministic order
+    t = get_transform("expected_schema")
+    assert t.fit(df, t.parse({"columns": rules}))["violations"]["error"] == n  # full counts
+    assert len(json.dumps(found)) < 100_000
+
+
+def test_error_message_quotes_a_short_list_of_violations():
+    df = pd.DataFrame({f"c{i}": [1.0] for i in range(12)})
+    rules = [{"name": f"c{i}", "max": 0} for i in range(12)]
+    with pytest.raises(ValueError, match=r"\(12 errors\)") as exc:
+        DtkTransformer("expected_schema", columns=rules, on_violation="error").fit(df)
+    msg = str(exc.value)
+    assert "c0:" in msg and "c4:" in msg and "c5:" not in msg and "(+7 more)" in msg
+
+
+def test_bool_accepts_object_column_with_blanks_but_nulls_are_still_judged():
+    df = pd.DataFrame({"b": pd.Series([True, None, False], dtype=object)})
+    assert not _check(df, **_col(name="b", dtype="bool"))
+    found = _check(df, **_col(name="b", dtype="bool", nullable=False))
+    assert [f["check"] for f in found] == ["missing"]
+    assert _check(pd.DataFrame({"b": pd.Series([True, "x"], dtype=object)}), **_col(name="b", dtype="bool"))
+
+
+@pytest.mark.parametrize(
+    ("rule", "message"),
+    [
+        ({"name": "a", "dtype": "datetime", "min": 1}, "ISO date strings"),
+        ({"name": "a", "min": "2020-01-01", "max": "2020-01-02T00:00:00Z"}, "timezone"),
+        ({"name": "a", "allowed": [1, float("nan")]}, "NaN"),
+        ({"name": "a", "allowed": ["x", "x"]}, "duplicates"),
+        ({"name": "a", "allowed": [None]}, "allowed"),
+        ({"name": "a", "dtype": "string", "min": "a"}, "numeric or datetime"),
+    ],
+)
+def test_more_validator_gaps_are_key_params_errors(rule, message):
+    with pytest.raises(KeyParamsError, match=message):
+        get_transform("expected_schema").parse({"columns": [rule]})
+
+
+def test_compact_preview_caps_checks():
+    from dtk_engine.agent import policy
+
+    checks = [{"severity": "error", "check": "range", "column": str(i), "message": "m",
+               "count": 1, "examples": []} for i in range(150)]
+    out = policy.compact_preview({"checks": checks})
+    assert len(out["checks"]) == policy.PREVIEW_ITEMS and out["elided"]["checks"] == 150

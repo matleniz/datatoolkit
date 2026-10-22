@@ -24,12 +24,18 @@ from pydantic import (
     model_validator,
 )
 
-from dtk_engine.ops.schema_check import check_schema, effective_dtype, summarize
+from dtk_engine.ops.schema_check import (
+    check_schema,
+    effective_dtype,
+    limit_findings,
+    summarize,
+)
 from dtk_engine.transform_registry import TransformParams, transform
 
 MAX_COLUMN_RULES = 500
 MAX_ALLOWED = 1000
 MAX_EXAMPLES = 50
+ERROR_LINES = 5  # violations quoted in the message of a failing step
 
 Bound = StrictInt | StrictFloat | StrictStr
 Scalar = StrictBool | StrictInt | StrictFloat | StrictStr
@@ -96,6 +102,8 @@ class ColumnRule(BaseModel):
         if not bounds:
             return
         dtype = effective_dtype(self)
+        if dtype == "datetime" and not all(isinstance(b, str) for b in bounds):
+            raise ValueError(f"column {self.name!r}: datetime bounds must be ISO date strings")
         if dtype not in ("numeric", "datetime"):
             raise ValueError(
                 f"column {self.name!r}: min / max need dtype numeric or datetime, got {dtype}"
@@ -105,7 +113,11 @@ class ColumnRule(BaseModel):
                 raise ValueError(f"column {self.name!r}: min / max must be numbers")
         else:
             bounds = [_timestamp(b, f"column {self.name!r}: bound") for b in bounds]
-        if len(bounds) == 2 and bounds[0] > bounds[1]:
+        try:
+            inverted = len(bounds) == 2 and bounds[0] > bounds[1]
+        except TypeError as exc:  # naive vs timezone-aware bounds
+            raise ValueError(f"column {self.name!r}: min and max mix timezone-aware and naive dates") from exc
+        if inverted:
             raise ValueError(f"column {self.name!r}: min {self.min!r} is above max {self.max!r}")
 
     def _check_allowed(self) -> None:
@@ -118,6 +130,10 @@ class ColumnRule(BaseModel):
             "category": lambda v: isinstance(v, str),
             "bool": lambda v: isinstance(v, bool),
         }
+        if any(isinstance(v, float) and not math.isfinite(v) for v in self.allowed):
+            raise ValueError(f"column {self.name!r}: allowed must not contain NaN or infinity")
+        if len(set(map(repr, self.allowed))) != len(self.allowed):
+            raise ValueError(f"column {self.name!r}: allowed contains duplicates")
         if self.dtype == "datetime":
             raise ValueError(f"column {self.name!r}: allowed is not supported for datetime")
         bad = [v for v in self.allowed if not ok[self.dtype](v)]
@@ -168,11 +184,11 @@ def _check(df: pd.DataFrame, params: ExpectedSchemaParams, state: dict) -> list[
     if errors and params.on_violation == "error":
         lines = "; ".join(
             f"{f['column']}: {f['message']}" if f["column"] else f["message"]
-            for f in errors[:10]
+            for f in errors[:ERROR_LINES]
         )
-        more = f" (+{len(errors) - 10} more)" if len(errors) > 10 else ""
+        more = f" (+{len(errors) - ERROR_LINES} more)" if len(errors) > ERROR_LINES else ""
         raise ValueError(f"expected schema violated ({len(errors)} errors): {lines}{more}")
-    return found
+    return limit_findings(found)
 
 
 @transform(
@@ -183,5 +199,10 @@ def _check(df: pd.DataFrame, params: ExpectedSchemaParams, state: dict) -> list[
     title="Expected schema",
 )
 def expected_schema(df: pd.DataFrame, params: ExpectedSchemaParams, state: dict) -> pd.DataFrame:
-    """Check the frame against a declared schema; the data passes through unchanged."""
+    """Check the frame against a declared schema (data unchanged); a report quotes offending values (cut to 40 chars), which agents and clients receive.
+
+    ``row`` in an example is the position in the frame as replayed at this step
+    (earlier row-changing steps included), not the workspace ``_rid``. A report
+    keeps at most 200 findings, most severe first, then one ``truncated`` row.
+    """
     return df.copy(deep=False)

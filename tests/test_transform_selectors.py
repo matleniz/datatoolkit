@@ -26,7 +26,7 @@ def test_every_column_param_carries_a_step_selector():
     for t in list_transforms():
         for name, prop in _props(transform_schema(t["op"])):
             # expected_schema.columns is a list of rule objects, not a column picker
-            if name in COLUMNISH and "$ref" not in prop.get("items", {}):
+            if name in COLUMNISH and (t["op"], name) != ("expected_schema", "columns"):
                 checked += 1
                 assert prop.get("x-dtk-widget") in ("columns", "column"), (
                     t["op"],

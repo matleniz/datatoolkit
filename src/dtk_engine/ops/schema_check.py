@@ -25,8 +25,18 @@ from dtk_engine.ops.compare.issues import ISSUE_FIELDS, SEVERITIES, Issue
 
 CHECK_FIELDS = [*ISSUE_FIELDS, "count", "examples"]
 VALUE_CHARS = 40
+MAX_FINDINGS = 200  # findings kept in a report; the rest is summarised in one row
 
-__all__ = ["CHECK_FIELDS", "ISSUE_FIELDS", "SEVERITIES", "VALUE_CHARS", "check_schema", "summarize"]
+__all__ = [
+    "CHECK_FIELDS",
+    "ISSUE_FIELDS",
+    "MAX_FINDINGS",
+    "SEVERITIES",
+    "VALUE_CHARS",
+    "check_schema",
+    "limit_findings",
+    "summarize",
+]
 
 
 def _short(value: Any) -> str:
@@ -57,8 +67,10 @@ def _is_string(s: pd.Series) -> bool:
 def _matches(s: pd.Series, dtype: str) -> bool:
     if dtype == "numeric":
         return pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s)
-    if dtype == "bool":
-        return pd.api.types.is_bool_dtype(s)
+    if dtype == "bool":  # a CSV bool with blanks loads as object True / False / None
+        return pd.api.types.is_bool_dtype(s) or (
+            s.dtype == object and bool(s.dropna().map(lambda v: isinstance(v, bool)).all())
+        )
     if dtype == "datetime":
         return pd.api.types.is_datetime64_any_dtype(s)
     if dtype == "category":  # CSV-loaded categories are strings: both count
@@ -128,9 +140,9 @@ def _allowed_findings(rule, s: pd.Series, limit: int) -> Iterator[dict]:
     bad = s.notna() & ~s.isin(rule.allowed)
     n = int(bad.sum())
     if n:
-        found = s[bad].astype(str).drop_duplicates()
+        found = s[bad].drop_duplicates().head(4)  # before any str(): a column can be huge
         shown = ", ".join(repr(_short(v)) for v in found.head(3))
-        more = f" (+{len(found) - 3} more)" if len(found) > 3 else ""
+        more = " (+ more)" if len(found) > 3 else ""
         msg = f"{n} values not in the allowed set: {shown}{more}"
         yield _finding(("error", "allowed", rule.name, msg), n, _examples(s, bad, limit))
 
@@ -202,3 +214,17 @@ def check_schema(df: pd.DataFrame, schema) -> list[dict]:
 def summarize(findings: list[dict]) -> dict[str, int]:
     """Findings per severity, e.g. ``{"error": 2, "warning": 1, "info": 0}``."""
     return {sev: sum(f["severity"] == sev for f in findings) for sev in SEVERITIES}
+
+
+def limit_findings(found: list[dict], cap: int = MAX_FINDINGS) -> list[dict]:
+    """The first ``cap`` findings (most severe first, as sorted), then one
+    ``truncated`` row giving how many were left out and the totals per severity."""
+    if len(found) <= cap:
+        return found
+    total = summarize(found)
+    left = len(found) - cap
+    msg = (
+        f"{left} more violations not shown "
+        f"(total: {total['error']} errors, {total['warning']} warnings, {total['info']} info)"
+    )
+    return [*found[:cap], _finding(("info", "truncated", None, msg), left)]
