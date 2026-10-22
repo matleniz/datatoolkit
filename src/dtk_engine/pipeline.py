@@ -30,6 +30,29 @@ def _as_frame(X) -> pd.DataFrame:
     X = check_array(X, dtype=None, ensure_all_finite=False)
     return pd.DataFrame(X, columns=[f"x{i}" for i in range(X.shape[1])])
 
+
+def _check_feature_names(expected: np.ndarray, X: pd.DataFrame) -> None:
+    """sklearn's ``_check_feature_names`` rule and wording (same names, same order)."""
+    got = np.asarray(X.columns, dtype=object)
+    if len(got) == len(expected) and bool(np.all(got == expected)):
+        return
+    unexpected = sorted(set(got) - set(expected), key=str)
+    missing = sorted(set(expected) - set(got), key=str)
+
+    def names(items) -> str:
+        out = "".join(f"- {n}\n" for n in items[:5])
+        return out + ("- ...\n" if len(items) > 5 else "")
+
+    message = "The feature names should match those that were passed during fit.\n"
+    if unexpected:
+        message += "Feature names unseen at fit time:\n" + names(unexpected)
+    if missing:
+        message += "Feature names seen at fit time, yet now missing:\n" + names(missing)
+    if not unexpected and not missing:
+        message += "Feature names must be in the same order as they were in fit.\n"
+    raise ValueError(message)
+
+
 _ESC = {"op": "param_op"}
 _UNESC = {v: k for k, v in _ESC.items()}
 
@@ -41,13 +64,25 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
     Fitted attributes: ``state_`` (the op's JSON-safe state),
     ``feature_names_in_``, ``n_features_in_``, ``feature_names_out_``.
     Params are validated at ``fit`` (invalid -> KeyParamsError).
+
+    ``strict`` (keyword-only, default ``False``) is an estimator hyperparameter,
+    not an op param. With ``strict=False`` a DataFrame given to ``transform`` is
+    matched by column name and is not checked against the columns seen at fit:
+    the label is typically present at fit and legitimately absent from test, and
+    exported scripts rely on it. With ``strict=True`` the DataFrame's columns must
+    equal ``feature_names_in_`` (same names, same order, as scikit-learn's own
+    estimators require); otherwise ``transform`` raises a ``ValueError`` listing
+    the unseen and the missing names. Use it when the estimator sits in a model
+    pipeline fed only features, to catch a schema drift early. Array input is
+    unaffected: only the width is checked.
     """
 
     # The op identity is positional-only so an op param may itself be called
     # ``op`` (``derive``): ``DtkTransformer("derive", op="ratio")``.
     # ``op=None`` only makes the class default-constructible; ``fit`` refuses it.
-    def __init__(self, op: str | None = None, /, **params):
+    def __init__(self, op: str | None = None, /, *, strict: bool = False, **params):
         self.op = op
+        self.strict = strict
         self._params = params
 
     # Kept out of the instance's public attributes: the op's params are
@@ -67,15 +102,18 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
         # Pickles written before ``params`` became a property store it as "params".
         if "params" in state and "_params" not in state:
             state = {**state, "_params": state.pop("params")}
+        state.setdefault("strict", False)  # pickles written before ``strict``
         super().__setstate__(state)
 
     def get_params(self, deep: bool = True) -> dict:
-        return {"op": self.op, **{_ESC.get(k, k): v for k, v in self.params.items()}}
+        return {"op": self.op, "strict": self.strict, **{_ESC.get(k, k): v for k, v in self.params.items()}}
 
     def set_params(self, **params) -> DtkTransformer:
         # A new op keeps only the current params it declares (e.g. `columns`);
         # the old op's own params (e.g. `missing_ok`) are dropped.
         new_op = params.pop("op", self.op)
+        if "strict" in params:
+            self.strict = params.pop("strict")
         params = {_UNESC.get(k, k): v for k, v in params.items()}
         if not (isinstance(new_op, str) and new_op == self.op):
             try:
@@ -90,7 +128,7 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
     def __sklearn_clone__(self) -> DtkTransformer:
         # clone()'s default `type(self)(**get_params())` would hand `op` to the
         # positional-only argument as a keyword; rebuild it explicitly.
-        return type(self)(self.op, **{k: clone(v, safe=False) for k, v in self.params.items()})
+        return type(self)(self.op, strict=self.strict, **{k: clone(v, safe=False) for k, v in self.params.items()})
 
     def _transform_op(self):
         if self.op is None:
@@ -130,6 +168,8 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
                     f"X has {X.shape[1]} features, but DtkTransformer is expecting "
                     f"{self.n_features_in_} features as input"
                 )
+        elif self.strict:
+            _check_feature_names(self.feature_names_in_, X)
         return t.apply(X, t.parse(self.params), self.state_)
 
     def get_feature_names_out(self, input_features=None) -> np.ndarray:
