@@ -5,12 +5,14 @@ The file is converted ONCE to a parquet file by DuckDB, streaming and memory-cap
 engine only ever sees a pandas frame. The parquet is cached under
 ``$DTK_HOME/cache/csv_duckdb`` (default ``~/.datatoolkit``), keyed by the spec and
 the file's (path, mtime, size); one entry per source path, an older one is removed.
+Disk use: a parquet is about half the size of its CSV. Entries of files that were
+deleted, moved or uploaded once are never purged: clear ``cache_dir()`` by hand.
 It is a plain parquet file: ``ParquetSource(path=...)`` can read it later.
 
-What it buys: time (1M x 20 CSV, cold: 3.5 s against 8.3 s with pandas; 1.2-1.8 s once
+What it buys: time (1M x 20 CSV, cold: 2.7 s against 8.0 s with pandas; 0.9 s once
 cached) and a parquet reusable across sessions. It does NOT lower the peak memory of
 loading a frame: the result is still a whole pandas frame (peak RSS ~800 MB against
-~700 MB). The memory cap applies to DuckDB's conversion only.
+~690 MB). The memory cap applies to DuckDB's conversion only.
 
 Known differences with the pandas reader, none of them silent (each is listed here,
 and options that cannot be honoured raise ``SourceError`` instead of being ignored):
@@ -31,7 +33,8 @@ and options that cannot be honoured raise ``SourceError`` instead of being ignor
   DuckDB's (which reads a ragged file as one column). There is no ``skiprows="auto"``,
   no ``mixed_sep`` handling and no ``on_bad_lines``: those options are refused. A ragged row (more or fewer fields) is an error.
 - Column names: duplicates become ``a``, ``a_1``; with ``header=None`` the columns
-  are ``column0``, ``column1``, ... (pandas: ``0``, ``1``, ...). Rows keep file order.
+  are ``column0``, ``column1``, ... (pandas: ``0``, ``1``, ...). Rows keep file order
+  (``preserve_insertion_order`` stays on: replay, head and tail depend on it).
 - ``dtype`` accepts ``str``, ``int64`` (or ``int``), ``float64`` (or ``float``) and
   ``bool``; other dtypes are refused.
 """
@@ -42,6 +45,7 @@ import codecs
 import hashlib
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +56,9 @@ from dtk_engine.errors import SourceError
 from dtk_engine.sources.csv_pandas import SNIFF_CHARS, resolve_path, sniff_sep
 from dtk_engine.sources.spec import CsvSource
 
-# DuckDB's cap on its own buffers; beyond it, aggregations and sorts spill to disk.
+# DuckDB's ``memory_limit`` for the conversion (not configurable): beyond it DuckDB
+# spills to a temp directory, and fails with a SourceError when even that is not
+# enough (256MB converts the 1M x 20 benchmark file, 128MB does not).
 MEMORY_LIMIT = "1GB"
 # Bumped when the conversion changes, so parquet files cached by an older one are not reused.
 CONVERSION_VERSION = 1
@@ -134,6 +140,9 @@ def csv_to_parquet(spec: CsvSource) -> Path:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+    for partial in root.glob(".partial-*"):  # left by a killed conversion
+        if time.time() - partial.stat().st_mtime > 3600:
+            partial.unlink(missing_ok=True)
     for old in root.glob(f"{prefix}-*.parquet"):
         if old != out:
             old.unlink(missing_ok=True)
@@ -252,7 +261,6 @@ def _convert(duckdb: Any, spec: CsvSource, path: str, out: str) -> None:
             config={
                 "memory_limit": MEMORY_LIMIT,
                 "temp_directory": spill,
-                "preserve_insertion_order": False,
             }
         )
         try:

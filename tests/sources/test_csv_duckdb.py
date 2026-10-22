@@ -166,3 +166,13 @@ def test_converted_once_then_cached_and_invalidated(tmp_path):
     second = csv_duckdb.csv_to_parquet(spec)
     assert second != first and not first.exists()  # one entry per source path
     assert len(list(csv_duckdb.cache_dir().iterdir())) == 1  # no partial file left
+
+
+@pytest.mark.parametrize("limit", ["1GB", "256MB"])
+def test_row_order_is_kept(tmp_path, monkeypatch, limit):
+    monkeypatch.setattr(csv_duckdb, "MEMORY_LIMIT", limit)
+    n = 600_000  # enough chunks for DuckDB to reorder them when it may
+    rows = "".join(f"{k},s{k % 7},{k * 0.5}\n" for k in range(n))
+    df = read(write(tmp_path, f"id,s,x\n{rows}".encode()))
+    assert len(df) == n
+    assert (df["id"].to_numpy() == range(n)).all()

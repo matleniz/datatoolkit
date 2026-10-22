@@ -26,7 +26,7 @@ agent = ["mcp>=2.2,<3", "httpx", "fastapi", "uvicorn", "websockets"]
 agent-sdk = [
     "claude-agent-sdk>=0.2.163,<0.3", "mcp>=2.2,<3", "httpx", "fastapi", "uvicorn", "websockets",
 ]
-# Out-of-core CSV -> parquet conversion (dtk_engine.large); imported lazily, never by default.
+# Out-of-core CSV -> parquet conversion (dtk_engine.sources.csv_duckdb); imported lazily, never by default.
 large = ["duckdb>=2.0.0"]
 
 [project.scripts]

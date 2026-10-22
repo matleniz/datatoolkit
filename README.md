@@ -80,9 +80,9 @@ supported (no extra dependency): loading one raises a `SourceError` asking for
 Very large CSV (optional extra `large`, DuckDB): `CsvSource(engine="duckdb")` (JSON:
 `{"kind": "csv", "path": ..., "engine": "duckdb"}`) converts the file once to a cached
 parquet (`$DTK_HOME/cache/csv_duckdb`), streaming and capped at 1 GB, then reads it:
-a 1M x 20 CSV loads ~2x faster cold, ~5x once cached (the frame in memory is the
-same size). Typing, missing
-values and encodings differ from pandas; options it cannot honour are refused, never
+a 1M x 20 CSV loads ~3x faster cold, ~9x once cached. Peak memory is NOT reduced
+through this path (about 800 MB against 700 MB: the result is a whole pandas
+frame); only time is. Typing, missing values and encodings differ from pandas; options it cannot honour are refused, never
 ignored (list: docstring of `dtk_engine/sources/csv_duckdb.py`). Without the extra
 the default install is unchanged and the option raises a `SourceError` naming it.
 
