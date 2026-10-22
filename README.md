@@ -12,7 +12,7 @@ uv pip install git+https://github.com/matleniz/datatoolkit
 ```
 
 The bare package installs the `dtk-api` and `dtk-mcp` scripts but not their
-dependencies; add the extras you need (`api`, `agent`, `pdf`, `agent-sdk`):
+dependencies; add the extras you need (`api`, `agent`, `pdf`, `agent-sdk`, `large`):
 
 ```bash
 uv pip install "dtk-engine[api] @ git+https://github.com/matleniz/datatoolkit"    # dtk-api
@@ -76,6 +76,15 @@ api.transform(train, "drop_columns", columns=["Name"])  # DataFrame out
 Sources: csv/tsv, parquet, `.xlsx`, json/jsonl, sql. Legacy `.xls` is not
 supported (no extra dependency): loading one raises a `SourceError` asking for
 `.xlsx`; re-save the file as `.xlsx`.
+
+Very large CSV (optional extra `large`, DuckDB): `CsvSource(engine="duckdb")` (JSON:
+`{"kind": "csv", "path": ..., "engine": "duckdb"}`) converts the file once to a cached
+parquet (`$DTK_HOME/cache/csv_duckdb`), streaming and capped at 1 GB, then reads it:
+a 1M x 20 CSV loads ~3x faster cold, ~9x once cached. Peak memory is NOT reduced
+through this path (about 800 MB against 700 MB: the result is a whole pandas
+frame); only time is. Typing, missing values and encodings differ from pandas; options it cannot honour are refused, never
+ignored (list: docstring of `dtk_engine/sources/csv_duckdb.py`). Without the extra
+the default install is unchanged and the option raises a `SourceError` naming it.
 
 scikit-learn: every transform op is a fit / transform estimator (fitted on the
 training fold, pandas in / out), and a workspace's `both` steps form a pipeline:
