@@ -10,6 +10,8 @@ workspace's steps into a ``Pipeline``.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin, clone
@@ -51,6 +53,14 @@ def _check_feature_names(expected: np.ndarray, X: pd.DataFrame) -> None:
     if not unexpected and not missing:
         message += "Feature names must be in the same order as they were in fit.\n"
     raise ValueError(message)
+
+
+def _report_checks(t, out: pd.DataFrame, params, state: dict) -> None:
+    """Run the op's ``check`` hook (it raises to fail); other findings warn."""
+    found = t.check(out, params, state)
+    if found:
+        lines = "; ".join(f"{f['column'] or 'table'}: {f['message']}" for f in found[:5])
+        warnings.warn(f"{t.op}: {len(found)} finding(s): {lines}", UserWarning, stacklevel=3)
 
 
 _ESC = {"op": "param_op"}
@@ -148,6 +158,7 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         self.n_features_in_ = X.shape[1]
         out = t.apply(X, params, self.state_)
+        _report_checks(t, out, params, self.state_)
         self.feature_names_out_ = np.asarray(out.columns, dtype=object)
         return out
 
@@ -171,7 +182,10 @@ class DtkTransformer(TransformerMixin, BaseEstimator):
                 )
         elif self.strict:
             _check_feature_names(self.feature_names_in_, X)
-        return t.apply(X, t.parse(self.params), self.state_)
+        params = t.parse(self.params)
+        out = t.apply(X, params, self.state_)
+        _report_checks(t, out, params, self.state_)
+        return out
 
     def get_feature_names_out(self, input_features=None) -> np.ndarray:
         check_is_fitted(self, "feature_names_out_")

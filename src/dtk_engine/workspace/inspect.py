@@ -670,6 +670,7 @@ def _preview_payload(before: pd.DataFrame, after: pd.DataFrame, last: dict) -> d
         "changed_total": changed_total,
         "state": state_json,
         "fitted_on": last["fitted_on"],
+        "checks": last.get("checks", []),
     }
 
 
@@ -719,7 +720,7 @@ def preview_steps(ws: Workspace, steps: list, role: str) -> dict:
     del out["state"], out["fitted_on"]
     out["steps"] = [
         {"op": step.op, "state": json.loads(json.dumps(f["state"], default=str)),
-         "fitted_on": f["fitted_on"]}
+         "fitted_on": f["fitted_on"], "checks": f.get("checks", [])}
         for step, f in zip(parsed, fitted, strict=True)
     ]
     return out

@@ -12,5 +12,6 @@ from . import (  # noqa: F401
     formula,
     impute,
     scale,
+    schema,
     selection,
 )
