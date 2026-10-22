@@ -40,6 +40,9 @@ from dtk_engine.params import KeyParams
 
 FitFn = Callable[[pd.DataFrame, Any], dict]
 ApplyFn = Callable[[pd.DataFrame, Any, dict], pd.DataFrame]
+# check(df, params, state) -> findings (dicts with severity / check / column /
+# message, see ops/schema_check.py); may raise ValueError to fail the step.
+CheckFn = Callable[[pd.DataFrame, Any, dict], list[dict]]
 
 
 class TransformParams(KeyParams):
@@ -61,6 +64,9 @@ class Transform:
     # Fit reads the target column named by ``params.target`` (supervised op):
     # ``DtkTransformer.fit(X, y)`` joins y under that name for fit only.
     needs_target: bool = False
+    # Optional reporting hook run on each frame the step produced: the replay
+    # records its findings (``fitted[i]["checks"]``); a ValueError fails the step.
+    check_fn: CheckFn | None = None
 
     def parse(self, params: dict | BaseModel) -> BaseModel:
         """Validate raw params; invalid -> KeyParamsError naming the op."""
@@ -87,6 +93,10 @@ class Transform:
     def apply(self, df: pd.DataFrame, params: BaseModel, state: dict) -> pd.DataFrame:
         return self.apply_fn(df, params, state)
 
+    def check(self, df: pd.DataFrame, params: BaseModel, state: dict) -> list[dict]:
+        """Findings of the op's ``check`` hook on ``df`` (``[]`` for an op without one)."""
+        return self.check_fn(df, params, state) if self.check_fn else []
+
     def fit_apply(self, df: pd.DataFrame, params: BaseModel) -> pd.DataFrame:
         return self.apply(df, params, self.fit(df, params))
 
@@ -102,12 +112,14 @@ def transform(
     title: str | None = None,
     description: str | None = None,
     needs_target: bool = False,
+    check: CheckFn | None = None,
 ):
     """Register ``apply(df, params, state) -> df`` (and an optional ``fit``) as ``op``.
 
     ``title`` defaults to the op name, ``description`` to the first docstring line.
     ``needs_target``: fit uses the column named by the ``target`` param (it must
-    then be a param of ``params_model``).
+    then be a param of ``params_model``). ``check(df, params, state) -> findings``
+    reports on the frames the step produced (a pass-through contract op).
     """
     if not (isinstance(params_model, type) and issubclass(params_model, BaseModel)):
         raise TypeError(f"transform {op!r}: params_model must be a pydantic model")
@@ -127,6 +139,7 @@ def transform(
             fit_fn=fit or _no_fit,
             apply_fn=fn,
             needs_target=needs_target,
+            check_fn=check,
         )
         return fn
 

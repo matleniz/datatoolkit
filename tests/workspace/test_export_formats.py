@@ -470,6 +470,7 @@ def test_row_ops_classification_covers_every_registered_op():
     "drop_correlated",
     "drop_high_missing",
     "drop_low_variance",
+    "expected_schema",
     "extract",
     "ffill",
     "formula",

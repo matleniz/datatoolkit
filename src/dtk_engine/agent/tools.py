@@ -301,7 +301,11 @@ class _Tools:
         elided: dict[str, int] = dict(compact.get("elided") or {})
         limit = policy.PREVIEW_DETAIL_ITEMS if detail else policy.PREVIEW_ITEMS
         compact["steps"] = [
-            {**s, "state": policy.cap_lists(s["state"], limit, elided, f"steps[{i}].state")}
+            {
+                **s,
+                "state": policy.cap_lists(s["state"], limit, elided, f"steps[{i}].state"),
+                "checks": policy.cap_lists(s["checks"], limit, elided, f"steps[{i}].checks"),
+            }
             for i, s in enumerate(data["steps"])
         ]
         if elided:

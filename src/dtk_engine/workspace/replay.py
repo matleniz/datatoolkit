@@ -84,6 +84,11 @@ def _label_last(frame: pd.DataFrame | None, label: str | None) -> pd.DataFrame |
     return frame[[c for c in frame.columns if c != label] + [label]]
 
 
+def _checks(t, frame: pd.DataFrame, params, state: dict, split: str) -> list[dict]:
+    """The op's findings on ``frame``, each tagged with the ``split`` it concerns."""
+    return [{**f, "split": split} for f in t.check(frame, params, state)]
+
+
 def _run(
     steps: list[Step],
     train: pd.DataFrame | None,
@@ -99,7 +104,8 @@ def _run(
     it. Train is only replayed through step ``train_until``: fitted up to and
     including it, applied strictly before it (later train steps are skipped).
     Returns (train, test, fitted) with per step ``{"fitted_on", "state"}``
-    (``None`` / ``{}`` for a skipped step). ``start`` is the log index of
+    (``None`` / ``{}`` for a skipped step); an op with a ``check`` hook also gets
+    ``"checks"``, its findings per split (see ``Transform.check_fn``). ``start`` is the log index of
     ``steps[0]`` when the frames already went through the earlier steps
     (indices, including ``train_until``, are log indices). With ``label`` set
     (workspace ``label_last``), the label column is moved back to the end of
@@ -115,14 +121,20 @@ def _run(
             continue
         with _step_context(i, step):
             state = t.fit(fit_frame, params)
+            checks: list[dict] = []
             if step.target != "test" and i < train_until:
                 train = t.apply(train, params, state)
+                checks += _checks(t, train, params, state, "train")
             if step.target != "train" and test is not None:
                 with _step_context(i, step, split="test"):
                     test = t.apply(test, params, state)
+                    checks += _checks(t, test, params, state, "test")
             train = _label_last(train, label)
             test = _label_last(test, label)
-        fitted.append({"fitted_on": fitted_on, "state": state})
+        entry = {"fitted_on": fitted_on, "state": state}
+        if t.check_fn is not None:
+            entry["checks"] = checks
+        fitted.append(entry)
     return train, test, fitted
 
 

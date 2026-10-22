@@ -279,7 +279,7 @@ def compact_preview(data: dict, detail: bool = False) -> dict:
     limit = PREVIEW_DETAIL_ITEMS if detail else PREVIEW_ITEMS
     elided: dict[str, int] = {}
     out = dict(data)
-    for key in ("changed", "removed_rids", "state"):
+    for key in ("changed", "removed_rids", "state", "checks"):
         if key in out:
             out[key] = cap_lists(out[key], limit, elided, key)
     for key in ("columns", "added_columns", "removed_columns"):
