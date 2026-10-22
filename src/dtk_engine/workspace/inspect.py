@@ -25,7 +25,13 @@ from dtk_engine.errors import (
     key_params_from_validation,
     valid_names_hint,
 )
-from dtk_engine.ops._util import json_scalar, py
+from dtk_engine.ops._util import (
+    json_scalar,
+    py,
+    sample_rows,
+    sampling_metrics,
+    sampling_note,
+)
 from dtk_engine.ops.compare import schema_diff
 from dtk_engine.ops.compare.schema import (
     CATEGORY_TYPES,
@@ -480,25 +486,58 @@ def _profile_one(name: str, series: pd.Series) -> dict:
     }
 
 
+PROFILE_SAMPLE_SEED = 0
+_ESTIMATE_NOTE = (
+    "; missing, distinct, top values, outliers and kind (id_like, constant, ...) "
+    "are estimates from the sample and may differ on the full frame."
+)
+
+
+def check_sample_rows(sample_rows_: object) -> int | None:
+    """``sample_rows`` as given when it is None or an int > 0, else ``KeyParamsError``
+    (bool, float, string, 0 and negatives are rejected)."""
+    if sample_rows_ is None:
+        return None
+    if type(sample_rows_) is not int or sample_rows_ <= 0:
+        raise KeyParamsError(
+            f"sample_rows: must be an integer > 0 or null, got {sample_rows_!r:.40}"
+        )
+    return sample_rows_
+
+
 def column_profiles(
     ws: Workspace,
     role: str,
     version: int | None = None,
     columns: list[str] | None = None,
+    sample_rows_: int | None = None,
 ) -> dict:
     """Per-column profile for ``role`` at ``version`` (None = all steps).
 
     Optional ``columns`` (non-empty) profiles only those names in that order;
     unknown names raise ``KeyParamsError``. ``None`` / empty = every column.
+
+    ``sample_rows_`` (int > 0, None = full frame) profiles a seeded sample of
+    that many rows when the frame is larger. Only then does the payload gain
+    ``sampled`` (a sample was really taken), ``n_rows_source``, ``n_sampled_out``
+    and, when sampled, a ``note``: missing / distinct / kind (id_like, constant,
+    ...) / percentages are estimates from the sample and can differ on the
+    full frame. With ``None`` the payload is exactly the full-frame one.
     """
     _check_role(role)
+    cap = check_sample_rows(sample_rows_)
     df, n = _frame_at(ws, role, version)
     picked = _resolve_columns(df, columns, "column_profiles")
     names = picked if picked is not None else [str(c) for c in df.columns]
-    return {
-        "columns": [_profile_one(name, df[name]) for name in names],
-        "version": n,
-    }
+    used = sample_rows(df, cap, PROFILE_SAMPLE_SEED)
+    out = {"columns": [_profile_one(name, used[name]) for name in names], "version": n}
+    if cap is None:
+        return out
+    n_out = len(df) - len(used)
+    out.update(sampling_metrics(len(df), n_out), sampled=n_out > 0)
+    if n_out:
+        out["note"] = sampling_note(len(used), n_out, "these profiles", "") + _ESTIMATE_NOTE
+    return out
 
 
 def _parse_step(step: dict) -> Step:

@@ -300,6 +300,19 @@ async def test_preview_step_stays_small_on_high_cardinality(client, home, step):
     assert len(sample) == policy.PREVIEW_DETAIL_ITEMS
 
 
+async def test_get_profiles_sample_rows(client, bridge):
+    """``sample_rows`` is in the tool schema, reaches the contract, and keeps the sampling note."""
+    _save_demo()
+    bridge.put_context(_context())
+    tool = next(t for t in (await client.list_tools()).tools if t.name == "get_profiles")
+    prop = tool.input_schema["properties"]["sample_rows"]
+    assert prop["type"] == "integer" and prop["minimum"] == 1 and "estimates" in prop["description"]
+    out = _payload(await client.call_tool("get_profiles", {"sample_rows": 10}))["data"]
+    assert out["sampled"] is True and out["n_sampled_out"] > 0
+    assert "estimates" in out["note"] and "detail" in out["note"]
+    assert "sampled" not in _payload(await client.call_tool("get_profiles", {}))["data"]
+
+
 async def test_heavy_reads_are_compact_by_default(client, bridge):
     """#151: no histograms / matched columns / descriptions unless asked."""
     _save_demo()
