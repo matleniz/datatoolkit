@@ -392,8 +392,11 @@ class ProfilesBody(WorkspaceRefBody):
         None,
         description=(
             "Profile a seeded sample of this many rows when the frame is larger "
-            "(null = every row). 0, a negative number, a float or a boolean is a 422 "
-            "naming sample_rows. The response carries n_rows, n_rows_used and sampled."
+            "(null = every row, response unchanged). 0, a negative number, a float or a "
+            "boolean is a 422 naming sample_rows. When given, the response adds sampled, "
+            "n_rows_source, n_sampled_out and, if sampled, a note: missing, distinct, "
+            "kind (id_like, constant, ...) and percentages are estimates from the "
+            "sample and can differ on the full frame."
         ),
     )
 

@@ -306,7 +306,8 @@ def compact_profiles(data: dict) -> dict:
             if col.get(key):
                 slim[key] = col[key][:cap]
         columns.append(slim)
-    return {**data, "columns": columns, "note": _DETAIL_HINT}
+    note = f"{data['note']} {_DETAIL_HINT}" if data.get("note") else _DETAIL_HINT
+    return {**data, "columns": columns, "note": note}
 
 
 def compact_align(data: dict) -> dict:

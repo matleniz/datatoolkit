@@ -575,7 +575,11 @@ def build_tools(port: UiPort) -> list[ToolSpec]:
              **_VIEW, "columns": _COLUMNS, "detail": _DETAIL,
              "sample_rows": {
                  "type": "integer", "minimum": 1,
-                 "description": "Profile a seeded sample of this many rows (default: all).",
+                 "description": (
+                     "Profile a seeded sample of this many rows (default: all). "
+                     "Counts, distinct and kind (id_like, constant) are then estimates "
+                     "from the sample and can differ on the full frame."
+                 ),
              },
          }), t.get_profiles),
         ("preview_step",

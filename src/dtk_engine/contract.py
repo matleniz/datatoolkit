@@ -557,10 +557,13 @@ def column_profiles(
     Optional ``columns`` (non-empty list) profiles only those names in that
     order; unknown names raise ``KeyParamsError``. ``None`` / empty = all.
 
-    ``sample_rows`` (int > 0, default None = full frame; 0, negatives, floats
-    and bools raise ``KeyParamsError``) profiles a seeded sample of that many
-    rows when the frame is larger. The result also carries ``n_rows``,
-    ``n_rows_used``, ``sampled``, ``n_rows_source`` and ``n_sampled_out``.
+    ``sample_rows`` (int > 0, default None = full frame, response unchanged; 0,
+    negatives, floats and bools raise ``KeyParamsError``) profiles a seeded
+    sample of that many rows when the frame is larger. Only when given, the
+    result also carries ``sampled``, ``n_rows_source``, ``n_sampled_out`` and,
+    if rows were left out, a ``note``: missing / distinct / kind (id_like,
+    constant, ...) / percentages are ESTIMATES from the sample; a sample can
+    mislabel a column (e.g. constant or id_like) that is not on the full frame.
     """
     return _inspect.column_profiles(
         parse_workspace(ws), role, version=version, columns=columns,
