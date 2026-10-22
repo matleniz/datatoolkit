@@ -298,3 +298,103 @@ def test_duplicate_message_shared_with_export():
         "duplicate column names ['a', 'b'] in t (rename them to be unique)"
     )
     assert "(and 5 more)" in duplicate_columns_message([str(i) for i in range(15)], "t")
+
+
+def test_pipe_is_read_once(tmp_path):
+    import os
+    import threading
+
+    fifo = tmp_path / "pipe.csv"
+    os.mkfifo(fifo)
+
+    def feed():
+        with open(fifo, "wb") as fh:
+            fh.write("﻿a;b\n1;é\n2;x\n".encode())
+
+    t = threading.Thread(target=feed)
+    t.start()
+    df = load(CsvSource(path=str(fifo)))
+    t.join()
+    assert list(df.columns) == ["a", "b"]
+    assert df["b"].tolist() == ["é", "x"]
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "cp1252"])
+def test_skiprows_past_bom_beyond_one_chunk(tmp_path, encoding, monkeypatch):
+    from dtk_engine.sources import csv_pandas
+
+    monkeypatch.setattr(csv_pandas, "CHUNK", 16)  # junk, header and rows span chunks
+    path = tmp_path / "junk.csv"
+    path.write_text("title é\nsecond junk line\nid,name\n01,é\n02,b\n", encoding=encoding)
+    df = load(CsvSource(path=str(path), skiprows=2))
+    assert list(df.columns) == ["id", "name"]
+    assert df["id"].tolist() == ["01", "02"]
+    assert df["name"].tolist() == ["é", "b"]
+
+
+def test_leading_zero_cut_by_chunk_edge(tmp_path, monkeypatch):
+    from dtk_engine.sources import csv_pandas
+
+    monkeypatch.setattr(csv_pandas, "CHUNK", 8)
+    path = tmp_path / "zip.csv"
+    path.write_text("a,zip\n1,01234\n2,56789\n")
+    assert load(CsvSource(path=str(path)))["zip"].tolist() == ["01234", "56789"]
+
+
+def test_explicit_encoding_error_keeps_position(tmp_path):
+    path = tmp_path / "bad.csv"
+    path.write_bytes(b"a,b\n1,caf\xe9\n")
+    with pytest.raises(SourceError, match="can't decode byte 0xe9 in position 9"):
+        load(CsvSource(path=str(path), encoding="utf-8"))
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-32"])
+def test_explicit_bomless_utf16_32_falls_back_to_native_order(tmp_path, encoding):
+    path = tmp_path / "x.csv"
+    path.write_bytes("a,b\n1,é\n".encode(f"{encoding}-le"))
+    df = load(CsvSource(path=str(path), encoding=encoding))
+    assert df["b"].tolist() == ["é"]
+
+
+@pytest.mark.parametrize("encoding", ["rot13", "base64"])
+def test_non_text_codec_is_a_source_error(tmp_path, encoding):
+    path = tmp_path / "x.csv"
+    path.write_text("a,b\n1,2\n")
+    with pytest.raises(SourceError, match="cannot read csv"):
+        load(CsvSource(path=str(path), encoding=encoding))
+
+
+def test_pipe_with_normalize_and_skiprows(tmp_path):
+    import os
+    import threading
+
+    fifo = tmp_path / "pipe.csv"
+    os.mkfifo(fifo)
+    body = "junk\na;b;c\n1;2;3\n4,5,6\n7;8;9\n"
+
+    def feed():
+        with open(fifo, "wb") as fh:
+            fh.write(body.encode())
+
+    t = threading.Thread(target=feed)
+    t.start()
+    df = load(CsvSource(path=str(fifo), skiprows=1, sep=";", mixed_sep="normalize"))
+    t.join()
+    assert df.shape == (3, 3)
+    assert df["b"].tolist() == [2, 5, 8]
+
+
+@pytest.mark.parametrize("bom,encoding", [(b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe", "utf-16-le")])
+def test_auto_bom_decode_error_reports_file_position(tmp_path, monkeypatch, bom, encoding):
+    from dtk_engine.sources import csv_pandas
+
+    monkeypatch.setattr(csv_pandas, "CHUNK", 16)
+    path = tmp_path / "bad.csv"
+    good = ("a,b\n" + "1,xx\n" * 20).encode(encoding)
+    bad = b"\xff\xff\xff" if encoding == "utf-8" else b"\x00\xd8\x00\xd8"  # lone surrogates
+    path.write_bytes(bom + good + bad)
+    with pytest.raises(SourceError) as exc:
+        load(CsvSource(path=str(path)))
+    with pytest.raises(UnicodeDecodeError) as whole:  # what decoding the whole file says
+        (bom + good + bad).decode({b"\xef\xbb\xbf": "utf-8-sig"}.get(bom, "utf-16-le"))
+    assert str(whole.value) in str(exc.value)
