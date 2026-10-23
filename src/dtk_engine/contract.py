@@ -39,7 +39,7 @@ from .registry import all_keys, get_key
 from .result import Result
 from .sources import SourceSpec, load
 from .transform_registry import get_transform, transform_catalog
-from .workspace import JsonWorkspaceStore, Workspace
+from .workspace import JsonWorkspaceStore, Workspace, large
 from .workspace import documents as _documents
 from .workspace import inspect as _inspect
 from .workspace.dataset import (
@@ -108,6 +108,8 @@ def _role_shape(ws: Workspace, role: str) -> list[int] | None:
 
     def compute() -> list[int] | None:
         try:
+            if large.wants(ws, role) and (plan := large.plan(ws, role, ws.steps)):
+                return large.shape(plan)  # DuckDB counts, no frame
             df = workspace_frame(ws, role)
         except (SourceError, KeyParamsError, UnknownTransformError, OSError, ValueError):
             return None

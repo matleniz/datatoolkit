@@ -52,6 +52,7 @@ from dtk_engine.ops.profile import (
 from dtk_engine.ops.suggested import suggested_params as _suggested_params
 from dtk_engine.ops.transforms.cleaning import FilterRowsParams, _condition_mask
 from dtk_engine.ops.transforms.formula import evaluate as _evaluate_expr
+from dtk_engine.workspace import large
 from dtk_engine.workspace.dataset import (
     cached_frame,
     label_name,
@@ -526,6 +527,11 @@ def column_profiles(
     """
     _check_role(role)
     cap = check_sample_rows(sample_rows_)
+    if large.wants(ws, role):
+        n = resolve_version(len(ws.steps), version)
+        plan = large.plan(ws, role, ws.steps[:n])
+        if plan is not None:
+            return _duck_profiles(plan, n, columns, cap)
     df, n = _frame_at(ws, role, version)
     picked = _resolve_columns(df, columns, "column_profiles")
     names = picked if picked is not None else [str(c) for c in df.columns]
@@ -535,6 +541,46 @@ def column_profiles(
         return out
     n_out = len(df) - len(used)
     out.update(sampling_metrics(len(df), n_out), sampled=n_out > 0)
+    if n_out:
+        out["note"] = sampling_note(len(used), n_out, "these profiles", "") + _ESTIMATE_NOTE
+    return out
+
+
+def _exact_profile(plan: large.Plan, name: str, base: dict, info: dict, rows: int) -> dict:
+    """``base`` (profiled on the sample) with the fields DuckDB computes exactly."""
+    out = {**base, "count": info["count"], "missing": rows - info["count"], "distinct": info["distinct"]}
+    numeric = "min" in info
+    out["histogram"] = large.histogram(plan, name, info["min"], info["max"]) if base["kind"] == KIND_NUMBER and numeric else None
+    out["top_values"] = None
+    if base["kind"] != KIND_NUMBER:
+        top = large.top_values(plan, name, info, rows)
+        out["top_values"] = [{"value": _cell_json(v), "count": c} for v, c in top]
+    out["iqr_bounds"], out["outliers"] = large.iqr(plan, name, info.get("q1"), info.get("q3")) if numeric else (None, 0)
+    if numeric:
+        out["skewed"] = (
+            info["count"] >= _SKEW_MIN_N and info["min"] >= 0 and info["median"] > 0
+            and info["mean"] > _SKEW_MEAN_OVER_MEDIAN * info["median"]
+        )
+    return out
+
+
+def _duck_profiles(plan: large.Plan, n: int, columns: list[str] | None, cap: int | None) -> dict:
+    """``column_profiles`` computed by DuckDB (see ``workspace.large``): exact counts,
+    histogram, IQR, top values; sampled heuristics (``sampled`` fields when rows were left out)."""
+    picked = _resolve_columns(pd.DataFrame(columns=plan.columns), columns, "column_profiles")
+    names = picked if picked is not None else list(plan.columns)
+    rows, stats = large.column_stats(plan, names)
+    used = large.sample_frame(plan, names, rows, cap or large.DEFAULT_SAMPLE)
+    out = {
+        "columns": [
+            _exact_profile(plan, name, _profile_one(name, used[name]), stats[name], rows)
+            for name in names
+        ],
+        "version": n,
+    }
+    n_out = rows - len(used)
+    if cap is not None or n_out:
+        out.update(sampling_metrics(rows, n_out), sampled=n_out > 0)
     if n_out:
         out["note"] = sampling_note(len(used), n_out, "these profiles", "") + _ESTIMATE_NOTE
     return out

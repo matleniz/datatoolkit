@@ -47,6 +47,7 @@ import pandas as pd
 
 from dtk_engine.errors import KeyParamsError, SourceError, duplicate_columns_message
 from dtk_engine.sources.csv_pandas import resolve_path
+from dtk_engine.workspace import large
 from dtk_engine.workspace.dataset import raw_workspace_frame, replay_label
 from dtk_engine.workspace.models import Workspace
 from dtk_engine.workspace.notebook import notebook_json, script_text
@@ -228,13 +229,35 @@ def _check_formats(formats: list[str] | None) -> list[str]:
     return formats
 
 
+def _duck_plans(ws: Workspace, formats: list[str]) -> dict | None:
+    """DuckDB plans of every role when all of them can skip pandas, else None."""
+    roles = [r for r in ("train", "test") if getattr(ws.datasets, r) is not None]
+    if not set(formats) <= set(large.EXPORT_FORMATS) or not all(large.wants(ws, r) for r in roles):
+        return None
+    plans = {r: large.plan(ws, r, ws.steps) for r in roles}
+    return None if any(p is None for p in plans.values()) else plans
+
+
+def _write_duck_parquet(plan: large.Plan, path: Path) -> dict:
+    info = large.export_parquet(plan, path)
+    return {
+        "path": str(path.relative_to(path.parent.parent)),
+        "rows": info["rows"],
+        "columns": info["columns"],
+        "sha256": _sha256_file(path),
+    }
+
+
 def _write_outputs(
     ws: Workspace, out: Path, frames: dict, formats: list[str], exported_at: str,
-    pipeline: bool = False,
+    pipeline: bool = False, plans: dict | None = None,
 ) -> dict:
     outputs: dict[str, dict] = {}
     if "parquet" in formats or "csv" in formats:
         (out / PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
+    for role, plan in (plans or {}).items():
+        if "parquet" in formats:
+            outputs[role] = _write_duck_parquet(plan, out / PROCESSED_DIR / f"{role}.parquet")
     for role, df in frames.items():
         if "parquet" in formats:
             outputs[role] = _write_parquet(df, out / PROCESSED_DIR / f"{role}.parquet")
@@ -487,15 +510,19 @@ def _build_export(
     ws: Workspace, out: Path, formats: list[str], sources: list[dict], merges: list[dict],
     inline_state_bytes: int, pipeline: bool = False,
 ) -> dict:
-    train = raw_workspace_frame(ws, "train", labeled=True)
-    test = None
-    if ws.datasets.test is not None:
-        test = raw_workspace_frame(ws, "test", labeled=True)
-    train, test, fitted = replay_fitted(ws.steps, train, test, replay_label(ws))
-
     exported_at = datetime.now(UTC).isoformat()
-    frames = {"train": train} if test is None else {"train": train, "test": test}
-    outputs = _write_outputs(ws, out, frames, formats, exported_at, pipeline)
+    plans = _duck_plans(ws, formats)
+    if plans is not None:  # DuckDB writes the parquet, no pandas frame (workspace.large)
+        fitted = [{"fitted_on": "test" if s.target == "test" else "train", "state": {}} for s in ws.steps]
+        outputs = _write_outputs(ws, out, {}, formats, exported_at, pipeline, plans)
+    else:
+        train = raw_workspace_frame(ws, "train", labeled=True)
+        test = None
+        if ws.datasets.test is not None:
+            test = raw_workspace_frame(ws, "test", labeled=True)
+        train, test, fitted = replay_fitted(ws.steps, train, test, replay_label(ws))
+        frames = {"train": train} if test is None else {"train": train, "test": test}
+        outputs = _write_outputs(ws, out, frames, formats, exported_at, pipeline)
 
     group_of = {sid: g.id for g in ws.groups for sid in g.step_ids}
     manifest = {
