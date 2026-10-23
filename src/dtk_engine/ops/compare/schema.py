@@ -135,7 +135,7 @@ def value_mismatch_is_blocking(
     near_matches: list[dict[str, str]] | None,
     pct_test_rows_unseen: float | None,
 ) -> bool:
-    """Whether a ``value_mismatch`` should block Studio "to decide".
+    """Whether a ``value_mismatch`` should block a front's "to decide".
 
     Spelling drift (``near_matches``) and a large share of test rows carrying
     unseen values stay blocking. Rare pure-new categories (empty near_matches,

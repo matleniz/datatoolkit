@@ -1,4 +1,4 @@
-"""In-memory workspace inspection for the Studio grid (rows, profiles, diffs).
+"""In-memory workspace inspection for a grid front (rows, profiles, diffs).
 
 Workspaces are passed as unsaved dicts (validated like ``preview_workspace``);
 nothing is written to the store. Row identity ``_rid`` is the row's position in
@@ -120,7 +120,7 @@ def _name_looks_like_id(name: str) -> bool:
 
 
 def column_kind(series: pd.Series, name: str | None = None) -> str:
-    """Map a column to a Studio grid kind (see module docstring table).
+    """Map a column to a grid kind (see module docstring table).
 
     ``name`` enables a secondary heuristic: a text column named ``id`` or ending
     in ``_id`` / ``Id`` with >= 90% distinct non-null values becomes
@@ -994,7 +994,7 @@ def align_report(ws: Workspace) -> dict:
     both sides with test-only values get status ``value_mismatch`` plus
     ``only_in_test`` (value+count), ``pct_test_rows_unseen``, optional
     ``near_match_hint`` / ``near_matches`` (strip / casefold / trailing
-    punctuation), and ``blocking`` (Studio "to decide" when near_matches
+    punctuation), and ``blocking`` (a front's "to decide" when near_matches
     exist or pct unseen exceeds 50). No test dataset -> ``SourceError``.
     """
     if ws.datasets.test is None:

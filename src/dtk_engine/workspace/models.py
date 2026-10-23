@@ -204,7 +204,7 @@ class WorkspaceDocument(_Strict):
 
 
 class MemoryEntry(_Strict):
-    """One short fact the in-Studio agent keeps across chat sessions
+    """One short fact the in-app agent keeps across chat sessions
     (datatoolkit-issues#179); ``id`` is filled like document ids."""
 
     id: str | None = Field(default=None, pattern=MEMORY_ID_PATTERN)

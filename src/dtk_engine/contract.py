@@ -11,7 +11,7 @@ Contract surface (fronts call these; inputs/outputs are plain JSON)::
     export_workspace
     describe_document / list_documents / add_document / remove_document /
         document_text / document_path  (workspace documents)
-    workspace_rows / column_profiles / preview_step / align_report  (Studio grid)
+    workspace_rows / column_profiles / preview_step / align_report  (grid front)
 """
 
 from __future__ import annotations
@@ -502,7 +502,7 @@ def document_path(workspace: str, doc_id: str) -> tuple[Path, dict]:
     return _documents.resolve_upload(doc["path"]), doc
 
 
-# Studio grid (unsaved workspace dicts; nothing written to the store).
+# Grid front (unsaved workspace dicts; nothing written to the store).
 
 
 def workspace_rows(
@@ -623,7 +623,7 @@ def align_report(ws: dict) -> dict:
     ``only_in_test`` (``[{value, count}, ...]``), ``pct_test_rows_unseen``,
     ``near_match_hint``, ``near_matches`` (``[{test, train}, ...]``), and
     ``blocking`` (True when ``near_matches`` is non-empty or
-    ``pct_test_rows_unseen`` exceeds 50 — Studio "to decide"; otherwise
+    ``pct_test_rows_unseen`` exceeds 50 — a front's "to decide"; otherwise
     informational for rare new categories). Those fields are ``null`` / ``[]``
     / ``False`` on other statuses.
     """
