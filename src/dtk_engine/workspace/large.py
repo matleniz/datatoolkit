@@ -233,35 +233,35 @@ def export_parquet(p: Plan, path: Path) -> dict:
 # -- profile -----------------------------------------------------------------------
 
 
-def _numeric_aggregates(names: list[str], numeric: list[str]) -> str:
-    parts = ["count(*)"]
-    for name in names:
-        c = _ident(name)
-        parts += [f"count({c})", f"count(DISTINCT {c})"]
-        if name in numeric:
-            parts += [
-                f"min({c})", f"max({c})", f"avg({c})",
-                f"quantile_cont({c}, 0.25)", f"quantile_cont({c}, 0.5)", f"quantile_cont({c}, 0.75)",
-            ]  # fmt: skip
+def _aggregates(name: str, numeric: bool) -> str:
+    c = _ident(name)
+    parts = ["count(*)", f"count({c})", f"count(DISTINCT {c})"]
+    if numeric:
+        parts += [
+            f"min({c})", f"max({c})", f"avg({c})",
+            f"quantile_cont({c}, [0.25, 0.5, 0.75])",  # one list: one sort, fits the memory cap
+        ]  # fmt: skip
     return ", ".join(parts)
 
 
 def column_stats(p: Plan, names: list[str]) -> tuple[int, dict[str, dict]]:
-    """``(rows, {name: exact aggregates})`` for ``names`` in one pass over the file."""
-    numeric = [n for n in names if p.types[n] in _NUMBERS]
-    with _connect() as con:
-        row = con.execute(f"SELECT {_numeric_aggregates(names, numeric)} FROM ({p.scan(names)})", p.params).fetchone()
+    """``(rows, {name: exact aggregates})`` for ``names``: one pass per column, so the
+    distinct sets of several wide columns never sit in memory together."""
     stats: dict[str, dict] = {}
-    i = 1
-    for name in names:
-        info = {"count": int(row[i]), "distinct": int(row[i + 1])}
-        i += 2
-        if name in numeric:
-            keys = ("min", "max", "mean", "q1", "median", "q3")
-            info.update(zip(keys, row[i : i + 6], strict=True))
-            i += 6
-        stats[name] = info
-    return int(row[0]), stats
+    rows = 0
+    keys = ("min", "max", "mean", "q1", "median", "q3")
+    with _connect() as con:
+        for name in names:
+            numeric = p.types[name] in _NUMBERS
+            row = con.execute(f"SELECT {_aggregates(name, numeric)} FROM ({p.scan([name])})", p.params).fetchone()
+            rows = int(row[0])
+            stats[name] = {"count": int(row[1]), "distinct": int(row[2])}
+            if numeric:
+                q1, median, q3 = row[6] or (None, None, None)
+                stats[name].update(zip(keys, (*row[3:6], q1, median, q3), strict=True))
+    if not names:
+        rows = shape(p)[0]
+    return rows, stats
 
 
 def histogram(p: Plan, name: str, lo: float, hi: float) -> dict | None:
