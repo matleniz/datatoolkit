@@ -12,7 +12,8 @@ It is a plain parquet file: ``ParquetSource(path=...)`` can read it later.
 What it buys: time (1M x 20 CSV, cold: 2.7 s against 8.0 s with pandas; 0.9 s once
 cached) and a parquet reusable across sessions. It does NOT lower the peak memory of
 loading a frame: the result is still a whole pandas frame (peak RSS ~800 MB against
-~690 MB). The memory cap applies to DuckDB's conversion only.
+~690 MB). The memory cap applies to DuckDB's conversion only. The calls that never need
+the frame (profile, shape, filtered export) skip it: see ``workspace.large``.
 
 Known differences with the pandas reader, none of them silent (each is listed here,
 and options that cannot be honoured raise ``SourceError`` instead of being ignored):
