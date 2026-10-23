@@ -174,6 +174,6 @@ _FITS = LRU(max_entries=64, max_bytes=128 * 1024 * 1024)
 
 def memo_frame(name: str, df: pd.DataFrame, params: Any, compute: Callable) -> Any:
     """``compute()`` memoized on (``name``, content of ``df``, ``params``): for the
-    seeded model fits Studio re-runs on every grid reload (MAT-210). Pass as
+    seeded model fits a front re-runs on every grid reload (MAT-210). Pass as
     ``df`` exactly the columns ``compute`` reads."""
     return _FITS.memo(digest(name, df, params), compute)

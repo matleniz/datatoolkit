@@ -10,7 +10,7 @@ Each step names a registered transform (``dtk_engine.transform_registry``,
 
 ``replay`` (one role), ``replay_fitted`` (both roles + fitted states, for
 export) and ``replay_step`` (one more step on frames already replayed, for the
-Studio preview) share one loop, ``_run``.
+front preview) share one loop, ``_run``.
 
 Errors, all raised before any work: an unknown op -> UnknownTransformError,
 invalid params -> KeyParamsError (``validate_steps`` runs the same check at

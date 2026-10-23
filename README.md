@@ -88,6 +88,9 @@ top values exact; kind and text heuristics from a seeded 100k-row sample; any ot
 step falls back to pandas; design: `workspace/large.py`). Typing, missing values and encodings differ from pandas; options it cannot honour are refused, never
 ignored (list: docstring of `dtk_engine/sources/csv_duckdb.py`). Without the extra
 the default install is unchanged and the option raises a `SourceError` naming it.
+Discovery: the `engine` enum (`pandas` | `duckdb`) is in the `source` schema of `key_schema(key)`
+(HTTP `GET /api/keys/{key}/schema`); there is no availability probe, so a front tries
+`engine: "duckdb"` and handles the `SourceError` (HTTP 422, message names the `large` extra).
 
 scikit-learn: every transform op is a fit / transform estimator (fitted on the
 training fold, pandas in / out), and a workspace's `both` steps form a pipeline:

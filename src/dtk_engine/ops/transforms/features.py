@@ -232,7 +232,7 @@ class GroupAggParams(TransformParams):
         None,
         "first / last: order of the group's rows (e.g. age, a date); rows with a "
         "missing order are ignored, ties keep the frame order",
-        # No x-dtk-when: Studio matches it against a scalar sibling, aggs is a list.
+        # No x-dtk-when: a front matches it against a scalar sibling, aggs is a list.
         source="step",
     )
     target: str | None = column_field(
