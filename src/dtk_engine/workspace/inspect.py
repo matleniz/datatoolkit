@@ -605,19 +605,20 @@ _DUCK_PROFILES = LRU(max_entries=1024)
 
 def _duck_approximate(f: dict, top_approx: bool) -> list[str]:
     """Fields of a DuckDB profile that are approximate or derived from one."""
-    out = ["kind"]
     numeric, text = large_stats.is_number(f), f["type"] == "VARCHAR"
-    if f["approx"]:
+    quartiles = numeric and f["approx"]  # approx_quantile
+    out = ["kind"]
+    if f["approx_distinct"]:
         out.append("distinct")
-        if numeric:
-            out += ["stats.q1", "stats.median", "stats.q3", "iqr_bounds", "outliers", "skewed"]
+    if quartiles:
+        out += ["stats.q1", "stats.median", "stats.q3", "iqr_bounds", "outliers", "skewed"]
     if top_approx:
         out.append("top_values")
-    if text or (numeric and f["approx"]):  # TRY_CAST numbers / approximate distinct
+    if text or (numeric and f["approx_distinct"]):  # TRY_CAST numbers / the zero rule's distinct
         out.append("sentinel_candidates")
-    if text and f["approx"]:
+    if text and f["approx_distinct"]:
         out.append("variants")
-    if f["approx"]:
+    if f["approx_distinct"] or quartiles:
         out.append("suggested_params")
     return out
 

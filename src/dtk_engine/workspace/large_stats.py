@@ -67,6 +67,7 @@ from dtk_engine.workspace.large import (
     _NUMBERS,
     ROW_NUMBER,
     TOP_VALUES,
+    OutOfMemory,
     Plan,
     _connect,
     numbered,
@@ -79,6 +80,9 @@ APPROX_FROM_ROWS = 1_000_000
 # Estimated distinct values up to which a column is counted exactly (and a top list
 # grouped exactly) in the approximate mode.
 DISTINCT_EXACT_MAX = 100_000
+# Threads of the streaming text query (approximate mode, many distinct values); it falls
+# back to ``THREADS`` when DuckDB runs out of memory (12 threads did under 128MB).
+STREAM_THREADS = 8
 # Approximate mode: variants are reported only when the normalized distinct estimate is
 # below the raw one by more than this share (two HyperLogLog estimates differ by ~2 %).
 VARIANTS_HLL_MARGIN = 0.05
@@ -238,13 +242,19 @@ def _exact_distinct(plan: Plan, name: str) -> int:
 
 def _text(plan: Plan, name: str, grouped: bool, approx: bool) -> dict[str, Any]:
     """The text rules' aggregates; ``grouped`` also counts the distinct values exactly."""
-    streaming = approx and not grouped  # no hash table: every core, no spill to thrash
+    streaming = approx and not grouped  # no hash table: more threads, nothing to spill
     normalized = _distinct(_normalized("v"), streaming)
     parts = _text_parts(normalized) + ([("groups", "count(*)")] if grouped else [])
-    with _connect(threads=os.cpu_count() if streaming else None) as con:
-        row = con.execute(
-            f"SELECT {', '.join(e for _, e in parts)} FROM ({_text_rows(plan, name, grouped)})", plan.params
-        ).fetchone()
+    query = f"SELECT {', '.join(e for _, e in parts)} FROM ({_text_rows(plan, name, grouped)})"
+    tries = [min(STREAM_THREADS, os.cpu_count() or 1), None] if streaming else [None]
+    for threads in tries:
+        try:
+            with _connect(threads=threads) as con:
+                row = con.execute(query, plan.params).fetchone()
+            break
+        except OutOfMemory:  # each thread holds a chunk of long strings: retry with fewer
+            if threads is None:
+                raise
     return dict(zip([k for k, _ in parts], row, strict=True))
 
 

@@ -2,8 +2,9 @@
 
 A role whose ``x`` is ``CsvSource(engine="duckdb")`` is read from the parquet DuckDB
 cached for it (``sources.csv_duckdb``) and, for the calls below, never built as a
-pandas frame: column profiles, row / column counts and the filtered export are
-computed by DuckDB, with ``memory_limit`` and a spill directory.
+pandas frame: windowed rows, column profiles, the preview's head, source columns, row /
+column counts and the filtered export are computed by DuckDB, with ``memory_limit`` and a
+spill directory. Contract: ``docs/large-csv.md``.
 
 ``plan(ws, role, steps)`` decides, ``None`` meaning "use pandas" (the caller then runs
 the unchanged pandas path). Pushed down only when the result is provably the one pandas
@@ -57,7 +58,7 @@ from dtk_engine.sources.spec import CsvSource
 from dtk_engine.workspace.models import Step, Workspace
 
 # DuckDB's memory_limit for the queries below (it spills to a temp directory beyond it).
-QUERY_MEMORY_LIMIT = "256MB"
+QUERY_MEMORY_LIMIT = "128MB"
 # DuckDB's row position of a parquet row (``read_parquet(..., file_row_number=true)``).
 ROW_NUMBER = "file_row_number"
 TOP_VALUES = 20  # mirrors workspace.inspect._TOP_VALUES
@@ -180,6 +181,10 @@ def _drop(plan: Plan, params: DropColumnsParams) -> bool:
     return bool(plan.columns)
 
 
+class OutOfMemory(SourceError):
+    """DuckDB ran out of ``QUERY_MEMORY_LIMIT`` (even spilling)."""
+
+
 @contextmanager
 def _connect(threads: int | None = None) -> Iterator[Any]:
     """A DuckDB connection under ``QUERY_MEMORY_LIMIT``, ``threads`` (default ``THREADS``)."""
@@ -191,7 +196,7 @@ def _connect(threads: int | None = None) -> Iterator[Any]:
         try:
             yield con
         except duckdb.OutOfMemoryException as exc:
-            raise SourceError(
+            raise OutOfMemory(
                 f"DuckDB ran out of its {QUERY_MEMORY_LIMIT} memory limit ({str(exc).splitlines()[0]})"
             ) from exc
         except duckdb.Error as exc:
@@ -317,12 +322,22 @@ def rows(
 ) -> tuple[pd.DataFrame, int]:
     """``(page, total)``: rows ``[offset, offset + limit)`` of ``columns``, indexed by
     ``_rid``, and the row count after the steps and the view filter ``view`` (``p`` with
-    the filter's predicates appended)."""
+    the filter's predicates appended).
+
+    A sorted page is read in two queries: the row numbers of the page (an external sort
+    of the sort keys and row numbers only, which spills; DuckDB's top-N would hold
+    ``offset + limit`` whole rows), then those rows."""
     q = view or p
-    order = _order(p, sort) if sort else ""
-    query = f"{numbered(q, columns)}{order} LIMIT {int(limit)} OFFSET {int(offset)}"
+    page_of = f" LIMIT {int(limit)} OFFSET {int(offset)}"
     with _connect() as con:
-        page = _frame(p, con, query, q.params, columns).set_index(ROW_NUMBER)
+        if not sort:
+            page = _frame(p, con, numbered(q, columns) + page_of, q.params, columns).set_index(ROW_NUMBER)
+        else:
+            con.execute("SET disabled_optimizers = 'top_n'")
+            ids = f"SELECT {ROW_NUMBER} FROM ({numbered(q, [s for s, _ in sort])}){_order(p, sort)}{page_of}"
+            rids = [r for (r,) in con.execute(ids, q.params).fetchall()]
+            picked = f"{numbered(p, columns)} {'AND' if p.where else 'WHERE'} {ROW_NUMBER} IN (SELECT unnest(?))"
+            page = _frame(p, con, picked, [*p.params, rids], columns).set_index(ROW_NUMBER).loc[rids]
     page.index.name = "_rid"
     return page, row_count(q)
 

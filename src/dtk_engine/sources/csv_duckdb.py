@@ -9,11 +9,13 @@ Disk use: a parquet is about half the size of its CSV. Entries of files that wer
 deleted, moved or uploaded once are never purged: clear ``cache_dir()`` by hand.
 It is a plain parquet file: ``ParquetSource(path=...)`` can read it later.
 
-What it buys: time (1M x 20 CSV, cold: 2.7 s against 8.0 s with pandas; 0.9 s once
-cached) and a parquet reusable across sessions. It does NOT lower the peak memory of
+What it buys: a parquet reusable across sessions, and the frame-free calls below (time:
+a 1M x 20 CSV converted in 2.7 s at a 1GB cap against 8.0 s with pandas; under the
+128MB cap a 618 MB CSV takes 13-35 s). It does NOT lower the peak memory of
 loading a frame: the result is still a whole pandas frame (peak RSS ~800 MB against
 ~690 MB). The memory cap applies to DuckDB's conversion only. The calls that never need
-the frame (profile, shape, filtered export) skip it: see ``workspace.large``.
+the frame (rows, profile, preview, columns, shape, filtered export) skip it: see
+``workspace.large``.
 
 Known differences with the pandas reader, none of them silent (each is listed here,
 and options that cannot be honoured raise ``SourceError`` instead of being ignored):
@@ -59,9 +61,9 @@ from dtk_engine.sources.spec import CsvSource
 
 # DuckDB's ``memory_limit`` for the conversion (not configurable): beyond it DuckDB
 # spills to a temp directory. When even that is not enough the conversion is tried once
-# more with ``MEMORY_LIMIT_RETRY``, then fails with a SourceError. 256MB converts a
-# 4M x 16 CSV of 618 MB (process peak ~520 MB, 10 s; 1GB: ~900 MB, 4 s); 128MB does not.
-MEMORY_LIMIT = "256MB"
+# more with ``MEMORY_LIMIT_RETRY``, then fails with a SourceError. 128MB converts a
+# 4M x 16 CSV of 618 MB in 13 s, DuckDB holding ~160 MB (1GB: 4 s, ~660 MB).
+MEMORY_LIMIT = "128MB"
 MEMORY_LIMIT_RETRY = "1GB"
 # DuckDB threads (conversion and ``workspace.large`` queries): at a small memory_limit
 # more threads make DuckDB thrash its spill files (a GROUP BY of 4M strings under 256MB:

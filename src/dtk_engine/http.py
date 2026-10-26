@@ -396,7 +396,8 @@ class ProfilesBody(WorkspaceRefBody):
             "boolean is a 422 naming sample_rows. When given, the response adds sampled, "
             "n_rows_source, n_sampled_out and, if sampled, a note: missing, distinct, "
             "kind (id_like, constant, ...) and percentages are estimates from the "
-            "sample and can differ on the full frame."
+            "sample and can differ on the full frame. A duckdb csv role is never sampled "
+            "(sampled: false; see docs/large-csv.md)."
         ),
     )
 

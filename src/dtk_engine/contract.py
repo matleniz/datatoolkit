@@ -536,6 +536,9 @@ def workspace_rows(
     is the row count after the filter (what a pager uses), ``total_unfiltered``
     the count before it; ``_rid`` stays the raw-frame position. Unknown
     columns, bad ops or malformed specs raise ``KeyParamsError``.
+
+    A role read by the duckdb csv engine pages with DuckDB (any offset, no frame) and
+    adds ``engine`` and ``columns[].approximate`` (``docs/large-csv.md``).
     """
     return _inspect.workspace_rows(
         parse_workspace(ws),
@@ -569,6 +572,10 @@ def column_profiles(
     if rows were left out, a ``note``: missing / distinct / kind (id_like,
     constant, ...) / percentages are ESTIMATES from the sample; a sample can
     mislabel a column (e.g. constant or id_like) that is not on the full frame.
+
+    A role read by the duckdb csv engine (``workspace.large``) is profiled by DuckDB on
+    the whole table, never sampled: the result adds ``engine``, ``n_rows`` and per column
+    ``stats`` (numbers) and ``approximate`` (``docs/large-csv.md``).
     """
     return _inspect.column_profiles(
         parse_workspace(ws), role, version=version, columns=columns,

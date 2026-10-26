@@ -385,3 +385,17 @@ def test_memory_error_while_parsing_is_corrupt(tmp_path, monkeypatch):
     monkeypatch.setattr(store_mod.json, "loads", boom)
     with pytest.raises(WorkspaceCorruptError, match="'big' is corrupt"):
         store.get("big")
+
+
+def test_default_csv_engine_is_not_written(tmp_path):
+    import json
+
+    store = JsonWorkspaceStore(tmp_path)
+    store.save(_ws("plain"))
+    stored = json.loads(store.path_of("plain").read_text())
+    assert "engine" not in stored["datasets"]["train"]["x"]
+    store.save(_ws("big", datasets={"train": {"x": {"kind": "csv", "path": "x.csv", "engine": "duckdb"}}}))
+    assert json.loads(store.path_of("big").read_text())["datasets"]["train"]["x"]["engine"] == "duckdb"
+    stored["datasets"]["train"]["x"]["engine"] = "pandas"  # a file saved before
+    store.path_of("plain").write_text(json.dumps(stored))
+    assert store.get("plain").datasets.train.x.engine == "pandas"
