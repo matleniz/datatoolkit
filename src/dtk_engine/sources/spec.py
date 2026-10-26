@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 
 class CsvSource(BaseModel):
@@ -64,6 +70,16 @@ class CsvSource(BaseModel):
         "Typing, missing values, encodings and options differ from pandas: see "
         "dtk_engine.sources.csv_duckdb",
     )
+
+
+    @model_serializer(mode="wrap")
+    def _omit_default_engine(self, handler: SerializerFunctionWrapHandler) -> dict:
+        """``engine`` is not written when it is the default: saved workspaces (and their
+        dumps) stay as they were before the option; an old file spelling it out loads."""
+        out = handler(self)
+        if out.get("engine") == "pandas":
+            del out["engine"]
+        return out
 
 
 class DatasetSource(BaseModel):

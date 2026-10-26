@@ -79,13 +79,13 @@ supported (no extra dependency): loading one raises a `SourceError` asking for
 
 Very large CSV (optional extra `large`, DuckDB): `CsvSource(engine="duckdb")` (JSON:
 `{"kind": "csv", "path": ..., "engine": "duckdb"}`) converts the file once to a cached
-parquet (`$DTK_HOME/cache/csv_duckdb`), streaming and capped at 1 GB, then reads it:
-a 1M x 20 CSV loads ~3x faster cold, ~9x once cached. Loading a frame does not
-lower peak memory (the result is a whole pandas frame), but a workspace whose steps are
-only `filter_rows` / `drop_columns` skips the frame for `column_profiles`, the workspace
-shape and the parquet export: DuckDB computes them (profile counts, histogram, IQR and
-top values exact; kind and text heuristics from a seeded 100k-row sample; any other
-step falls back to pandas; design: `workspace/large.py`). Typing, missing values and encodings differ from pandas; options it cannot honour are refused, never
+parquet (`$DTK_HOME/cache/csv_duckdb`), streaming under a small memory cap. Loading a
+frame does not lower peak memory (the result is a whole pandas frame), but a workspace
+whose steps are only `filter_rows` / `drop_columns` never builds one for the windowed
+rows (`workspace_rows`, any offset in well under a second), the column profiles (whole
+table, approximate values flagged), the preview, the source columns, the shape and the
+parquet export: a 618 MB CSV scrolls with a ~470 MB process peak. Contract, accuracy and
+measurements: [docs/large-csv.md](docs/large-csv.md). Typing, missing values and encodings differ from pandas; options it cannot honour are refused, never
 ignored (list: docstring of `dtk_engine/sources/csv_duckdb.py`). Without the extra
 the default install is unchanged and the option raises a `SourceError` naming it.
 Discovery: the `engine` enum (`pandas` | `duckdb`) is in the `source` schema of `key_schema(key)`

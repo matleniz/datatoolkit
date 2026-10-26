@@ -2,8 +2,9 @@
 
 A role whose ``x`` is ``CsvSource(engine="duckdb")`` is read from the parquet DuckDB
 cached for it (``sources.csv_duckdb``) and, for the calls below, never built as a
-pandas frame: column profiles, row / column counts and the filtered export are
-computed by DuckDB, with ``memory_limit`` and a spill directory.
+pandas frame: windowed rows, column profiles, the preview's head, source columns, row /
+column counts and the filtered export are computed by DuckDB, with ``memory_limit`` and a
+spill directory. Contract: ``docs/large-csv.md``.
 
 ``plan(ws, role, steps)`` decides, ``None`` meaning "use pandas" (the caller then runs
 the unchanged pandas path). Pushed down only when the result is provably the one pandas
@@ -17,16 +18,17 @@ Safety: column names come only from the parquet's own ``DESCRIBE`` (a name a ste
 must be one of them) and are quoted; filter values are bound parameters, never text in
 the SQL; the path is the engine's own cache file.
 
-Profiles: counts, distinct, histogram, IQR fences / outliers, top values and skew are exact
-(SQL). The heuristics that read cells in Python (kind, sentinels, variants, date / number
-text detection, suggested params) run on a seeded sample of ``DEFAULT_SAMPLE`` rows (or the
-caller's ``sample_rows``), so they are estimates, as in the ``sample_rows`` mode of
-``column_profiles``. SUMMARIZE is not used for the payload: its null percentage is rounded
-and its quartiles / distinct counts approximate.
+Windowed rows (``rows``): rows ``[offset, offset + limit)`` of the plan (plus a view-only
+filter / sort) read by DuckDB with ``LIMIT / OFFSET``, ``_rid`` = the parquet's
+``file_row_number`` (the row's position in the CSV); time does not depend on the offset.
+Profiles: whole-table statistics, never a sample (``workspace.large_stats``).
+Queries run under ``QUERY_MEMORY_LIMIT`` (spilling beyond it): what they hold is a page of
+rows or one column's aggregates, so the process peak stays far below the file size.
 """
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -36,6 +38,7 @@ from typing import Any
 
 import pandas as pd
 
+from dtk_engine.cache import LRU
 from dtk_engine.errors import SourceError
 from dtk_engine.ops.outliers import IQR_K
 from dtk_engine.ops.profile import HIST_BINS
@@ -45,7 +48,7 @@ from dtk_engine.ops.transforms.cleaning import (
     FilterRowsParams,
 )
 from dtk_engine.sources.csv_duckdb import (
-    MEMORY_LIMIT,
+    THREADS,
     _duckdb,
     _ident,
     _lit,
@@ -54,17 +57,20 @@ from dtk_engine.sources.csv_duckdb import (
 from dtk_engine.sources.spec import CsvSource
 from dtk_engine.workspace.models import Step, Workspace
 
-# Rows the Python heuristics of a profile read (seeded reservoir sample).
-DEFAULT_SAMPLE = 100_000
-SAMPLE_SEED = 0
+# DuckDB's memory_limit for the queries below (it spills to a temp directory beyond it).
+QUERY_MEMORY_LIMIT = "128MB"
+# DuckDB's row position of a parquet row (``read_parquet(..., file_row_number=true)``).
+ROW_NUMBER = "file_row_number"
 TOP_VALUES = 20  # mirrors workspace.inspect._TOP_VALUES
 PUSHABLE_OPS = ("filter_rows", "drop_columns")
 EXPORT_FORMATS = ("parquet", "ipynb", "py")  # csv needs the frame
 
-_NUMBERS = {
+_INTEGERS = {
     "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT",
-    "UINTEGER", "UBIGINT", "UHUGEINT", "FLOAT", "DOUBLE",
+    "UINTEGER", "UBIGINT", "UHUGEINT",
 }  # fmt: skip
+_NUMBERS = _INTEGERS | {"FLOAT", "DOUBLE"}
+_SHAPES = LRU(max_entries=256)
 _COMPARES = {"eq": "=", "gt": ">", "ge": ">=", "lt": "<", "le": "<="}
 
 
@@ -77,11 +83,16 @@ class Plan:
     columns: list[str]  # columns after the steps, in order
     where: list[str] = field(default_factory=list)  # SQL predicates, combined by AND
     params: list[Any] = field(default_factory=list)  # their bound values, in order
+    nullable: frozenset[str] = frozenset()  # columns with a missing value in the raw file
 
     def scan(self, columns: list[str] | None = None) -> str:
         cols = ", ".join(map(_ident, columns or self.columns))
         where = f" WHERE {' AND '.join(self.where)}" if self.where else ""
         return f"SELECT {cols} FROM read_parquet({_lit(str(self.parquet))}){where}"
+
+    def key(self) -> str:
+        """Cache key of the rows (not the columns): the parquet name is content addressed."""
+        return repr((str(self.parquet), self.where, [(type(v).__name__, v) for v in self.params]))
 
 
 def _eligible(ws: Workspace, role: str) -> CsvSource | None:
@@ -170,18 +181,23 @@ def _drop(plan: Plan, params: DropColumnsParams) -> bool:
     return bool(plan.columns)
 
 
+class OutOfMemory(SourceError):
+    """DuckDB ran out of ``QUERY_MEMORY_LIMIT`` (even spilling)."""
+
+
 @contextmanager
-def _connect() -> Iterator[Any]:
+def _connect(threads: int | None = None) -> Iterator[Any]:
+    """A DuckDB connection under ``QUERY_MEMORY_LIMIT``, ``threads`` (default ``THREADS``)."""
     import tempfile
 
     duckdb = _duckdb()
     with tempfile.TemporaryDirectory(prefix="dtk-duckdb-") as spill:
-        con = duckdb.connect(config={"memory_limit": MEMORY_LIMIT, "temp_directory": spill})
+        con = duckdb.connect(config={"memory_limit": QUERY_MEMORY_LIMIT, "threads": threads or THREADS, "temp_directory": spill})
         try:
             yield con
         except duckdb.OutOfMemoryException as exc:
-            raise SourceError(
-                f"DuckDB ran out of its {MEMORY_LIMIT} memory limit ({str(exc).splitlines()[0]})"
+            raise OutOfMemory(
+                f"DuckDB ran out of its {QUERY_MEMORY_LIMIT} memory limit ({str(exc).splitlines()[0]})"
             ) from exc
         except duckdb.Error as exc:
             raise SourceError(f"DuckDB failed: {' '.join(str(exc).split())[:300]}") from exc
@@ -201,7 +217,9 @@ def plan(ws: Workspace, role: str, steps: list[Step]) -> Plan | None:
     with _connect() as con:
         described = con.execute(f"DESCRIBE SELECT * FROM read_parquet({_lit(str(parquet))})").fetchall()
     types = {name: kind for name, kind, *_ in described}
-    out = Plan(parquet, types, list(types))
+    if ROW_NUMBER in types:  # would shadow DuckDB's row number
+        return None
+    out = Plan(parquet, types, list(types), nullable=_nullable(str(parquet)))
     target = getattr(ws.datasets, role).target_column
     if target is not None and target not in types:
         return None
@@ -215,11 +233,138 @@ def plan(ws: Workspace, role: str, steps: list[Step]) -> Plan | None:
     return out
 
 
+@functools.lru_cache(maxsize=64)
+def _nullable(parquet: str) -> frozenset[str]:
+    """Columns with a missing value, from the parquet's own statistics (no scan)."""
+    import pyarrow.parquet as pq
+
+    meta = pq.ParquetFile(parquet).metadata
+    names = meta.schema.to_arrow_schema().names
+    out = set()
+    for g in range(meta.num_row_groups):
+        group = meta.row_group(g)
+        for i, name in enumerate(names):
+            stats = group.column(i).statistics
+            if stats is None or not stats.has_null_count or stats.null_count:
+                out.add(name)
+    return frozenset(out)
+
+
+def row_count(p: Plan) -> int:
+    """Rows after the plan's steps (cached; parquet metadata when nothing filters)."""
+
+    def compute() -> int:
+        with _connect() as con:
+            if not p.where:
+                sql = f"SELECT sum(num_rows) FROM parquet_file_metadata({_lit(str(p.parquet))})"
+                return int(con.execute(sql).fetchone()[0] or 0)
+            return int(con.execute(f"SELECT count(*) FROM ({p.scan()})", p.params).fetchone()[0])
+
+    return _SHAPES.memo(repr(("rows", p.key())), compute)
+
+
 def shape(p: Plan) -> list[int]:
     """``[rows, columns]`` after the plan's steps."""
+    return [row_count(p), len(p.columns)]
+
+
+def dtypes(p: Plan, columns: list[str] | None = None) -> dict[str, str]:
+    """The pandas dtype of each column, as the whole frame would have it: an int column
+    with a missing value is float64, a bool one object (``read_parquet`` of the file)."""
+    import pyarrow.parquet as pq
+
+    empty = pq.ParquetFile(p.parquet).schema_arrow.empty_table().to_pandas()
+    out = {}
+    for name in columns or p.columns:
+        dtype = str(empty[name].dtype)
+        if name in p.nullable and p.types[name] in _INTEGERS:
+            dtype = "float64"
+        elif name in p.nullable and p.types[name] == "BOOLEAN":
+            dtype = "object"
+        out[name] = dtype
+    return out
+
+
+def _frame(p: Plan, con: Any, query: str, params: list[Any], columns: list[str]) -> pd.DataFrame:
+    """The query's rows as pandas reads the parquet, with the whole-frame dtypes."""
+    df = con.sql(query, params=params).to_arrow_table().to_pandas()
+    for name, dtype in dtypes(p, columns).items():
+        if dtype in ("float64", "object") and str(df[name].dtype) != dtype:
+            df[name] = df[name].astype(dtype)
+    return df
+
+
+def _order(p: Plan, sort: list[tuple[str, bool]]) -> str:
+    """ORDER BY of a stable multi-key sort, missing (NULL, NaN) last in both directions."""
+    keys = []
+    for name, desc in sort:
+        c = _ident(name)
+        if p.types[name] in ("FLOAT", "DOUBLE"):
+            c = f"CASE WHEN isnan({c}) THEN NULL ELSE {c} END"
+        keys.append(f"{c} {'DESC' if desc else 'ASC'} NULLS LAST")
+    return " ORDER BY " + ", ".join([*keys, ROW_NUMBER])
+
+
+def numbered(p: Plan, columns: list[str]) -> str:
+    """``p.scan(columns)`` plus DuckDB's row number (the row's position in the CSV)."""
+    cols = ", ".join([*map(_ident, columns), ROW_NUMBER])
+    where = f" WHERE {' AND '.join(p.where)}" if p.where else ""
+    return f"SELECT {cols} FROM read_parquet({_lit(str(p.parquet))}, file_row_number=true){where}"
+
+
+def rows(
+    p: Plan,
+    offset: int,
+    limit: int,
+    columns: list[str],
+    view: Plan | None = None,
+    sort: list[tuple[str, bool]] | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """``(page, total)``: rows ``[offset, offset + limit)`` of ``columns``, indexed by
+    ``_rid``, and the row count after the steps and the view filter ``view`` (``p`` with
+    the filter's predicates appended).
+
+    A sorted page is read in two queries: the row numbers of the page (an external sort
+    of the sort keys and row numbers only, which spills; DuckDB's top-N would hold
+    ``offset + limit`` whole rows), then those rows."""
+    q = view or p
+    page_of = f" LIMIT {int(limit)} OFFSET {int(offset)}"
     with _connect() as con:
-        n = con.execute(f"SELECT count(*) FROM ({p.scan()})", p.params).fetchone()[0]
-    return [int(n), len(p.columns)]
+        if not sort:
+            page = _frame(p, con, numbered(q, columns) + page_of, q.params, columns).set_index(ROW_NUMBER)
+        else:
+            con.execute("SET disabled_optimizers = 'top_n'")
+            ids = f"SELECT {ROW_NUMBER} FROM ({numbered(q, [s for s, _ in sort])}){_order(p, sort)}{page_of}"
+            rids = [r for (r,) in con.execute(ids, q.params).fetchall()]
+            picked = f"{numbered(p, columns)} {'AND' if p.where else 'WHERE'} {ROW_NUMBER} IN (SELECT unnest(?))"
+            page = _frame(p, con, picked, [*p.params, rids], columns).set_index(ROW_NUMBER).loc[rids]
+    page.index.name = "_rid"
+    return page, row_count(q)
+
+
+def head(p: Plan, n: int) -> pd.DataFrame:
+    """The first ``n`` rows of the plan, with the whole-frame dtypes."""
+    with _connect() as con:
+        return _frame(p, con, f"{p.scan()} LIMIT {max(int(n), 0)}", p.params, p.columns)
+
+
+def source_columns(spec: CsvSource) -> list[dict]:
+    """``contract.source_columns`` of a duckdb csv: names, dtypes, numeric (no scan)."""
+    parquet = csv_to_parquet(spec)
+    with _connect() as con:
+        described = con.execute(f"DESCRIBE SELECT * FROM read_parquet({_lit(str(parquet))})").fetchall()
+    types = {name: kind for name, kind, *_ in described}
+    p = Plan(parquet, types, list(types), nullable=_nullable(str(parquet)))
+    return [
+        {"name": name, "dtype": dtype, "numeric": types[name] in _NUMBERS}
+        for name, dtype in dtypes(p).items()
+    ]
+
+
+def with_filter(p: Plan, params: FilterRowsParams) -> Plan | None:
+    """A copy of ``p`` with ``params``'s predicates appended (None: pandas must decide)."""
+    out = Plan(p.parquet, p.types, list(p.columns), list(p.where), list(p.params), p.nullable)
+    return out if _filter(out, params) else None
 
 
 def export_parquet(p: Plan, path: Path) -> dict:
@@ -231,37 +376,6 @@ def export_parquet(p: Plan, path: Path) -> dict:
 
 
 # -- profile -----------------------------------------------------------------------
-
-
-def _aggregates(name: str, numeric: bool) -> str:
-    c = _ident(name)
-    parts = ["count(*)", f"count({c})", f"count(DISTINCT {c})"]
-    if numeric:
-        parts += [
-            f"min({c})", f"max({c})", f"avg({c})",
-            f"quantile_cont({c}, [0.25, 0.5, 0.75])",  # one list: one sort, fits the memory cap
-        ]  # fmt: skip
-    return ", ".join(parts)
-
-
-def column_stats(p: Plan, names: list[str]) -> tuple[int, dict[str, dict]]:
-    """``(rows, {name: exact aggregates})`` for ``names``: one pass per column, so the
-    distinct sets of several wide columns never sit in memory together."""
-    stats: dict[str, dict] = {}
-    rows = 0
-    keys = ("min", "max", "mean", "q1", "median", "q3")
-    with _connect() as con:
-        for name in names:
-            numeric = p.types[name] in _NUMBERS
-            row = con.execute(f"SELECT {_aggregates(name, numeric)} FROM ({p.scan([name])})", p.params).fetchone()
-            rows = int(row[0])
-            stats[name] = {"count": int(row[1]), "distinct": int(row[2])}
-            if numeric:
-                q1, median, q3 = row[6] or (None, None, None)
-                stats[name].update(zip(keys, (*row[3:6], q1, median, q3), strict=True))
-    if not names:
-        rows = shape(p)[0]
-    return rows, stats
 
 
 def histogram(p: Plan, name: str, lo: float, hi: float) -> dict | None:
@@ -293,27 +407,3 @@ def iqr(p: Plan, name: str, q1: float | None, q3: float | None) -> tuple[dict | 
     with _connect() as con:
         n = con.execute(query, [*p.params, lo, hi]).fetchone()[0]
     return {"lo": float(lo), "hi": float(hi)}, int(n)
-
-
-def top_values(p: Plan, name: str, info: dict, rows: int) -> list[tuple[Any, int]]:
-    """The ``TOP_VALUES`` most frequent values (NULL counted, as ``value_counts(dropna=False)``)."""
-    c = _ident(name)
-    if info["count"] == rows and info["distinct"] == rows:  # all unique: any 20 values tie
-        query = f"SELECT {c}, 1 FROM ({p.scan([name])}) LIMIT {TOP_VALUES}"
-    else:
-        query = (
-            f"SELECT {c}, count(*) AS n FROM ({p.scan([name])}) GROUP BY {c} "
-            f"ORDER BY n DESC, {c} LIMIT {TOP_VALUES}"
-        )
-    with _connect() as con:
-        return [(v, int(n)) for v, n in con.execute(query, p.params).fetchall()]
-
-
-def sample_frame(p: Plan, names: list[str], rows: int, cap: int) -> pd.DataFrame:
-    """The columns ``names`` of the plan's rows: all of them when they fit in ``cap``,
-    else a seeded reservoir sample of ``cap`` rows."""
-    query = p.scan(names)
-    if rows > cap:
-        query = f"SELECT * FROM ({query}) USING SAMPLE reservoir({cap} ROWS) REPEATABLE ({SAMPLE_SEED})"
-    with _connect() as con:
-        return con.execute(query, p.params).df()

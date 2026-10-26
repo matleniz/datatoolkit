@@ -1,5 +1,6 @@
-"""DuckDB pushdown (``workspace.large``, extra ``large``): profile, shape and export of a
-``CsvSource(engine="duckdb")`` role without a pandas frame; same answers as pandas."""
+"""DuckDB pushdown (``workspace.large``, extra ``large``): rows, profile, preview, shape and
+export of a ``CsvSource(engine="duckdb")`` role without a pandas frame; same answers as
+pandas (approximate fields flagged above ``large_stats.APPROX_FROM_ROWS`` rows)."""
 
 import json
 import subprocess
@@ -12,8 +13,9 @@ import pytest
 pytest.importorskip("duckdb")
 
 from dtk_engine import contract, save_workspace
+from dtk_engine.errors import KeyParamsError
 from dtk_engine.sources import load
-from dtk_engine.workspace import large
+from dtk_engine.workspace import large, large_stats
 
 EXACT = ("kind", "count", "missing", "distinct", "histogram", "iqr_bounds", "outliers", "skewed")
 
@@ -94,16 +96,197 @@ def test_profile_does_not_build_the_frame(csv, monkeypatch):
     assert len(out["columns"]) == 7 and "sampled" not in out
 
 
-def test_sampled_heuristics_exact_counts(csv, monkeypatch):
-    monkeypatch.setattr(large, "DEFAULT_SAMPLE", 50)
-    out = contract.column_profiles(ws_for(csv, "duckdb"), "train")
-    assert (out["sampled"], out["n_rows_source"], out["n_sampled_out"]) == (True, 400, 350)
-    assert "estimates" in out["note"]
-    assert by_name(out)["id"]["count"] == 400  # exact, not the sample's 50
-    again = contract.column_profiles(ws_for(csv, "duckdb"), "train")
-    assert out == again  # seeded
+def test_sample_rows_never_samples(csv):
+    full = contract.column_profiles(ws_for(csv, "duckdb"), "train")
+    asked = contract.column_profiles(ws_for(csv, "duckdb"), "train", sample_rows=50)
+    assert (asked["sampled"], asked["n_rows_source"], asked["n_sampled_out"]) == (False, 400, 0)
+    assert asked["columns"] == full["columns"] and "note" not in asked
+    assert (full["engine"], full["n_rows"]) == ("duckdb", 400) and "sampled" not in full
     named = contract.column_profiles(ws_for(csv, "duckdb"), "train", columns=["n", "x"])
     assert [c["name"] for c in named["columns"]] == ["n", "x"]
+
+
+@pytest.fixture
+def rich(tmp_path):
+    """Every text rule and dtype quirk the profile ports to SQL."""
+    rng = np.random.default_rng(3)
+    n = 600
+    df = pd.DataFrame(
+        {
+            "row_id": np.arange(n),
+            "user_id": [f"u{i:05d}" for i in rng.permutation(n)],
+            "price": rng.choice(["$1,250.00", "$3.50", "$990.10", "$12.00"], n),
+            "pct": rng.choice(["12,5 %", "3,1 %", "7,0 %"], n),
+            "num_text": rng.choice(["1,5", "2,25", "3"], n),
+            "date": rng.choice(["2020-01-15", "15/01/2020", "Jan 3, 2021", "unknown"], n),
+            "iso": rng.choice(["2020-01-15", "2021-02-01 10:00:00", "2019-12-31"], n),
+            "city": rng.choice(["Paris", "paris ", "PARIS", "Lyon", "N/A", "-", "", "MISSING"], n),
+            "age": rng.integers(0, 90, n).astype(float),
+            "code": rng.choice([1, 2, 3, -999, 4, 5], n),
+            "zeros": np.where(rng.random(n) < 0.5, 0, rng.integers(1, 100, n)),
+            "flag": rng.choice([True, False], n),
+            "flagn": rng.choice(["True", "False", ""], n),
+            "grp": rng.integers(0, 150, n),
+            "txt": [" ".join(rng.choice(["a", "b", "c"], 2)) for _ in range(n)],
+            "const": 7,
+            "ym": rng.choice(["2020-01", "2021-03"], n),
+            "mixed": rng.choice(["12", "7", "x", "1900-01-01", "-1", "nan", "1_000"], n),
+        }
+    )
+    df.loc[::7, "age"] = np.nan
+    df.loc[::13, "grp"] = None
+    df.loc[::9, "date"] = None
+    path = tmp_path / "rich.csv"
+    df.to_csv(path, index=False)
+    return path
+
+
+def comparable(profile):
+    """A pandas-path profile field set (top values as a value -> count map)."""
+    out = {k: v for k, v in profile.items() if k not in ("stats", "approximate")}
+    out["top_values"] = {json.dumps(t["value"]): t["count"] for t in profile["top_values"] or []}
+    return json.loads(json.dumps(out))
+
+
+@pytest.mark.parametrize("grouped", [True, False])
+def test_every_profile_field_matches_pandas(rich, monkeypatch, grouped):
+    if not grouped:  # text rules on every cell instead of once per distinct value
+        monkeypatch.setattr(large_stats, "DISTINCT_EXACT_MAX", 0)
+    duck = by_name(contract.column_profiles(ws_for(rich, "duckdb"), "train"))
+    pand = by_name(contract.column_profiles(ws_for(rich, "pandas"), "train"))
+    assert duck.keys() == pand.keys()
+    for name in pand:
+        assert comparable(duck[name]) == comparable(pand[name]), name
+        assert duck[name]["approximate"][0] == "kind"  # the SQL port of the kind rules
+    assert by_name_value(duck, "user_id", "top_values")[:2] == by_name_value(pand, "user_id", "top_values")[:2]
+    assert duck["age"]["stats"]["max"] == pytest.approx(pand_series(rich, "age").max())
+    assert "stats" not in duck["city"]
+
+
+def by_name_value(profiles, name, key):
+    return profiles[name][key]
+
+
+def pand_series(path, name):
+    return pd.read_csv(path)[name]
+
+
+def test_approximate_mode_flags_and_stays_close(rich, monkeypatch):
+    monkeypatch.setattr(large_stats, "APPROX_FROM_ROWS", 0)
+    monkeypatch.setattr(large_stats, "DISTINCT_EXACT_MAX", 10)
+    duck = by_name(contract.column_profiles(ws_for(rich, "duckdb"), "train"))
+    pand = by_name(contract.column_profiles(ws_for(rich, "pandas"), "train"))
+    age, code, user = duck["age"], duck["code"], duck["user_id"]
+    assert {"distinct", "stats.q1", "stats.median", "stats.q3", "iqr_bounds", "outliers", "skewed"} <= set(age["approximate"])
+    assert "distinct" not in code["approximate"]  # few distinct values: counted exactly
+    assert code["distinct"] == pand["code"]["distinct"]
+    assert {"distinct", "top_values", "variants", "sentinel_candidates"} <= set(user["approximate"])
+    assert user["distinct"] == pytest.approx(pand["user_id"]["distinct"], rel=0.05)
+    assert age["stats"]["median"] == pytest.approx(pand_series(rich, "age").median(), rel=0.1)
+    assert [t["count"] for t in user["top_values"]] == [1] * 20  # exact counts
+    for name in ("count", "missing", "histogram"):
+        assert age[name] == pand["age"][name]
+    assert {k: v["kind"] for k, v in duck.items()} == {k: v["kind"] for k, v in pand.items()}
+
+
+def rows_ws(path, engine, steps=()):
+    return ws_for(path, engine, steps)
+
+
+ROW_CASES = [
+    {"offset": 0, "limit": 25},
+    {"offset": 590, "limit": 25},
+    {"offset": 123, "limit": 7, "columns": ["city", "age", "grp"]},
+    {"offset": 3, "limit": 30, "sort": [{"column": "age", "desc": True}]},
+    {"offset": 40, "limit": 30, "sort": [{"column": "city"}, {"column": "age", "desc": False}]},
+    {"offset": 5, "limit": 30, "filter": {"conditions": [{"column": "city", "op": "isin", "value": ["Paris", "Lyon"]}]}},
+    {
+        "offset": 10, "limit": 30, "sort": [{"column": "grp", "desc": True}],
+        "filter": {"conditions": [{"column": "age", "op": "ge", "value": 30}, {"column": "grp", "op": "isna"}], "combine": "or"},
+    },
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("case", ROW_CASES)
+def test_rows_match_pandas_without_a_frame(rich, monkeypatch, case):
+    pand = contract.workspace_rows(rows_ws(rich, "pandas"), "train", **case)
+
+    def boom(*a, **k):
+        raise AssertionError("pandas frame built")
+
+    monkeypatch.setattr("dtk_engine.workspace.inspect._frame_at", boom)
+    monkeypatch.setattr("dtk_engine.sources.csv_duckdb.read_csv_duckdb", boom)
+    duck = contract.workspace_rows(rows_ws(rich, "duckdb"), "train", **case)
+    monkeypatch.undo()
+    assert duck["engine"] == "duckdb" and duck["rows"] == pand["rows"]
+    assert (duck["total"], duck["total_unfiltered"], duck["version"]) == (pand["total"], pand["total_unfiltered"], pand["version"])
+    meta = [{k: c[k] for k in ("name", "dtype", "kind", "semantic")} for c in duck["columns"]]
+    # kinds come from the whole role, not from the rows a view filter keeps (pandas)
+    whole = {k: v for k, v in case.items() if k != "filter"}
+    assert meta == contract.workspace_rows(rows_ws(rich, "pandas"), "train", **whole)["columns"]
+    assert all(c["approximate"] == ["kind", "semantic"] for c in duck["columns"])
+
+
+def test_rows_after_steps_keep_raw_row_ids(csv):
+    case = {"offset": 2, "limit": 50, "sort": [{"column": "x"}]}
+    duck = contract.workspace_rows(rows_ws(csv, "duckdb", [FILTER, DROP]), "train", **case)
+    pand = contract.workspace_rows(rows_ws(csv, "pandas", [FILTER, DROP]), "train", **case)
+    assert duck["rows"] == pand["rows"] and duck["total"] == pand["total"] < 400
+    assert "skew" not in duck["rows"][0]
+    at_zero = contract.workspace_rows(rows_ws(csv, "duckdb", [FILTER, DROP]), "train", version=0, limit=1)
+    assert at_zero["total"] == 400 and "skew" in at_zero["rows"][0]
+
+
+def test_rows_view_filter_pandas_must_decide_falls_back(csv):
+    flt = {"conditions": [{"column": "n", "op": "eq", "value": True}]}  # bool value, int column
+    out = contract.workspace_rows(rows_ws(csv, "duckdb"), "train", filter=flt)
+    assert "engine" not in out
+    assert out == contract.workspace_rows(rows_ws(csv, "pandas"), "train", filter=flt)
+    with pytest.raises(KeyParamsError, match="filter columns not in the frame"):
+        contract.workspace_rows(rows_ws(csv, "duckdb"), "train", filter={"conditions": [{"column": "nope", "op": "isna"}]})
+    with pytest.raises(KeyParamsError, match="sort columns not in the frame"):
+        contract.workspace_rows(rows_ws(csv, "duckdb"), "train", sort=[{"column": "nope"}])
+
+
+def test_preview_and_source_columns_match_pandas_without_a_frame(rich, monkeypatch):
+    pand_preview = contract.preview_workspace(rows_ws(rich, "pandas"), "train", head_rows=4)
+    pand_columns = contract.source_columns({"kind": "csv", "path": str(rich)})
+
+    def boom(*a, **k):
+        raise AssertionError("pandas frame built")
+
+    monkeypatch.setattr("dtk_engine.workspace.dataset.workspace_frame", boom)
+    monkeypatch.setattr("dtk_engine.sources.csv_duckdb.read_csv_duckdb", boom)
+    assert contract.preview_workspace(rows_ws(rich, "duckdb"), "train", head_rows=4) == pand_preview
+    assert contract.source_columns({"kind": "csv", "path": str(rich), "engine": "duckdb"}) == pand_columns
+
+
+def test_stream_query_retries_with_fewer_threads(rich, monkeypatch):
+    monkeypatch.setattr(large_stats, "APPROX_FROM_ROWS", 0)
+    monkeypatch.setattr(large_stats, "DISTINCT_EXACT_MAX", 0)
+    real, seen = large_stats._connect, []
+
+    def connect(threads=None):
+        seen.append(threads)
+        if threads is not None:
+            raise large.OutOfMemory("DuckDB ran out of its memory limit")
+        return real(threads)
+
+    monkeypatch.setattr(large_stats, "_connect", connect)
+    ws = contract.parse_workspace(rows_ws(rich, "duckdb"))
+    facts = large_stats.facts(large.plan(ws, "train", []), "user_id")
+    assert facts["count"] == 600 and seen.count(None) >= 2 and any(seen)
+
+
+def test_rows_over_http(rich, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from dtk_engine.http import create_app
+
+    body = {"workspace": rows_ws(rich, "duckdb"), "offset": 590, "limit": 20}
+    got = TestClient(create_app()).post("/api/workspace/rows", json=body).json()
+    assert got["engine"] == "duckdb" and got["total"] == 600 and len(got["rows"]) == 10
+    assert got["rows"][0]["_rid"] == 590
 
 
 def test_shape_matches_pandas(csv):

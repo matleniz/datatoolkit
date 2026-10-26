@@ -176,3 +176,14 @@ def test_row_order_is_kept(tmp_path, monkeypatch, limit):
     df = read(write(tmp_path, f"id,s,x\n{rows}".encode()))
     assert len(df) == n
     assert (df["id"].to_numpy() == range(n)).all()
+
+
+def test_out_of_memory_retries_with_the_larger_limit(tmp_path, monkeypatch):
+    rows = "".join(f"{k},s{k % 7},{k * 0.5}\n" for k in range(200_000))
+    path = write(tmp_path, f"id,s,x\n{rows}".encode())
+    monkeypatch.setattr(csv_duckdb, "MEMORY_LIMIT", "1MB")
+    monkeypatch.setattr(csv_duckdb, "MEMORY_LIMIT_RETRY", "1MB")
+    with pytest.raises(SourceError, match="ran out of its 1MB memory limit"):
+        read(path)
+    monkeypatch.setattr(csv_duckdb, "MEMORY_LIMIT_RETRY", "1GB")
+    assert len(read(path)) == 200_000

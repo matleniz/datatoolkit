@@ -18,7 +18,7 @@ import pandas as pd
 from pandas.api import types as pdt
 from pydantic import ValidationError
 
-from dtk_engine.cache import memoize
+from dtk_engine.cache import LRU, memoize
 from dtk_engine.errors import (
     KeyParamsError,
     SourceError,
@@ -52,7 +52,7 @@ from dtk_engine.ops.profile import (
 from dtk_engine.ops.suggested import suggested_params as _suggested_params
 from dtk_engine.ops.transforms.cleaning import FilterRowsParams, _condition_mask
 from dtk_engine.ops.transforms.formula import evaluate as _evaluate_expr
-from dtk_engine.workspace import large
+from dtk_engine.workspace import large, large_stats
 from dtk_engine.workspace.dataset import (
     cached_frame,
     label_name,
@@ -247,8 +247,8 @@ def _resolve_columns(
     return list(dict.fromkeys(columns))
 
 
-def _filter_view(df: pd.DataFrame, spec: Any) -> pd.DataFrame:
-    """Keep the rows matching ``spec`` (the ``filter_rows`` params shape)."""
+def _filter_params(df: pd.DataFrame, spec: Any) -> FilterRowsParams:
+    """``spec`` validated as ``filter_rows`` params naming columns of ``df``."""
     if not isinstance(spec, dict):
         raise KeyParamsError(f"workspace_rows: filter must be an object, got {spec!r}")
     try:
@@ -258,6 +258,12 @@ def _filter_view(df: pd.DataFrame, spec: Any) -> pd.DataFrame:
     absent = [c.column for c in params.conditions if c.column not in df.columns]
     if absent:
         raise KeyParamsError(f"workspace_rows: filter columns not in the frame {absent}")
+    return params
+
+
+def _filter_view(df: pd.DataFrame, spec: Any) -> pd.DataFrame:
+    """Keep the rows matching ``spec`` (the ``filter_rows`` params shape)."""
+    params = _filter_params(df, spec)
     try:
         masks = [_condition_mask(df, c) for c in params.conditions]
     except (TypeError, ValueError) as exc:
@@ -325,6 +331,11 @@ def workspace_rows(
         raise KeyParamsError(f"offset must be a non-negative int, got {offset!r}")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise KeyParamsError(f"limit must be a positive int, got {limit!r}")
+    if large.wants(ws, role):
+        n = resolve_version(len(ws.steps), version)
+        plan = large.plan(ws, role, ws.steps[:n])
+        if plan is not None and (out := _duck_rows(plan, n, offset, limit, columns, filter, sort)):
+            return out
     df, n = _frame_at(ws, role, version)
     picked = _resolve_columns(df, columns, "workspace_rows")
     total_unfiltered = len(df)
@@ -339,6 +350,49 @@ def workspace_rows(
         "rows": _records(page),
         "total": len(df),
         "total_unfiltered": total_unfiltered,
+        "version": n,
+    }
+
+
+def _duck_kind(f: dict, name: str) -> tuple[str, str]:
+    """``(kind, semantic)`` of a column from its whole-table facts (``column_kind``)."""
+    st = large_stats.semantic(f)
+    if st != "constant":
+        kind = _SEMANTIC_TO_KIND[st]
+    elif large_stats.is_bool(f):
+        kind = KIND_BOOL
+    else:
+        kind = KIND_NUMBER if large_stats.is_number(f) else KIND_TEXT
+    ratio = f["distinct"] / f["count"] if f["count"] else 0.0
+    if kind == KIND_TEXT and _name_looks_like_id(name) and ratio >= _ID_NAME_DISTINCT_RATIO:
+        return KIND_IDENTIFIER, st
+    return kind, st
+
+
+def _duck_rows(
+    plan: large.Plan, n: int, offset: int, limit: int, columns: list[str] | None, filter: Any, sort: Any
+) -> dict | None:
+    """``workspace_rows`` read by DuckDB (see ``workspace.large.rows``); None when the
+    view filter needs pandas. ``kind`` / ``semantic`` come from the whole-table facts of
+    the role after its steps (not narrowed by the view filter), hence ``approximate``."""
+    empty = pd.DataFrame(columns=plan.columns)
+    names = _resolve_columns(empty, columns, "workspace_rows") or list(plan.columns)
+    view = None
+    if filter is not None:
+        view = large.with_filter(plan, _filter_params(empty, filter))
+        if view is None:
+            return None
+    page, total = large.rows(plan, offset, limit, names, view, _sort_keys(empty, sort) if sort else None)
+    meta = []
+    for name, dtype in large.dtypes(plan, names).items():
+        kind, st = _duck_kind(large_stats.facts(plan, name), name)
+        meta.append({"name": name, "dtype": dtype, "kind": kind, "semantic": st, "approximate": ["kind", "semantic"]})
+    return {
+        "engine": "duckdb",
+        "columns": meta,
+        "rows": _records(page),
+        "total": total,
+        "total_unfiltered": large.row_count(plan),
         "version": n,
     }
 
@@ -546,43 +600,79 @@ def column_profiles(
     return out
 
 
-def _exact_profile(plan: large.Plan, name: str, base: dict, info: dict, rows: int) -> dict:
-    """``base`` (profiled on the sample) with the fields DuckDB computes exactly."""
-    out = {**base, "count": info["count"], "missing": rows - info["count"], "distinct": info["distinct"]}
-    numeric = "min" in info
-    out["histogram"] = large.histogram(plan, name, info["min"], info["max"]) if base["kind"] == KIND_NUMBER and numeric else None
-    out["top_values"] = None
-    if base["kind"] != KIND_NUMBER:
-        top = large.top_values(plan, name, info, rows)
-        out["top_values"] = [{"value": _cell_json(v), "count": c} for v, c in top]
-    out["iqr_bounds"], out["outliers"] = large.iqr(plan, name, info.get("q1"), info.get("q3")) if numeric else (None, 0)
-    if numeric:
-        out["skewed"] = (
-            info["count"] >= _SKEW_MIN_N and info["min"] >= 0 and info["median"] > 0
-            and info["mean"] > _SKEW_MEAN_OVER_MEDIAN * info["median"]
-        )
+_DUCK_PROFILES = LRU(max_entries=1024)
+
+
+def _duck_approximate(f: dict, top_approx: bool) -> list[str]:
+    """Fields of a DuckDB profile that are approximate or derived from one."""
+    numeric, text = large_stats.is_number(f), f["type"] == "VARCHAR"
+    quartiles = numeric and f["approx"]  # approx_quantile
+    out = ["kind"]
+    if f["approx_distinct"]:
+        out.append("distinct")
+    if quartiles:
+        out += ["stats.q1", "stats.median", "stats.q3", "iqr_bounds", "outliers", "skewed"]
+    if top_approx:
+        out.append("top_values")
+    if text or (numeric and f["approx_distinct"]):  # TRY_CAST numbers / the zero rule's distinct
+        out.append("sentinel_candidates")
+    if text and f["approx_distinct"]:
+        out.append("variants")
+    if f["approx_distinct"] or quartiles:
+        out.append("suggested_params")
     return out
 
 
+def _duck_profile(plan: large.Plan, name: str) -> dict:
+    """One column's profile from whole-table DuckDB statistics (cached)."""
+
+    def compute() -> dict:
+        f = large_stats.facts(plan, name)
+        kind, _ = _duck_kind(f, name)
+        numeric = large_stats.is_number(f)
+        top, top_approx = (None, False) if kind == KIND_NUMBER else large_stats.top_values(plan, name, f)
+        bounds, outliers = large.iqr(plan, name, f.get("q1"), f.get("q3")) if numeric else (None, 0)
+        skewed = numeric and f["count"] >= _SKEW_MIN_N and f["min"] >= 0 and (f["median"] or 0) > 0 and (
+            f["mean"] > _SKEW_MEAN_OVER_MEDIAN * f["median"]
+        )
+        out = {
+            "name": name,
+            "kind": kind,
+            "count": int(f["count"]),
+            "missing": int(f["rows"] - f["count"]),
+            "sentinel_candidates": [] if kind == KIND_IDENTIFIER else large_stats.sentinels(plan, name, f),
+            "distinct": f["distinct"],
+            "histogram": large.histogram(plan, name, f["min"], f["max"]) if kind == KIND_NUMBER and numeric else None,
+            "top_values": None if top is None else [{"value": _cell_json(v), "count": c} for v, c in top],
+            "iqr_bounds": bounds,
+            "outliers": outliers,
+            **large_stats.text_fields(f),
+            "skewed": bool(skewed),
+            "suggested_params": large_stats.suggested_params(f, kind),
+        }
+        if numeric:
+            out["stats"] = large_stats.stats(f)
+        out["approximate"] = _duck_approximate(f, top_approx)
+        return out
+
+    return _DUCK_PROFILES.memo(repr(("profile", plan.key(), name)), compute)
+
+
 def _duck_profiles(plan: large.Plan, n: int, columns: list[str] | None, cap: int | None) -> dict:
-    """``column_profiles`` computed by DuckDB (see ``workspace.large``): exact counts,
-    histogram, IQR, top values; sampled heuristics (``sampled`` fields when rows were left out)."""
+    """``column_profiles`` computed by DuckDB on the whole table (see
+    ``workspace.large_stats``; ``approximate`` lists the approximate fields per column).
+    ``sample_rows`` never samples here: ``sampled`` is false when it was given."""
     picked = _resolve_columns(pd.DataFrame(columns=plan.columns), columns, "column_profiles")
     names = picked if picked is not None else list(plan.columns)
-    rows, stats = large.column_stats(plan, names)
-    used = large.sample_frame(plan, names, rows, cap or large.DEFAULT_SAMPLE)
+    rows = large.row_count(plan)
     out = {
-        "columns": [
-            _exact_profile(plan, name, _profile_one(name, used[name]), stats[name], rows)
-            for name in names
-        ],
+        "engine": "duckdb",
+        "n_rows": rows,
+        "columns": [_duck_profile(plan, name) for name in names],
         "version": n,
     }
-    n_out = rows - len(used)
-    if cap is not None or n_out:
-        out.update(sampling_metrics(rows, n_out), sampled=n_out > 0)
-    if n_out:
-        out["note"] = sampling_note(len(used), n_out, "these profiles", "") + _ESTIMATE_NOTE
+    if cap is not None:
+        out.update(sampling_metrics(rows, 0), sampled=False)
     return out
 
 

@@ -38,6 +38,7 @@ from .ops.columns import is_numeric
 from .registry import all_keys, get_key
 from .result import Result
 from .sources import SourceSpec, load
+from .sources.spec import CsvSource
 from .transform_registry import get_transform, transform_catalog
 from .workspace import JsonWorkspaceStore, Workspace, large
 from .workspace import documents as _documents
@@ -218,6 +219,8 @@ def source_columns(spec: dict) -> list[dict]:
         parsed = TypeAdapter(SourceSpec).validate_python(spec)
     except ValidationError as exc:
         _raise_params_error(exc)
+    if isinstance(parsed, CsvSource) and parsed.engine == "duckdb":
+        return large.source_columns(parsed)  # parquet schema and statistics, no frame
     df = load(parsed)
     return [
         {"name": str(c), "dtype": str(df[c].dtype), "numeric": is_numeric(df[c])}
@@ -533,6 +536,9 @@ def workspace_rows(
     is the row count after the filter (what a pager uses), ``total_unfiltered``
     the count before it; ``_rid`` stays the raw-frame position. Unknown
     columns, bad ops or malformed specs raise ``KeyParamsError``.
+
+    A role read by the duckdb csv engine pages with DuckDB (any offset, no frame) and
+    adds ``engine`` and ``columns[].approximate`` (``docs/large-csv.md``).
     """
     return _inspect.workspace_rows(
         parse_workspace(ws),
@@ -566,6 +572,10 @@ def column_profiles(
     if rows were left out, a ``note``: missing / distinct / kind (id_like,
     constant, ...) / percentages are ESTIMATES from the sample; a sample can
     mislabel a column (e.g. constant or id_like) that is not on the full frame.
+
+    A role read by the duckdb csv engine (``workspace.large``) is profiled by DuckDB on
+    the whole table, never sampled: the result adds ``engine``, ``n_rows`` and per column
+    ``stats`` (numbers) and ``approximate`` (``docs/large-csv.md``).
     """
     return _inspect.column_profiles(
         parse_workspace(ws), role, version=version, columns=columns,
