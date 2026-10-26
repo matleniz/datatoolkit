@@ -106,19 +106,20 @@ conversion (retried once at 1 GB if it runs out) and for every query above. A pa
 interpreter's own memory plus DuckDB's limit, whatever the file size.
 
 Measured on a 618 MB, 4M x 16 CSV (mixed numbers, categories, ids, free text, dates as
-text), through `dtk-api` with a fresh `DTK_HOME`, peak = `VmHWM` of the process (it is
-~270 MB right after start):
+text) and on the same file doubled (1.24 GB, 8M rows), through `dtk-api` with a fresh
+`DTK_HOME`, peak = `VmHWM` of the process (~270 MB right after start):
 
-| stage | before (main 43ea5ad) | after |
-|---|---|---|
-| source columns (cold: converts the CSV) | 7.9 s, 1602 MB | 16-36 s, 446 MB |
-| preview (Sources) | 1.8 s, 1907 MB | 0.2-0.3 s |
-| rows offset 0 (computes the kinds) | killed at 2.5 GB | 18-19 s |
-| profiles | not reached | 5-7 s |
-| rows offset 1.2M / 2M / 4M | not reached | 0.2-0.4 s each |
-| rows sorted (income desc) at offset 2M | not reached | 1.3 s |
-| rows filtered (city = Paris) at offset 100k | not reached | 0.5 s |
-| parquet export | not reached | 15-24 s, 466 MB |
+| stage | before (main 43ea5ad), 618 MB | after, 618 MB | after, 1.24 GB |
+|---|---|---|---|
+| source columns (cold: converts the CSV) | 7.9 s, peak 1602 MB | 18.2 s | 30.0 s |
+| preview (Sources) | 1.8 s, peak 1907 MB | 0.18 s | 0.19 s |
+| rows offset 0 (computes the kinds) | killed at 2.5 GB | 14.6 s | 26.2 s |
+| profiles (every column) | not reached | 3.1 s | 7.0 s |
+| rows at offset 1.2M / 2M / 4M | not reached | 0.10-0.14 s | 0.15-0.17 s |
+| rows sorted (income desc) at offset 2M | not reached | 0.83 s | 1.48 s |
+| rows filtered (city = Paris) at offset 100k | not reached | 0.34 s | 0.37 s |
+| parquet export | not reached | 13.0 s | 37.7 s |
+| **process peak (VmHWM)** | **> 2.5 GB (killed)** | **483 MB** | **463 MB** |
 
-Ranges: several runs on a shared machine (load ~10 on 12 cores). pandas engine, same
-file: killed at 2.5 GB during the first call.
+The pandas engine on the 618 MB file is killed at 2.5 GB during the first call. Times
+vary up to 2x on a shared machine.
