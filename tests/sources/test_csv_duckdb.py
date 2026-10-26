@@ -187,3 +187,15 @@ def test_out_of_memory_retries_with_the_larger_limit(tmp_path, monkeypatch):
         read(path)
     monkeypatch.setattr(csv_duckdb, "MEMORY_LIMIT_RETRY", "1GB")
     assert len(read(path)) == 200_000
+
+
+def test_default_engine_is_omitted_from_dumps():
+    import inspect
+
+    from dtk_engine.sources import spec
+
+    assert "exclude_if" not in inspect.getsource(spec)  # needs pydantic >= 2.12; floor is 2.0
+    plain, big = CsvSource(path="a.csv"), CsvSource(path="a.csv", engine="duckdb")
+    assert "engine" not in plain.model_dump() and "engine" not in plain.model_dump_json()
+    assert big.model_dump()["engine"] == "duckdb" and '"engine":"duckdb"' in big.model_dump_json()
+    assert CsvSource.model_validate({**plain.model_dump(), "engine": "pandas"}) == plain
