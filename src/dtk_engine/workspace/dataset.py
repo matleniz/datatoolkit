@@ -30,6 +30,7 @@ from dtk_engine.ops.join import (
 )
 from dtk_engine.sources.registry import load, reader
 from dtk_engine.sources.spec import DatasetSource
+from dtk_engine.workspace import large
 from dtk_engine.workspace.models import GroupInvariantError, Step, Workspace
 from dtk_engine.workspace.replay import (
     needs_train,
@@ -195,6 +196,12 @@ def preview(ws: dict, role: str, head_rows: int = 5) -> dict:
     parsed = parse_workspace(ws)
     if role not in ("train", "test"):
         raise KeyParamsError(f"role must be 'train' or 'test', got {role!r}")
+    if head_rows >= 0 and large.wants(parsed, role) and (plan := large.plan(parsed, role, parsed.steps)):
+        return {  # DuckDB: the count and the first rows, no frame (workspace.large)
+            "shape": large.shape(plan),
+            "columns": list(plan.columns),
+            "head": json.loads(large.head(plan, head_rows).to_json(orient="records")),
+        }
     df = workspace_frame(parsed, role)
     return {
         "shape": [len(df), df.shape[1]],

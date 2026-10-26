@@ -58,9 +58,15 @@ from dtk_engine.sources.csv_pandas import SNIFF_CHARS, resolve_path, sniff_sep
 from dtk_engine.sources.spec import CsvSource
 
 # DuckDB's ``memory_limit`` for the conversion (not configurable): beyond it DuckDB
-# spills to a temp directory, and fails with a SourceError when even that is not
-# enough (256MB converts the 1M x 20 benchmark file, 128MB does not).
-MEMORY_LIMIT = "1GB"
+# spills to a temp directory. When even that is not enough the conversion is tried once
+# more with ``MEMORY_LIMIT_RETRY``, then fails with a SourceError. 256MB converts a
+# 4M x 16 CSV of 618 MB (process peak ~520 MB, 10 s; 1GB: ~900 MB, 4 s); 128MB does not.
+MEMORY_LIMIT = "256MB"
+MEMORY_LIMIT_RETRY = "1GB"
+# DuckDB threads (conversion and ``workspace.large`` queries): at a small memory_limit
+# more threads make DuckDB thrash its spill files (a GROUP BY of 4M strings under 256MB:
+# 46 s with 12 threads, 0.05 s with 4).
+THREADS = 4
 # Bumped when the conversion changes, so parquet files cached by an older one are not reused.
 CONVERSION_VERSION = 1
 # Rows DuckDB types a column from before the whole-file re-read (its default).
@@ -260,24 +266,24 @@ def _leading_zero_columns(con: Any, spec: CsvSource, path: str, types: dict[str,
 
 def _convert(duckdb: Any, spec: CsvSource, path: str, out: str) -> None:
     types = _pinned_types(spec)
-    with tempfile.TemporaryDirectory(prefix="dtk-duckdb-") as spill:
-        con = duckdb.connect(
-            config={
-                "memory_limit": MEMORY_LIMIT,
-                "temp_directory": spill,
-            }
-        )
-        try:
-            _copy(con, duckdb, spec, path, out, types)
-        except duckdb.OutOfMemoryException as exc:
-            raise SourceError(
-                f"cannot read csv {spec.path}: DuckDB ran out of its {MEMORY_LIMIT} memory "
-                f"limit ({str(exc).splitlines()[0]})"
-            ) from exc
-        except duckdb.Error as exc:
-            raise SourceError(f"cannot read csv {spec.path}: {_reason(exc)}") from exc
-        finally:
-            con.close()
+    limits = list(dict.fromkeys((MEMORY_LIMIT, MEMORY_LIMIT_RETRY)))
+    for limit in limits:
+        with tempfile.TemporaryDirectory(prefix="dtk-duckdb-") as spill:
+            con = duckdb.connect(config={"memory_limit": limit, "threads": THREADS, "temp_directory": spill})
+            try:
+                _copy(con, duckdb, spec, path, out, types)
+                return
+            except duckdb.OutOfMemoryException as exc:
+                if limit != limits[-1]:
+                    continue
+                raise SourceError(
+                    f"cannot read csv {spec.path}: DuckDB ran out of its {limit} memory "
+                    f"limit ({str(exc).splitlines()[0]})"
+                ) from exc
+            except duckdb.Error as exc:
+                raise SourceError(f"cannot read csv {spec.path}: {_reason(exc)}") from exc
+            finally:
+                con.close()
 
 
 def _copy(con: Any, duckdb: Any, spec: CsvSource, path: str, out: str, types: dict[str, str]) -> None:

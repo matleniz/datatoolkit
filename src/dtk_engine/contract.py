@@ -38,6 +38,7 @@ from .ops.columns import is_numeric
 from .registry import all_keys, get_key
 from .result import Result
 from .sources import SourceSpec, load
+from .sources.spec import CsvSource
 from .transform_registry import get_transform, transform_catalog
 from .workspace import JsonWorkspaceStore, Workspace, large
 from .workspace import documents as _documents
@@ -218,6 +219,8 @@ def source_columns(spec: dict) -> list[dict]:
         parsed = TypeAdapter(SourceSpec).validate_python(spec)
     except ValidationError as exc:
         _raise_params_error(exc)
+    if isinstance(parsed, CsvSource) and parsed.engine == "duckdb":
+        return large.source_columns(parsed)  # parquet schema and statistics, no frame
     df = load(parsed)
     return [
         {"name": str(c), "dtype": str(df[c].dtype), "numeric": is_numeric(df[c])}
