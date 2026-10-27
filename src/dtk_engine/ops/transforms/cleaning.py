@@ -235,21 +235,27 @@ def rename_columns_bulk(
     df: pd.DataFrame, params: RenameColumnsBulkParams, state: dict
 ) -> pd.DataFrame:
     """Rewrite column names by rule (lower / upper / snake_case / strip) and prefix / suffix."""
-    missing = [c for c in params.columns if c not in df.columns]
+    out = df.copy()
+    out.columns = bulk_renamed(list(df.columns), params)
+    return out
+
+
+def bulk_renamed(columns: list[str], params: RenameColumnsBulkParams) -> list[str]:
+    """The names ``rename_columns_bulk`` gives ``columns`` (KeyError: a listed column is
+    absent; ValueError: the new names would repeat)."""
+    missing = [c for c in params.columns if c not in columns]
     if missing and not params.missing_ok:
         raise KeyError(f"columns not in frame: {missing}")
-    chosen = set(params.columns) if params.columns else set(df.columns)
+    chosen = set(params.columns) if params.columns else set(columns)
     rewrite = _NAME_RULES.get(params.rule or "", str)
     names = [
         f"{params.prefix}{rewrite(c)}{params.suffix}" if c in chosen else c
-        for c in df.columns
+        for c in columns
     ]
     dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:
         raise ValueError(f"renaming would create duplicate column names: {dupes}")
-    out = df.copy()
-    out.columns = names
-    return out
+    return names
 
 
 class CastParams(TransformParams):

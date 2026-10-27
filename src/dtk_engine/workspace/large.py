@@ -9,7 +9,8 @@ spill directory. Contract: ``docs/large-csv.md``.
 ``plan(ws, role, steps)`` decides, ``None`` meaning "use pandas" (the caller then runs
 the unchanged pandas path). Pushed down only when the result is provably the one pandas
 gives: the role has a plain csv ``x`` (no ``y`` file, merge or ``label_last``) and every
-step is ``filter_rows`` or ``drop_columns`` (stateless, order preserving). A filter whose
+step is ``filter_rows``, ``drop_columns``, ``rename`` or ``rename_columns_bulk`` (stateless,
+order preserving; a rename is a column alias in the SELECT list, ``Plan.sources``). A filter whose
 value type does not match its column, an unknown column, an empty ``isin``... all return
 ``None``: pandas then keeps its own semantics and errors. Nothing here imports duckdb
 unless a plan was made (the engine "duckdb" was asked for).
@@ -47,6 +48,9 @@ from dtk_engine.ops.transforms.cleaning import (
     Condition,
     DropColumnsParams,
     FilterRowsParams,
+    RenameColumnsBulkParams,
+    RenameParams,
+    bulk_renamed,
 )
 from dtk_engine.sources.csv_duckdb import (
     THREADS,
@@ -65,7 +69,7 @@ ROW_NUMBER = "file_row_number"
 MAX_CONNECTIONS = 3
 _SLOTS = threading.BoundedSemaphore(MAX_CONNECTIONS)
 TOP_VALUES = 20  # mirrors workspace.inspect._TOP_VALUES
-PUSHABLE_OPS = ("filter_rows", "drop_columns")
+PUSHABLE_OPS = ("filter_rows", "drop_columns", "rename", "rename_columns_bulk")
 EXPORT_FORMATS = ("parquet", "ipynb", "py")  # csv needs the frame
 
 _INTEGERS = {
@@ -86,16 +90,33 @@ class Plan:
     columns: list[str]  # columns after the steps, in order
     where: list[str] = field(default_factory=list)  # SQL predicates, combined by AND
     params: list[Any] = field(default_factory=list)  # their bound values, in order
-    nullable: frozenset[str] = frozenset()  # columns with a missing value in the raw file
+    nullable: frozenset[str] = frozenset()  # columns (current names) with a missing value
+    # Renamed columns: current name -> name in the parquet. ``where`` is written in parquet
+    # names (it runs before the projection that renames); everything else (``types``,
+    # ``columns``, ``nullable``, the SELECT list) in current names.
+    sources: dict[str, str] = field(default_factory=dict)
+
+    def source(self, name: str) -> str:
+        return self.sources.get(name, name)
+
+    def select(self, columns: list[str], extra: str = "") -> str:
+        """The SELECT list of ``columns`` (current names), aliased to the parquet's names."""
+        cols = [
+            _ident(self.source(c)) + (f" AS {_ident(c)}" if self.source(c) != c else "")
+            for c in columns
+        ]
+        return ", ".join([*cols, *([extra] if extra else [])])
 
     def scan(self, columns: list[str] | None = None) -> str:
-        cols = ", ".join(map(_ident, columns or self.columns))
         where = f" WHERE {' AND '.join(self.where)}" if self.where else ""
-        return f"SELECT {cols} FROM read_parquet({_lit(str(self.parquet))}){where}"
+        return f"SELECT {self.select(columns or self.columns)} FROM read_parquet({_lit(str(self.parquet))}){where}"
 
     def key(self) -> str:
-        """Cache key of the rows (not the columns): the parquet name is content addressed."""
-        return repr((str(self.parquet), self.where, [(type(v).__name__, v) for v in self.params]))
+        """Cache key of the rows and columns: the parquet name is content addressed."""
+        return repr((
+            str(self.parquet), self.where, [(type(v).__name__, v) for v in self.params],
+            sorted(self.sources.items()),
+        ))
 
 
 def _eligible(ws: Workspace, role: str) -> CsvSource | None:
@@ -157,7 +178,7 @@ def _condition(plan: Plan, c: Condition) -> tuple[str, list[Any]] | None:
     duck = plan.types.get(c.column)
     if c.column not in plan.columns or duck is None:
         return None
-    col, kind = _ident(c.column), _kind(duck)
+    col, kind = _ident(plan.source(c.column)), _kind(duck)
     if c.op in ("isna", "notna"):
         return f"{col} IS {'NOT ' if c.op == 'notna' else ''}NULL", []
     if c.op in ("isin", "notin"):
@@ -182,6 +203,37 @@ def _drop(plan: Plan, params: DropColumnsParams) -> bool:
         return False
     plan.columns = [c for c in plan.columns if c not in params.columns]
     return bool(plan.columns)
+
+
+def _rename(plan: Plan, names: dict[str, str]) -> bool:
+    """Apply ``names`` (current -> new); False when pandas must decide (a name that
+    repeats, or one the parquet still has: the SQL would be ambiguous)."""
+    new = [names.get(c, c) for c in plan.columns]
+    reused = {n for n in new if (n not in plan.columns and n in plan.types) or n == ROW_NUMBER}
+    if len(set(new)) != len(new) or reused:
+        return False
+    sources = {names.get(c, c): plan.source(c) for c in plan.columns}
+    plan.sources = {c: s for c, s in sources.items() if c != s}
+    plan.types = {names.get(c, c): t for c, t in plan.types.items()}
+    plan.nullable = frozenset(names.get(c, c) for c in plan.nullable)
+    plan.columns = new
+    return True
+
+
+def _rename_step(plan: Plan, params: RenameParams, target: str | None) -> bool:
+    absent = [c for c in params.mapping if c not in plan.columns]
+    if (absent and not params.missing_ok) or target in params.mapping:
+        return False
+    return _rename(plan, {k: v for k, v in params.mapping.items() if k in plan.columns})
+
+
+def _rename_bulk(plan: Plan, params: RenameColumnsBulkParams, target: str | None) -> bool:
+    try:
+        new = bulk_renamed(plan.columns, params)
+    except (KeyError, ValueError):
+        return False
+    names = dict(zip(plan.columns, new, strict=True))
+    return target not in {c for c, n in names.items() if c != n} and _rename(plan, names)
 
 
 class OutOfMemory(SourceError):
@@ -229,13 +281,19 @@ def plan(ws: Workspace, role: str, steps: list[Step]) -> Plan | None:
     if target is not None and target not in types:
         return None
     for step in mine:
-        if step.op == "filter_rows":
-            ok = _filter(out, FilterRowsParams.model_validate(step.params))
-        else:
-            ok = _drop(out, DropColumnsParams.model_validate(step.params))
-        if not ok:
+        if not _apply(out, step, target):
             return None
     return out
+
+
+def _apply(plan: Plan, step: Step, target: str | None) -> bool:
+    if step.op == "filter_rows":
+        return _filter(plan, FilterRowsParams.model_validate(step.params))
+    if step.op == "drop_columns":
+        return _drop(plan, DropColumnsParams.model_validate(step.params))
+    if step.op == "rename":
+        return _rename_step(plan, RenameParams.model_validate(step.params), target)
+    return _rename_bulk(plan, RenameColumnsBulkParams.model_validate(step.params), target)
 
 
 @functools.lru_cache(maxsize=64)
@@ -281,7 +339,7 @@ def dtypes(p: Plan, columns: list[str] | None = None) -> dict[str, str]:
     empty = pq.ParquetFile(p.parquet).schema_arrow.empty_table().to_pandas()
     out = {}
     for name in columns or p.columns:
-        dtype = str(empty[name].dtype)
+        dtype = str(empty[p.source(name)].dtype)
         if name in p.nullable and p.types[name] in _INTEGERS:
             dtype = "float64"
         elif name in p.nullable and p.types[name] == "BOOLEAN":
@@ -312,7 +370,7 @@ def _order(p: Plan, sort: list[tuple[str, bool]]) -> str:
 
 def numbered(p: Plan, columns: list[str]) -> str:
     """``p.scan(columns)`` plus DuckDB's row number (the row's position in the CSV)."""
-    cols = ", ".join([*map(_ident, columns), ROW_NUMBER])
+    cols = p.select(columns, ROW_NUMBER)
     where = f" WHERE {' AND '.join(p.where)}" if p.where else ""
     return f"SELECT {cols} FROM read_parquet({_lit(str(p.parquet))}, file_row_number=true){where}"
 
@@ -373,7 +431,7 @@ def source_columns(spec: CsvSource) -> list[dict]:
 
 def with_filter(p: Plan, params: FilterRowsParams) -> Plan | None:
     """A copy of ``p`` with ``params``'s predicates appended (None: pandas must decide)."""
-    out = Plan(p.parquet, p.types, list(p.columns), list(p.where), list(p.params), p.nullable)
+    out = Plan(p.parquet, p.types, list(p.columns), list(p.where), list(p.params), p.nullable, dict(p.sources))
     return out if _filter(out, params) else None
 
 
