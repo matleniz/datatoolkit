@@ -2,7 +2,7 @@
 
 Scope: a workspace role whose `x` is `{"kind": "csv", "path": ..., "engine": "duckdb"}`
 (optional extra `large`), with no `y` file, no merge, no `label_last`, and steps that are
-only `filter_rows` / `drop_columns`. Such a role is never built as a pandas frame by the
+only `filter_rows` / `drop_columns` / `rename` / `rename_columns_bulk`. Such a role is never built as a pandas frame by the
 calls below: DuckDB reads the parquet cached for the CSV (`sources/csv_duckdb.py`).
 Any other role, step or option takes the unchanged pandas path (same request, same
 response, no `engine` field). Code: `workspace/large.py`, `workspace/large_stats.py`.
@@ -18,9 +18,10 @@ Same calls, same request bodies at the three doors:
 | shape | `list_workspace_summaries()` | `GET /api/workspaces/summaries` |
 | column names for notes | `column_notes(ws, role, version)` | `POST /api/workspace/column-notes` |
 
-Known limit: `column_notes` reads names from the plan only while every step is pushable
-(`filter_rows` / `drop_columns`). A rename step sends the role through pandas (full frame), as
-do `preview_step`, `align_report` and formula evaluation.
+A rename step is a column alias in the SELECT list (filters keep the parquet's names); a
+rename pandas would reject (unknown column, name collision, the label column) takes the
+pandas path, which raises. `column_notes` reads names from the plan. `preview_step`,
+`align_report` and formula evaluation need a frame: see "Whole-frame calls" below.
 
 ## Windowed rows
 
@@ -165,3 +166,26 @@ at once: 4M x 16 CSV, killed at a 2 GB cap, #334). The reader now estimates the 
 statistics and preview keep working. Under a 2 GB cap, the journey's traffic (profiles + 5
 analyses + rows at 1500 / 2100 / 1.2M / 2M / 4M): before, killed at 1.9 GB (4.7 s after
 the analyses start); after, peak 582 MB, analyses answer 422, rows 0.1 s.
+
+### Which routes need a frame (#331)
+
+`/workspace/preview-step`, `/workspace/preview-steps`, `/workspace/align` and formula
+evaluation (`contract.evaluate`) replay the role to compare it before / after a step, train
+against test, or evaluate an expression row by row: they build the frame, so they are
+refused with the same 422 above the limit and answer normally below it (a frame under
+`DTK_MAX_FRAME_MB` is the bounded cost). They were measured, not pushed down: a step
+preview needs the fit of any op (impute, scale...), and an exact diff of changed cells.
+`rename` / `rename_columns_bulk` used to take the same refusal for every route (rows,
+profiles, preview, column notes, export); now they are pushed down.
+
+Per-route peak on the 618 MB, 4M x 12 CSV under `systemd-run --user --scope -p
+MemoryMax=2G`, fresh `DTK_HOME`, one `dtk-api` process (peak = `VmHWM` / cgroup
+`memory.peak` at the end of the run, so cumulative; ~270 MB right after start):
+
+| route (role with a `rename` step unless noted) | before | after |
+|---|---|---|
+| rows (offset 2M, sorted, filter + drop + rename) | 422, 0.0 s | 200, 1.6-12 s (first call computes the kinds) |
+| profiles | 422 | 200, 0.7 s |
+| preview, column-notes | 422 | 200, 0.1 s |
+| preview-step (drop, rename, impute), align (train + test) | 422, 0.0 s | 422, 0.0 s (unchanged, by design) |
+| **process peak (VmHWM / cgroup)** | 481 MB / 655 MB | 463 MB / 555 MB |
