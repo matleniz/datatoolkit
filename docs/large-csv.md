@@ -110,6 +110,13 @@ conversion (retried once at 1 GB if it runs out) and for every query above. A pa
 `limit` rows; statistics hold one column's aggregates. The process peak is the
 interpreter's own memory plus DuckDB's limit, whatever the file size.
 
+A front fires several calls at once (rows pages, profiles, shape), all cold on the first
+load. At most 3 DuckDB connections are open together (`large.MAX_CONNECTIONS`, the others
+wait), the CSV -> parquet conversion runs once (concurrent calls wait for it), and a cached
+value (kinds, column facts, shapes) is computed by one call per key, the others wait
+(`cache.LRU.memo`). Without this, 7 cold calls at once took 58 s and peaked at 910 MB
+(each recomputed the kinds of every column); now 12 s and 488 MB.
+
 Measured on a 618 MB, 4M x 16 CSV (mixed numbers, categories, ids, free text, dates as
 text) and on the same file doubled (1.24 GB, 8M rows), through `dtk-api` with a fresh
 `DTK_HOME`, peak = `VmHWM` of the process (~270 MB right after start):

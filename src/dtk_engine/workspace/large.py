@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import functools
 import math
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -61,6 +62,8 @@ from dtk_engine.workspace.models import Step, Workspace
 QUERY_MEMORY_LIMIT = "128MB"
 # DuckDB's row position of a parquet row (``read_parquet(..., file_row_number=true)``).
 ROW_NUMBER = "file_row_number"
+MAX_CONNECTIONS = 3
+_SLOTS = threading.BoundedSemaphore(MAX_CONNECTIONS)
 TOP_VALUES = 20  # mirrors workspace.inspect._TOP_VALUES
 PUSHABLE_OPS = ("filter_rows", "drop_columns")
 EXPORT_FORMATS = ("parquet", "ipynb", "py")  # csv needs the frame
@@ -187,11 +190,13 @@ class OutOfMemory(SourceError):
 
 @contextmanager
 def _connect(threads: int | None = None) -> Iterator[Any]:
-    """A DuckDB connection under ``QUERY_MEMORY_LIMIT``, ``threads`` (default ``THREADS``)."""
+    """A DuckDB connection under ``QUERY_MEMORY_LIMIT``, ``threads`` (default ``THREADS``).
+    At most ``MAX_CONNECTIONS`` are open at once (each holds its own limit): further
+    callers wait, so a burst of requests cannot add up their memory."""
     import tempfile
 
     duckdb = _duckdb()
-    with tempfile.TemporaryDirectory(prefix="dtk-duckdb-") as spill:
+    with _SLOTS, tempfile.TemporaryDirectory(prefix="dtk-duckdb-") as spill:
         con = duckdb.connect(config={"memory_limit": QUERY_MEMORY_LIMIT, "threads": threads or THREADS, "temp_directory": spill})
         try:
             yield con
