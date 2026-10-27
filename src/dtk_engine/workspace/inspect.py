@@ -919,6 +919,15 @@ def _formula(frame: pd.DataFrame, expr: str) -> Any:
 RENAME_OPS = frozenset({"rename", "rename_columns_bulk"})
 
 
+def _role_columns(ws: Workspace, role: str, steps: list[Step]) -> list[str]:
+    """Column names of ``role`` after ``steps``; a duckdb csv role is not replayed
+    (its names come from the parquet schema, no frame is built)."""
+    plan = large.plan(ws, role, steps) if large.wants(ws, role) else None
+    if plan is not None:
+        return list(plan.columns)
+    return [str(c) for c in _replay_role(ws, role, steps).columns]
+
+
 def column_notes(ws: Workspace, role: str, version: int | None = None) -> dict:
     """Column notes at ``version``: ``{notes: {name: text}, keys: {name: key}}``.
 
@@ -932,15 +941,15 @@ def column_notes(ws: Workspace, role: str, version: int | None = None) -> dict:
     for i, step in enumerate(steps):
         if step.op not in RENAME_OPS or step.target not in ("both", role):
             continue
-        before = [str(c) for c in _replay_role(ws, role, ws.steps[:i]).columns]
-        after = [str(c) for c in _replay_role(ws, role, ws.steps[: i + 1]).columns]
+        before = _role_columns(ws, role, ws.steps[:i])
+        after = _role_columns(ws, role, ws.steps[: i + 1])
         if len(before) != len(after):
             continue
         key_of = {
             a: key_of.get(b, b) for b, a in zip(before, after, strict=True)
             if key_of.get(b, b) != a
         }
-    names = [str(c) for c in _replay_role(ws, role, steps).columns]
+    names = _role_columns(ws, role, steps)
     texts = ws.notes.columns
     return {
         "notes": {n: texts[key_of.get(n, n)] for n in names if key_of.get(n, n) in texts},

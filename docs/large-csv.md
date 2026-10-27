@@ -16,6 +16,11 @@ Same calls, same request bodies at the three doors:
 | head + shape | `preview_workspace(ws, role, head_rows)` | `POST /api/workspace/preview` |
 | columns | `source_columns(spec)` | `POST /api/source/columns` |
 | shape | `list_workspace_summaries()` | `GET /api/workspaces/summaries` |
+| column names for notes | `column_notes(ws, role, version)` | `POST /api/workspace/column-notes` |
+
+Known limit: `column_notes` reads names from the plan only while every step is pushable
+(`filter_rows` / `drop_columns`). A rename step sends the role through pandas (full frame), as
+do `preview_step`, `align_report` and formula evaluation.
 
 ## Windowed rows
 

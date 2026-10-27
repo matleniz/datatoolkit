@@ -96,6 +96,18 @@ def test_profile_does_not_build_the_frame(csv, monkeypatch):
     assert len(out["columns"]) == 7 and "sampled" not in out
 
 
+@pytest.mark.parametrize("steps", [[], [FILTER, DROP]])
+def test_column_notes_does_not_build_the_frame(csv, monkeypatch, steps):
+    def boom(*a, **k):
+        raise AssertionError("pandas frame built")
+
+    monkeypatch.setattr("dtk_engine.workspace.inspect._frame_at", boom)
+    monkeypatch.setattr("dtk_engine.sources.csv_duckdb.read_csv_duckdb", boom)
+    ws = ws_for(csv, "duckdb", steps, notes={"columns": {"cat": "kept", "skew": "dropped"}})
+    out = contract.column_notes(ws, "train")
+    assert out == {"notes": {"cat": "kept"} if steps else {"cat": "kept", "skew": "dropped"}, "keys": {}}
+
+
 def test_sample_rows_never_samples(csv):
     full = contract.column_profiles(ws_for(csv, "duckdb"), "train")
     asked = contract.column_profiles(ws_for(csv, "duckdb"), "train", sample_rows=50)
