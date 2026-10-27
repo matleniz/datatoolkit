@@ -135,3 +135,15 @@ text) and on the same file doubled (1.24 GB, 8M rows), through `dtk-api` with a 
 
 The pandas engine on the 618 MB file is killed at 2.5 GB during the first call. Times
 vary up to 2x on a shared machine.
+
+## Whole-frame calls are refused above a size
+
+Analyses (`/keys/<key>/run` on a `dataset` source), merges, label joins and any other step
+than `filter_rows` / `drop_columns` need a pandas frame. Building one from a very large
+CSV used to take every byte of the memory cap (the real Studio journey fires five analyses
+at once: 4M x 16 CSV, killed at a 2 GB cap, #334). The reader now estimates the frame
+(the parquet's uncompressed size x 6) and raises a `SourceError` (HTTP 422) above
+`DTK_MAX_FRAME_MB` (default 1024 MB; the 618 MB file is estimated at ~2.4 GB). Rows,
+statistics and preview keep working. Under a 2 GB cap, the journey's traffic (profiles + 5
+analyses + rows at 1500 / 2100 / 1.2M / 2M / 4M): before, killed at 1.9 GB (4.7 s after
+the analyses start); after, peak 582 MB, analyses answer 422, rows 0.1 s.

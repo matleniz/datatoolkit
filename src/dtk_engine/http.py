@@ -1061,6 +1061,9 @@ def create_app(*, ui_ping_interval: float = 15.0) -> FastAPI:
     """
 
     _max_upload_mb()  # a bad DTK_MAX_UPLOAD_MB fails at startup, not on the first upload
+    from dtk_engine.sources.csv_duckdb import frame_limit_bytes
+
+    frame_limit_bytes()  # same for DTK_MAX_FRAME_MB
     bridge = UiBridge()
     try:  # the optional extra ``agent`` adds ``/mcp`` and the chat hub; without it, neither
         from dtk_engine.agent.packs.chat_packs import hub_from_env

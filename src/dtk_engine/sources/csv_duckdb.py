@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import math
 import os
 import tempfile
 import threading
@@ -70,6 +71,10 @@ MEMORY_LIMIT_RETRY = "1GB"
 # more threads make DuckDB thrash its spill files (a GROUP BY of 4M strings under 256MB:
 # 46 s with 12 threads, 0.05 s with 4).
 THREADS = 4
+# Whole-frame loads (read_csv_duckdb): estimated size = parquet uncompressed bytes x
+# FRAME_BLOAT, refused above FRAME_LIMIT_MB (the env DTK_MAX_FRAME_MB overrides it).
+FRAME_LIMIT_MB = 1024
+FRAME_BLOAT = 6
 # Bumped when the conversion changes, so parquet files cached by an older one are not reused.
 CONVERSION_VERSION = 1
 # Rows DuckDB types a column from before the whole-file re-read (its default).
@@ -114,12 +119,48 @@ def cache_dir() -> Path:
     return (Path(home) if home else Path.home() / ".datatoolkit") / "cache" / "csv_duckdb"
 
 
+def frame_limit_bytes() -> int:
+    """Largest estimated pandas frame built from a duckdb csv, from ``DTK_MAX_FRAME_MB``
+    (MiB, default 1024); a value that is not a positive finite number raises."""
+    raw = os.environ.get("DTK_MAX_FRAME_MB")
+    if raw is None or not raw.strip():
+        return FRAME_LIMIT_MB * 2**20
+    try:
+        mb = float(raw)
+    except ValueError:
+        mb = math.nan
+    if not math.isfinite(mb) or mb <= 0:
+        raise SourceError(f"DTK_MAX_FRAME_MB must be a positive number of MiB, got {raw!r}")
+    return int(mb * 2**20)
+
+
+def _check_frame_fits(parquet: Path) -> None:
+    """Refuse a whole-frame load that would exhaust memory (SourceError, not an OOM kill).
+
+    Estimate = the parquet's uncompressed size x ``FRAME_BLOAT`` (strings are Python objects
+    in pandas: a 408 MB parquet of 4M x 16 became ~2.5 GB).
+    """
+    import pyarrow.parquet as pq
+
+    meta = pq.ParquetFile(parquet).metadata
+    size = sum(meta.row_group(i).total_byte_size for i in range(meta.num_row_groups))
+    if size * FRAME_BLOAT > frame_limit_bytes():
+        raise SourceError(
+            f"{meta.num_rows} rows are too many to load as a whole frame with engine 'duckdb' "
+            f"(estimated {size * FRAME_BLOAT >> 20} MB, limit {frame_limit_bytes() >> 20} MB, "
+            "DTK_MAX_FRAME_MB): rows, statistics and preview work without a frame; "
+            "analyses and transforms that need one do not."
+        )
+
+
 def read_csv_duckdb(spec: CsvSource) -> pd.DataFrame:
     """The csv as a pandas frame, via a cached parquet written by DuckDB."""
     from dtk_engine.sources.parquet import read_parquet
     from dtk_engine.sources.spec import ParquetSource
 
-    return read_parquet(ParquetSource(path=str(csv_to_parquet(spec))))
+    parquet = csv_to_parquet(spec)
+    _check_frame_fits(parquet)
+    return read_parquet(ParquetSource(path=str(parquet)))
 
 
 _CONVERSION = threading.Lock()
