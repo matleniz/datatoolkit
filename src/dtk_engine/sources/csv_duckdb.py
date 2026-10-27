@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import math
 import os
 import tempfile
 import threading
@@ -119,11 +120,18 @@ def cache_dir() -> Path:
 
 
 def frame_limit_bytes() -> int:
-    """Largest estimated pandas frame built from a duckdb csv (``DTK_MAX_FRAME_MB``, default 1024)."""
-    try:
-        return int(float(os.environ.get("DTK_MAX_FRAME_MB", FRAME_LIMIT_MB)) * 2**20)
-    except ValueError:
+    """Largest estimated pandas frame built from a duckdb csv, from ``DTK_MAX_FRAME_MB``
+    (MiB, default 1024); a value that is not a positive finite number raises."""
+    raw = os.environ.get("DTK_MAX_FRAME_MB")
+    if raw is None or not raw.strip():
         return FRAME_LIMIT_MB * 2**20
+    try:
+        mb = float(raw)
+    except ValueError:
+        mb = math.nan
+    if not math.isfinite(mb) or mb <= 0:
+        raise SourceError(f"DTK_MAX_FRAME_MB must be a positive number of MiB, got {raw!r}")
+    return int(mb * 2**20)
 
 
 def _check_frame_fits(parquet: Path) -> None:

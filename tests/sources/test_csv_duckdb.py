@@ -208,3 +208,12 @@ def test_whole_frame_load_above_the_limit_is_refused_not_attempted(tmp_path, mon
         read(path)
     monkeypatch.delenv("DTK_MAX_FRAME_MB")
     assert len(read(path)) == 1000
+
+
+@pytest.mark.parametrize("bad", ["abc", "nan", "inf", "0", "-5"])
+def test_invalid_frame_limit_is_a_clear_error(tmp_path, monkeypatch, bad):
+    monkeypatch.setenv("DTK_MAX_FRAME_MB", bad)
+    with pytest.raises(SourceError, match="DTK_MAX_FRAME_MB must be a positive number"):
+        csv_duckdb.frame_limit_bytes()
+    with pytest.raises(SourceError, match="DTK_MAX_FRAME_MB"):
+        read(write(tmp_path, b"a\n1\n"))
