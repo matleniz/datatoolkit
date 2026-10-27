@@ -16,6 +16,7 @@ Same calls, same request bodies at the three doors:
 | head + shape | `preview_workspace(ws, role, head_rows)` | `POST /api/workspace/preview` |
 | columns | `source_columns(spec)` | `POST /api/source/columns` |
 | shape | `list_workspace_summaries()` | `GET /api/workspaces/summaries` |
+| column names for notes | `column_notes(ws, role, version)` | `POST /api/workspace/column-notes` |
 
 ## Windowed rows
 
