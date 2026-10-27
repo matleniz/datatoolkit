@@ -5,6 +5,7 @@ pandas (approximate fields flagged above ``large_stats.APPROX_FROM_ROWS`` rows).
 import json
 import subprocess
 import sys
+from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -243,17 +244,31 @@ def test_rows_match_pandas_without_a_frame(rich, monkeypatch, case):
     ("column", "sort_threads"), [("age", None), ("city", 1)], ids=["number-keys", "text-keys"]
 )
 def test_sorted_page_threads_stay_in_the_memory_limit(rich, monkeypatch, column, sort_threads):
-    """Text keys sort on one thread (number keys on the default), whatever the file."""
-    seen, real = [], large._connect
+    """Text keys sort on one thread (number keys on the default); the page's rows always on one."""
+    seen, statements, real = [], [], large._connect
 
+    class Spy:
+        def __init__(self, con):
+            self.con = con
+
+        def execute(self, sql, *args):
+            statements.append(sql)
+            return self.con.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self.con, name)
+
+    @contextmanager
     def spy(threads=None):
         seen.append(threads)
-        return real(threads)
+        with real(threads) as con:
+            yield Spy(con)
 
     monkeypatch.setattr(large, "_connect", spy)
     out = contract.workspace_rows(rows_ws(rich, "duckdb"), "train", limit=5, sort=[{"column": column}])
     assert out["engine"] == "duckdb" and len(out["rows"]) == 5
     assert (1 in seen) == (sort_threads == 1)
+    assert "SET threads = 1" in statements
 
 
 def test_rows_after_steps_keep_raw_row_ids(csv):

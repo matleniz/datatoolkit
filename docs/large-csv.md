@@ -129,7 +129,7 @@ text) and on the same file doubled (1.24 GB, 8M rows), through `dtk-api` with a 
 | **process peak (VmHWM)** | **> 2.5 GB (killed)** | **483 MB** | **463 MB** |
 
 Sorted pages (issue #333), same 618 MB file, 2 GB cgroup (`systemd-run -p MemoryMax=2G`),
-one `dtk-api` per run, peaks after the sorts of each column (`VmHWM` / cgroup `memory.peak`);
+one `dtk-api` per run, run-cumulative maxima up to and including each column's sorts (`VmHWM` / cgroup `memory.peak`);
 the process was at 458-476 MB / 520-690 MB before the first sort. Pages of 100 rows at
 offset 0 and 2M, ascending and descending (before = main 331d789):
 
@@ -138,7 +138,7 @@ offset 0 and 2M, ascending and descending (before = main 331d789):
 | `income`, `score` (float) | 422 OutOfMemory (except `score` desc, offset 0) | ok, 0.3-0.7 s | 489 MB / 811 MB |
 | `customer` (text, 4M distinct) | 422 OutOfMemory | ok, 1.2-1.4 s | 482 MB / 811 MB |
 | `comment` (long text, 4M distinct) | 422 OutOfMemory | ok, 2-5 s | 478 MB / 811 MB |
-| `city`, `age` | ok | ok | 525 MB / 810 MB (before) |
+| `city`, `age` | ok | ok, 0.1-0.3 s | 499 MB / 597 MB (`city`), 514 MB / 660 MB (`age`, later in the run) |
 
 The cause was the second query, not the sort: 4 threads each decode whole row groups of
 every column to pick the page's scattered rows. Peaks are the max over the whole run, not
