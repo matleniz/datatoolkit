@@ -207,9 +207,9 @@ def _drop(plan: Plan, params: DropColumnsParams) -> bool:
 
 def _rename(plan: Plan, names: dict[str, str]) -> bool:
     """Apply ``names`` (current -> new); False when pandas must decide (a name that
-    repeats, or one the parquet still has: the SQL would be ambiguous)."""
+    repeats or is empty, or one the parquet still has: the SQL would be ambiguous)."""
     new = [names.get(c, c) for c in plan.columns]
-    reused = {n for n in new if (n not in plan.columns and n in plan.types) or n == ROW_NUMBER}
+    reused = {n for n in new if (n not in plan.columns and n in plan.types) or n in (ROW_NUMBER, "")}
     if len(set(new)) != len(new) or reused:
         return False
     sources = {names.get(c, c): plan.source(c) for c in plan.columns}

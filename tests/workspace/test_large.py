@@ -549,6 +549,7 @@ def test_rename_column_notes_and_export_without_a_frame(rich, no_frame, tmp_path
         {"op": "rename", "target": "train", "params": {"mapping": {"age": "city"}}},
         {"op": "rename", "target": "train", "params": {"mapping": {"age": "file_row_number"}}},
         {"op": "rename", "target": "train", "params": {"mapping": {"a": "b", "age": "b"}}},
+        {"op": "rename", "target": "train", "params": {"mapping": {"age": ""}}},
         {"op": "rename_columns_bulk", "target": "train", "params": {"rule": "lower", "columns": ["nope"]}},
         {"op": "rename_columns_bulk", "target": "train", "params": {"prefix": "x", "columns": ["age"], "missing_ok": True}},
     ],

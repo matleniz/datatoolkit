@@ -2,8 +2,8 @@
 
 Scope: a workspace role whose `x` is `{"kind": "csv", "path": ..., "engine": "duckdb"}`
 (optional extra `large`), with no `y` file, no merge, no `label_last`, and steps that are
-only `filter_rows` / `drop_columns` / `rename` / `rename_columns_bulk`. Such a role is never built as a pandas frame by the
-calls below: DuckDB reads the parquet cached for the CSV (`sources/csv_duckdb.py`).
+only `filter_rows` / `drop_columns` / `rename` / `rename_columns_bulk`. Such a role is
+never built as a pandas frame by the calls below: DuckDB reads the parquet cached for the CSV (`sources/csv_duckdb.py`).
 Any other role, step or option takes the unchanged pandas path (same request, same
 response, no `engine` field). Code: `workspace/large.py`, `workspace/large_stats.py`.
 
