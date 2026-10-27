@@ -45,6 +45,8 @@ depend on `offset`, the memory depends on `limit` only. Response (the pandas one
   missing value is `float64`, a bool one `object`), whatever the page holds.
 - `filter` / `sort` (view only) run in DuckDB too: stable sort, missing values last;
   a sorted page sorts the sort keys and row numbers only (spilling), then reads the page.
+  Both steps stay in the 128 MB limit: the sort runs on one thread when a key is text, and
+  the page's rows (scattered over every row group) are read on one thread.
   A filter condition DuckDB cannot reproduce exactly (a value of the wrong type) falls
   back to pandas, which builds the frame.
 - `kind` / `semantic` come from the whole-table statistics below, of the role after its
@@ -125,6 +127,22 @@ text) and on the same file doubled (1.24 GB, 8M rows), through `dtk-api` with a 
 | rows filtered (city = Paris) at offset 100k | not reached | 0.34 s | 0.37 s |
 | parquet export | not reached | 13.0 s | 37.7 s |
 | **process peak (VmHWM)** | **> 2.5 GB (killed)** | **483 MB** | **463 MB** |
+
+Sorted pages (issue #333), same 618 MB file, 2 GB cgroup (`systemd-run -p MemoryMax=2G`),
+one `dtk-api` per run, peaks after the sorts of each column (`VmHWM` / cgroup `memory.peak`);
+the process was at 458-476 MB / 520-690 MB before the first sort. Pages of 100 rows at
+offset 0 and 2M, ascending and descending (before = main 331d789):
+
+| sort column | before | after | peak after (VmHWM / cgroup) |
+|---|---|---|---|
+| `income`, `score` (float) | 422 OutOfMemory (except `score` desc, offset 0) | ok, 0.3-0.7 s | 489 MB / 811 MB |
+| `customer` (text, 4M distinct) | 422 OutOfMemory | ok, 1.2-1.4 s | 482 MB / 811 MB |
+| `comment` (long text, 4M distinct) | 422 OutOfMemory | ok, 2-5 s | 478 MB / 811 MB |
+| `city`, `age` | ok | ok | 525 MB / 810 MB (before) |
+
+The cause was the second query, not the sort: 4 threads each decode whole row groups of
+every column to pick the page's scattered rows. Peaks are the max over the whole run, not
+per case (the cgroup includes the page cache of the parquet).
 
 The pandas engine on the 618 MB file is killed at 2.5 GB during the first call. Times
 vary up to 2x on a shared machine.

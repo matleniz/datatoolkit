@@ -326,16 +326,21 @@ def rows(
 
     A sorted page is read in two queries: the row numbers of the page (an external sort
     of the sort keys and row numbers only, which spills; DuckDB's top-N would hold
-    ``offset + limit`` whole rows), then those rows."""
+    ``offset + limit`` whole rows), then those rows, read on one thread: the row numbers
+    are scattered over every row group, and each thread decodes whole row groups of all
+    the columns (4 threads run out of ``QUERY_MEMORY_LIMIT`` on a wide file)."""
     q = view or p
     page_of = f" LIMIT {int(limit)} OFFSET {int(offset)}"
-    with _connect() as con:
+    # text keys sort in memory-hungry blocks per thread: one thread keeps them in the limit
+    texty = any(p.types[name] not in _NUMBERS for name, _ in sort or [])
+    with _connect(1 if texty else None) as con:
         if not sort:
             page = _frame(p, con, numbered(q, columns) + page_of, q.params, columns).set_index(ROW_NUMBER)
         else:
             con.execute("SET disabled_optimizers = 'top_n'")
             ids = f"SELECT {ROW_NUMBER} FROM ({numbered(q, [s for s, _ in sort])}){_order(p, sort)}{page_of}"
             rids = [r for (r,) in con.execute(ids, q.params).fetchall()]
+            con.execute("SET threads = 1")  # the page's rows are scattered over every row group
             picked = f"{numbered(p, columns)} {'AND' if p.where else 'WHERE'} {ROW_NUMBER} IN (SELECT unnest(?))"
             page = _frame(p, con, picked, [*p.params, rids], columns).set_index(ROW_NUMBER).loc[rids]
     page.index.name = "_rid"

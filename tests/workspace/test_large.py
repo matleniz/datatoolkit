@@ -239,6 +239,23 @@ def test_rows_match_pandas_without_a_frame(rich, monkeypatch, case):
     assert all(c["approximate"] == ["kind", "semantic"] for c in duck["columns"])
 
 
+@pytest.mark.parametrize(
+    ("column", "sort_threads"), [("age", None), ("city", 1)], ids=["number-keys", "text-keys"]
+)
+def test_sorted_page_threads_stay_in_the_memory_limit(rich, monkeypatch, column, sort_threads):
+    """Text keys sort on one thread (number keys on the default), whatever the file."""
+    seen, real = [], large._connect
+
+    def spy(threads=None):
+        seen.append(threads)
+        return real(threads)
+
+    monkeypatch.setattr(large, "_connect", spy)
+    out = contract.workspace_rows(rows_ws(rich, "duckdb"), "train", limit=5, sort=[{"column": column}])
+    assert out["engine"] == "duckdb" and len(out["rows"]) == 5
+    assert (1 in seen) == (sort_threads == 1)
+
+
 def test_rows_after_steps_keep_raw_row_ids(csv):
     case = {"offset": 2, "limit": 50, "sort": [{"column": "x"}]}
     duck = contract.workspace_rows(rows_ws(csv, "duckdb", [FILTER, DROP]), "train", **case)
