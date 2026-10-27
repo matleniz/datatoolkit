@@ -199,3 +199,12 @@ def test_default_engine_is_omitted_from_dumps():
     assert "engine" not in plain.model_dump() and "engine" not in plain.model_dump_json()
     assert big.model_dump()["engine"] == "duckdb" and '"engine":"duckdb"' in big.model_dump_json()
     assert CsvSource.model_validate({**plain.model_dump(), "engine": "pandas"}) == plain
+
+
+def test_whole_frame_load_above_the_limit_is_refused_not_attempted(tmp_path, monkeypatch):
+    path = write(tmp_path, b"a,b\n" + b"1,xyz\n" * 1000)
+    monkeypatch.setenv("DTK_MAX_FRAME_MB", "0.00001")
+    with pytest.raises(SourceError, match="too many to load as a whole frame"):
+        read(path)
+    monkeypatch.delenv("DTK_MAX_FRAME_MB")
+    assert len(read(path)) == 1000
