@@ -18,6 +18,10 @@ Same calls, same request bodies at the three doors:
 | shape | `list_workspace_summaries()` | `GET /api/workspaces/summaries` |
 | column names for notes | `column_notes(ws, role, version)` | `POST /api/workspace/column-notes` |
 
+Known limit: `column_notes` reads names from the plan only while every step is pushable
+(`filter_rows` / `drop_columns`). A rename step sends the role through pandas (full frame), as
+do `preview_step`, `align_report` and formula evaluation.
+
 ## Windowed rows
 
 Rows `[offset, offset + limit)` and the row count, read by DuckDB: the time does not
