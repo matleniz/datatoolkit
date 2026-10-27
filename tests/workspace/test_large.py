@@ -476,3 +476,124 @@ def test_concurrent_cold_calls_compute_once_and_cap_connections(csv, monkeypatch
             job.result()
     assert calls == len(pd.read_csv(csv).columns)
     assert peak <= large.MAX_CONNECTIONS
+
+
+# -- rename steps: a column alias in SQL, no frame (#331) ---------------------------
+
+RENAME = {"op": "rename", "target": "train", "params": {"mapping": {"age": "years", "city": "town"}}}
+SWAP = {"op": "rename", "target": "both", "params": {"mapping": {"age": "city", "city": "age"}}}
+BULK = {"op": "rename_columns_bulk", "target": "train", "params": {"rule": "upper", "prefix": "c_", "columns": ["age", "city", "grp"]}}
+BULK_NEW = {**BULK, "params": {**BULK["params"], "columns": ["years", "town", "grp"]}}
+FILTER_OLD = {"op": "filter_rows", "target": "train", "params": {"conditions": [{"column": "city", "op": "isin", "value": ["Paris", "Lyon"]}]}}
+FILTER_NEW = {"op": "filter_rows", "target": "train", "params": {"conditions": [{"column": "years", "op": "ge", "value": 30}]}}
+RENAME_CASES = {
+    "rename": [RENAME],
+    "swap": [SWAP],
+    "bulk": [BULK],
+    "filter-rename-filter": [FILTER_OLD, RENAME, FILTER_NEW],
+    "rename-drop-rename": [RENAME, {"op": "drop_columns", "target": "train", "params": {"columns": ["txt"]}}, BULK_NEW],
+}
+
+
+@pytest.fixture
+def no_frame(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("pandas frame built")
+
+    monkeypatch.setattr("dtk_engine.workspace.inspect._frame_at", boom)
+    monkeypatch.setattr("dtk_engine.sources.csv_duckdb.read_csv_duckdb", boom)
+    return monkeypatch
+
+
+@pytest.mark.parametrize("steps", RENAME_CASES.values(), ids=RENAME_CASES)
+def test_rename_rows_profiles_shape_match_pandas_without_a_frame(rich, no_frame, steps):
+    names = {c["name"] for c in contract.workspace_rows(rows_ws(rich, "duckdb", steps), "train", limit=1)["columns"]}
+    case = {"offset": 12, "limit": 30, "sort": [{"column": min(names), "desc": True}]}
+    duck = contract.workspace_rows(rows_ws(rich, "duckdb", steps), "train", **case)
+    duck_profiles = by_name(contract.column_profiles(rows_ws(rich, "duckdb", steps), "train"))
+    duck_preview = contract.preview_workspace(rows_ws(rich, "duckdb", steps), "train")
+    no_frame.undo()
+    pand = contract.workspace_rows(rows_ws(rich, "pandas", steps), "train", **case)
+    assert duck["engine"] == "duckdb" and duck["rows"] == pand["rows"]
+    assert (duck["total"], duck["total_unfiltered"]) == (pand["total"], pand["total_unfiltered"])
+    assert [c["name"] for c in duck["columns"]] == [c["name"] for c in pand["columns"]]
+    assert [c["dtype"] for c in duck["columns"]] == [c["dtype"] for c in pand["columns"]]
+    pand_profiles = by_name(contract.column_profiles(rows_ws(rich, "pandas", steps), "train"))
+    assert set(duck_profiles) == set(pand_profiles)
+    for name, profile in duck_profiles.items():
+        for field in ("count", "missing"):
+            assert profile[field] == pand_profiles[name][field], (name, field)
+    pand_preview = contract.preview_workspace(rows_ws(rich, "pandas", steps), "train")
+    assert duck_preview["shape"] == pand_preview["shape"]
+    assert duck_preview["head"] == pand_preview["head"]
+
+
+def test_rename_column_notes_and_export_without_a_frame(rich, no_frame, tmp_path):
+    ws = rows_ws(rich, "duckdb", [BULK])
+    ws["notes"] = {"columns": {"age": "years old"}}
+    out = contract.column_notes(ws, "train")
+    assert out["notes"] == {"c_AGE": "years old"} and out["keys"]["c_AGE"] == "age"
+    save_workspace(ws)
+    contract.export_workspace("w", str(tmp_path / "out"), formats=["parquet"])
+    no_frame.undo()
+    exported = pd.read_parquet(tmp_path / "out" / "processed" / "train.parquet")
+    pand = pd.read_csv(rich)
+    assert list(exported.columns)[:2] == ["row_id", "user_id"] and len(exported) == len(pand)
+    assert "c_GRP" in exported.columns and "c_CITY" in exported.columns
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"op": "rename", "target": "train", "params": {"mapping": {"nope": "z"}}},
+        {"op": "rename", "target": "train", "params": {"mapping": {"age": "city"}}},
+        {"op": "rename", "target": "train", "params": {"mapping": {"age": "file_row_number"}}},
+        {"op": "rename", "target": "train", "params": {"mapping": {"a": "b", "age": "b"}}},
+        {"op": "rename", "target": "train", "params": {"mapping": {"age": ""}}},
+        {"op": "rename_columns_bulk", "target": "train", "params": {"rule": "lower", "columns": ["nope"]}},
+        {"op": "rename_columns_bulk", "target": "train", "params": {"prefix": "x", "columns": ["age"], "missing_ok": True}},
+    ],
+)
+def test_rename_that_pandas_must_decide_falls_back(rich, step):
+    ws = contract.parse_workspace(ws_for(rich, "duckdb", [step]))
+    plan = large.plan(ws, "train", ws.steps)
+    # the missing_ok bulk rename is the one valid case here
+    assert (plan is not None) == (step["params"].get("missing_ok") is True)
+
+
+def test_filter_on_a_renamed_away_column_falls_back(rich):
+    steps = [RENAME, {"op": "filter_rows", "target": "train", "params": {"conditions": [{"column": "age", "op": "isna"}]}}]
+    ws = contract.parse_workspace(ws_for(rich, "duckdb", steps))
+    assert large.plan(ws, "train", ws.steps) is None
+
+
+def test_rename_plans_do_not_share_cache_entries(rich):
+    """Same column name over different parquet columns: profiles must not be reused."""
+    a = contract.column_profiles(rows_ws(rich, "duckdb", [SWAP]), "train")
+    b = contract.column_profiles(rows_ws(rich, "duckdb", []), "train")
+    assert by_name(a)["age"]["distinct"] != by_name(b)["age"]["distinct"]
+
+
+# -- routes that need a frame refuse a very large csv with a 422 (#331) --------------
+
+
+@pytest.fixture
+def tiny_frame_limit(monkeypatch):
+    monkeypatch.setenv("DTK_MAX_FRAME_MB", "0.0001")
+
+
+def test_preview_step_align_and_formulas_refuse_a_frame_above_the_limit(rich, tiny_frame_limit):
+    from dtk_engine.errors import SourceError
+
+    ws = rows_ws(rich, "duckdb")
+    ws["datasets"]["test"] = ws["datasets"]["train"]
+    step = {"op": "drop_columns", "target": "train", "params": {"columns": ["txt"]}}
+    calls = [
+        lambda: contract.preview_step(ws, step, "train"),
+        lambda: contract.preview_steps(ws, [step], "train"),
+        lambda: contract.align_report(ws),
+        lambda: contract.evaluate(ws, "train", ["age * 2"]),
+    ]
+    for call in calls:
+        with pytest.raises(SourceError, match="DTK_MAX_FRAME_MB"):
+            call()
