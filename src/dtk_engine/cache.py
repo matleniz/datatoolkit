@@ -42,6 +42,7 @@ class LRU:
         self._data: OrderedDict[str, tuple[Any, int]] = OrderedDict()
         self._bytes = 0
         self._lock = threading.Lock()
+        self._flights: dict[str, list] = {}  # key -> [lock, waiters]: one compute per key
 
     def get(self, key: str, default: Any = None) -> Any:
         with self._lock:
@@ -74,9 +75,24 @@ class LRU:
         hit = self.get(key, _MISS)
         if hit is not _MISS:
             return hit
-        value = compute()
-        self.put(key, value)
-        return value
+        # Single flight: concurrent callers of one key wait for the first compute instead
+        # of each running it (a front fires several calls at once, all cold).
+        with self._lock:
+            flight = self._flights.setdefault(key, [threading.Lock(), 0])
+            flight[1] += 1
+        try:
+            with flight[0]:
+                hit = self.get(key, _MISS)
+                if hit is not _MISS:
+                    return hit
+                value = compute()
+                self.put(key, value)
+                return value
+        finally:
+            with self._lock:
+                flight[1] -= 1
+                if not flight[1]:
+                    self._flights.pop(key, None)
 
     def clear(self) -> None:
         with self._lock:

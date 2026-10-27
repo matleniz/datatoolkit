@@ -394,3 +394,53 @@ def test_pandas_engine_never_imports_duckdb(csv):
 def test_loaded_frame_unchanged_by_pushdown(csv):
     a = load(contract.parse_workspace(ws_for(csv, "duckdb")).datasets.train.x)
     assert len(a) == 400
+
+
+def test_concurrent_cold_calls_compute_once_and_cap_connections(csv, monkeypatch):
+    """A front fires rows, profiles and shape at once, all cold: each cached value is
+    computed by one call (the others wait), and no more than MAX_CONNECTIONS DuckDB
+    connections are open together (each holds its own memory limit)."""
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    ws = ws_for(csv, "duckdb")
+    open_now, peak, calls = 0, 0, 0
+    guard = threading.Lock()
+    real_head = large_stats._head
+    real_connect = large._duckdb().connect
+
+    def counting_head(*args, **kwargs):
+        nonlocal calls
+        with guard:
+            calls += 1
+        time.sleep(0.05)
+        return real_head(*args, **kwargs)
+
+    class Con:
+        def __init__(self, con):
+            self._con = con
+            nonlocal open_now, peak
+            with guard:
+                open_now += 1
+                peak = max(peak, open_now)
+            time.sleep(0.02)
+
+        def close(self):
+            nonlocal open_now
+            with guard:
+                open_now -= 1
+            self._con.close()
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    monkeypatch.setattr(large_stats, "_head", counting_head)
+    monkeypatch.setattr(large._duckdb(), "connect", lambda *a, **k: Con(real_connect(*a, **k)), raising=False)
+    with ThreadPoolExecutor(12) as pool:
+        jobs = [pool.submit(contract.workspace_rows, ws, "train", offset=i * 10, limit=10) for i in range(12)]
+        jobs += [pool.submit(contract.column_profiles, ws, "train", columns=["x"]) for _ in range(4)]
+        for job in jobs:
+            job.result()
+    assert calls == len(pd.read_csv(csv).columns)
+    assert peak <= large.MAX_CONNECTIONS

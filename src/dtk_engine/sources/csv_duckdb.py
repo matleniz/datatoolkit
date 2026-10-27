@@ -48,6 +48,7 @@ import codecs
 import hashlib
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -121,6 +122,9 @@ def read_csv_duckdb(spec: CsvSource) -> pd.DataFrame:
     return read_parquet(ParquetSource(path=str(csv_to_parquet(spec))))
 
 
+_CONVERSION = threading.Lock()
+
+
 def csv_to_parquet(spec: CsvSource) -> Path:
     """The parquet file for ``spec`` (converted now unless already cached)."""
     _refuse_unsupported(spec)
@@ -140,6 +144,13 @@ def csv_to_parquet(spec: CsvSource) -> Path:
     out = root / f"{prefix}-{key.hexdigest()[:24]}.parquet"
     if out.exists():
         return out
+    with _CONVERSION:  # concurrent cold calls wait for one conversion, then find its parquet
+        if not out.exists():
+            _write_parquet(duckdb, spec, path, root, out, prefix)
+    return out
+
+
+def _write_parquet(duckdb: Any, spec: CsvSource, path: str, root: Path, out: Path, prefix: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=root, prefix=".partial-", suffix=".parquet")
     os.close(fd)
@@ -158,7 +169,6 @@ def csv_to_parquet(spec: CsvSource) -> Path:
     for old in root.glob(f"{prefix}-*.parquet"):
         if old != out:
             old.unlink(missing_ok=True)
-    return out
 
 
 def _refuse_unsupported(spec: CsvSource) -> None:
